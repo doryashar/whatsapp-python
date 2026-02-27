@@ -21,12 +21,49 @@ import QRCode from "qrcode";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUTH_DIR = process.env.WHATSAPP_AUTH_DIR || path.join(__dirname, "..", "data", "auth");
 
-const logger = pino({ level: "silent" });
+const logger = pino({ level: process.env.DEBUG === "true" ? "debug" : "silent" });
 
 let sock = null;
 let currentQr = null;
 let connectionState = "disconnected";
 let selfInfo = null;
+
+const DISCONNECT_REASONS = {
+  401: "loggedOut",
+  403: "banned",
+  405: "invalidSession",
+  408: "restartRequired",
+  409: "accountSuspended",
+  410: "replaced",
+  411: "replaced",
+  412: "replaced",
+  413: "timedOut",
+  414: "timedOut",
+  415: "timedOut",
+  417: "timedOut",
+  418: "timedOut",
+  428: "connectionClosed",
+  429: "connectionClosed",
+  430: "connectionClosed",
+  431: "connectionLost",
+  432: "connectionLost",
+  434: "connectionReplaced",
+  435: "connectionReplaced",
+  436: "timedOut",
+  440: "serviceUnavailable",
+  441: "serviceUnavailable",
+  442: "serviceUnavailable",
+  500: "unknown",
+  501: "unknown",
+  502: "unknown",
+  503: "unavailable",
+  504: "timedOut",
+  515: "timedOut",
+  516: "timedOut",
+  518: "timedOut",
+  519: "timedOut",
+  520: "timedOut",
+};
 
 function sendResponse(id, result) {
   const msg = JSON.stringify({ jsonrpc: "2.0", result, id });
@@ -116,6 +153,8 @@ async function createSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
 
+  logger.info({ version, authDir: AUTH_DIR }, "Creating WhatsApp socket");
+
   sock = makeWASocket({
     auth: {
       creds: state.creds,
@@ -124,19 +163,40 @@ async function createSocket() {
     version,
     logger,
     printQRInTerminal: false,
-    browser: ["whatsapp-python-api", "bridge", "1.0.0"],
+    browser: ["Chrome (Linux)", "Chrome", "120.0.0"],
     syncFullHistory: false,
     markOnlineOnConnect: true,
+    connectTimeoutMs: 60_000,
+    keepAliveIntervalMs: 25_000,
+    retryRequestDelayMs: 250,
+    maxMsgRetryCount: 5,
+    fireInitQueries: true,
+    shouldIgnoreJid: (jid) => {
+      const isGroup = isJidGroup(jid);
+      const isBroadcast = jid.endsWith("@broadcast");
+      const isStatus = jid === "status@broadcast";
+      return !(isGroup || isBroadcast || isStatus);
+    },
   });
 
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    const { connection, lastDisconnect, qr, receivedPendingNotifications, isNewLogin, isOnline } = update;
+
+    logger.debug({ 
+      connection, 
+      hasQr: !!qr, 
+      hasLastDisconnect: !!lastDisconnect,
+      receivedPendingNotifications,
+      isNewLogin,
+      isOnline
+    }, "Connection update received");
 
     if (qr) {
       currentQr = qr;
       connectionState = "pending_qr";
+      logger.info({ event: "qr_generated" }, "QR code generated - scan with WhatsApp");
 
       try {
         const qrDataUrl = await QRCode.toDataURL(qr);
@@ -146,17 +206,67 @@ async function createSocket() {
       }
     }
 
+    if (connection === "connecting") {
+      connectionState = "connecting";
+      logger.info("Connecting to WhatsApp...");
+      sendEvent("connecting", {});
+    }
+
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const reasonName = DISCONNECT_REASONS[statusCode] || "unknown";
+      const errorMessage = lastDisconnect?.error?.message || "No error message";
+      
       connectionState = "disconnected";
       selfInfo = null;
+      currentQr = null;
+
+      logger.error({ 
+        statusCode, 
+        reasonName,
+        errorMessage,
+        fullError: JSON.stringify(lastDisconnect?.error?.output || {}),
+        should_reconnect: statusCode !== DisconnectReason.loggedOut 
+      }, "Connection closed");
 
       sendEvent("disconnected", {
         reason: statusCode,
+        reason_name: reasonName,
+        error: errorMessage,
         should_reconnect: statusCode !== DisconnectReason.loggedOut,
       });
 
+      // Auto-reconnect for certain errors
+      const reconnectableCodes = [408, 409, 428, 429, 430, 431, 432, 436, 504, 515, 516, 518, 519, 520];
+      if (reconnectableCodes.includes(statusCode)) {
+        const delay = statusCode === 515 ? 5000 : 3000; // Longer delay for timeout
+        logger.info({ statusCode, delay }, "Scheduling auto-reconnect");
+        
+        // Clean up old socket first
+        try {
+          if (sock) {
+            sock.ev.removeAllListeners();
+            sock.ws?.close();
+            sock = null;
+          }
+        } catch (cleanupErr) {
+          logger.debug({ err: cleanupErr.message }, "Error during socket cleanup");
+        }
+        
+        setTimeout(async () => {
+          try {
+            logger.info("Attempting auto-reconnect...");
+            sendEvent("reconnecting", { reason: statusCode });
+            await createSocket();
+          } catch (err) {
+            logger.error({ err: err.message, stack: err.stack }, "Auto-reconnect failed");
+            sendEvent("reconnect_failed", { reason: statusCode, error: err.message });
+          }
+        }, delay);
+      }
+
       if (statusCode === DisconnectReason.loggedOut) {
+        logger.info("Logged out, clearing auth directory");
         fs.rmSync(AUTH_DIR, { recursive: true, force: true });
       }
     }
@@ -172,7 +282,12 @@ async function createSocket() {
         name: user?.name,
       };
 
+      logger.info({ jid: selfInfo.jid, phone: selfInfo.phone, isNewLogin }, "Connected successfully");
       sendEvent("connected", selfInfo);
+    }
+
+    if (receivedPendingNotifications) {
+      logger.debug("Received pending notifications - connection stable");
     }
   });
 
