@@ -17,19 +17,21 @@ class BaileysBridge:
         bridge_path: Optional[Path] = None,
         auth_dir: Optional[Path] = None,
         auto_login: bool = False,
+        tenant_id: Optional[str] = None,
     ):
         self.bridge_path = bridge_path or settings.bridge_path
         self.auth_dir = auth_dir or settings.auth_dir
         self.auto_login = auto_login
+        self.tenant_id = tenant_id
 
         self._process: Optional[asyncio.subprocess.Process] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._request_id = 0
         self._pending: dict[int, asyncio.Future] = {}
-        self._event_handlers: list[Callable[[str, dict], None]] = []
+        self._event_handlers: list[Callable[[str, dict, Optional[str]], None]] = []
         self._running = False
 
-    def on_event(self, handler: Callable[[str, dict], None]) -> None:
+    def on_event(self, handler: Callable[[str, dict, Optional[str]], None]) -> None:
         self._event_handlers.append(handler)
 
     async def start(self) -> None:
@@ -125,7 +127,7 @@ class BaileysBridge:
     async def _handle_event(self, method: str, params: dict) -> None:
         for handler in self._event_handlers:
             try:
-                result = handler(method, params)
+                result = handler(method, params, self.tenant_id)
                 if asyncio.iscoroutine(result):
                     await result
             except Exception:
@@ -167,6 +169,3 @@ class BaileysBridge:
 
     async def get_status(self) -> dict:
         return await self.call("get_status")
-
-
-bridge = BaileysBridge()

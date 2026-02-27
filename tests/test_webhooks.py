@@ -144,59 +144,98 @@ class TestWebhookSender:
             assert "timestamp" in payload
 
 
-@pytest.mark.asyncio
-async def test_webhook_routes():
-    from src.main import app
+@pytest.fixture
+def setup_tenant():
+    from src.tenant import tenant_manager
 
-    with patch("src.api.routes.bridge"):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/webhooks")
-            assert response.status_code == 200
-            data = response.json()
-            assert "urls" in data
-
-            response = await client.post(
-                "/api/webhooks",
-                json={"url": "https://test.com/hook"},
-            )
-            assert response.status_code == 200
-            assert response.json()["status"] == "added"
-
-            response = await client.delete(
-                "/api/webhooks",
-                params={"url": "https://test.com/hook"},
-            )
-            assert response.status_code == 200
-            assert response.json()["status"] == "removed"
+    tenant, api_key = tenant_manager.create_tenant("test_tenant")
+    yield {"tenant": tenant, "api_key": api_key}
+    tenant_manager.delete_tenant(api_key)
 
 
 @pytest.mark.asyncio
-async def test_webhook_add_invalid_url():
+async def test_webhook_routes(setup_tenant):
     from src.main import app
+    from src.tenant import tenant_manager
 
-    with patch("src.api.routes.bridge"):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                "/api/webhooks",
-                json={"url": "ftp://invalid.com"},
-            )
-            assert response.status_code == 400
+    api_key = setup_tenant["api_key"]
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/webhooks", headers={"X-API-Key": api_key})
+        assert response.status_code == 200
+        data = response.json()
+        assert "urls" in data
+
+        response = await client.post(
+            "/api/webhooks",
+            json={"url": "https://test.com/hook"},
+            headers={"X-API-Key": api_key},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "added"
+
+        response = await client.delete(
+            "/api/webhooks",
+            params={"url": "https://test.com/hook"},
+            headers={"X-API-Key": api_key},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "removed"
 
 
 @pytest.mark.asyncio
-async def test_webhook_remove_not_found():
+async def test_webhook_add_invalid_url(setup_tenant):
     from src.main import app
 
-    with patch("src.api.routes.bridge"):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.delete(
-                "/api/webhooks",
-                params={"url": "https://nonexistent.com/hook"},
-            )
-            assert response.status_code == 404
+    api_key = setup_tenant["api_key"]
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/webhooks",
+            json={"url": "ftp://invalid.com"},
+            headers={"X-API-Key": api_key},
+        )
+        assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_webhook_remove_not_found(setup_tenant):
+    from src.main import app
+
+    api_key = setup_tenant["api_key"]
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.delete(
+            "/api/webhooks",
+            params={"url": "https://nonexistent.com/hook"},
+            headers={"X-API-Key": api_key},
+        )
+        assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_without_api_key():
+    from src.main import app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/status")
+        assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_invalid_api_key():
+    from src.main import app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/status", headers={"X-API-Key": "invalid_key"})
+        assert response.status_code == 401

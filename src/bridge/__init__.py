@@ -1,4 +1,4 @@
-from .client import BaileysBridge, BridgeError, bridge
+from .client import BaileysBridge, BridgeError
 from .protocol import (
     encode_request,
     decode_response,
@@ -10,7 +10,6 @@ from .protocol import (
 __all__ = [
     "BaileysBridge",
     "BridgeError",
-    "bridge",
     "encode_request",
     "decode_response",
     "JsonRpcRequest",

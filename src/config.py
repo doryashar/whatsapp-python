@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     webhook_timeout: int = Field(default=30, alias="WEBHOOK_TIMEOUT")
     webhook_retries: int = Field(default=3, alias="WEBHOOK_RETRIES")
 
+    admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")
+
     model_config = {"env_prefix": "", "populate_by_name": True}
 
 
