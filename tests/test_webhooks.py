@@ -145,12 +145,12 @@ class TestWebhookSender:
 
 
 @pytest.fixture
-def setup_tenant():
+async def setup_tenant():
     from src.tenant import tenant_manager
 
-    tenant, api_key = tenant_manager.create_tenant("test_tenant")
+    tenant, api_key = await tenant_manager.create_tenant("test_tenant")
     yield {"tenant": tenant, "api_key": api_key}
-    tenant_manager.delete_tenant(api_key)
+    await tenant_manager.delete_tenant(api_key)
 
 
 @pytest.mark.asyncio

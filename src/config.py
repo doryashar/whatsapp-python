@@ -16,6 +16,10 @@ class Settings(BaseSettings):
         default=Path(__file__).parent.parent.parent / "data" / "auth",
         alias="WHATSAPP_AUTH_DIR",
     )
+    data_dir: Path = Field(
+        default=Path(__file__).parent.parent.parent / "data",
+        alias="DATA_DIR",
+    )
 
     max_messages: int = Field(default=1000, alias="MAX_MESSAGES")
     auto_login: bool = Field(default=False, alias="AUTO_LOGIN")
@@ -26,6 +30,8 @@ class Settings(BaseSettings):
     webhook_retries: int = Field(default=3, alias="WEBHOOK_RETRIES")
 
     admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")
+
+    database_url: str = Field(default="", alias="DATABASE_URL")
 
     model_config = {"env_prefix": "", "populate_by_name": True}
 

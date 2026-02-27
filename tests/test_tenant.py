@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 from httpx import ASGITransport, AsyncClient
 
 from src.tenant import TenantManager, tenant_manager
@@ -12,15 +12,17 @@ def fresh_tenant_manager():
 
 
 class TestTenantManager:
-    def test_create_tenant(self, fresh_tenant_manager):
-        tenant, api_key = fresh_tenant_manager.create_tenant("test_user")
+    @pytest.mark.asyncio
+    async def test_create_tenant(self, fresh_tenant_manager):
+        tenant, api_key = await fresh_tenant_manager.create_tenant("test_user")
 
         assert tenant.name == "test_user"
         assert api_key.startswith("wa_")
         assert len(api_key) > 10
 
-    def test_get_tenant_by_key(self, fresh_tenant_manager):
-        tenant, api_key = fresh_tenant_manager.create_tenant("test_user")
+    @pytest.mark.asyncio
+    async def test_get_tenant_by_key(self, fresh_tenant_manager):
+        tenant, api_key = await fresh_tenant_manager.create_tenant("test_user")
 
         retrieved = fresh_tenant_manager.get_tenant_by_key(api_key)
         assert retrieved is not None
@@ -30,22 +32,25 @@ class TestTenantManager:
         retrieved = fresh_tenant_manager.get_tenant_by_key("invalid_key")
         assert retrieved is None
 
-    def test_delete_tenant(self, fresh_tenant_manager):
-        tenant, api_key = fresh_tenant_manager.create_tenant("test_user")
+    @pytest.mark.asyncio
+    async def test_delete_tenant(self, fresh_tenant_manager):
+        tenant, api_key = await fresh_tenant_manager.create_tenant("test_user")
 
-        result = fresh_tenant_manager.delete_tenant(api_key)
+        result = await fresh_tenant_manager.delete_tenant(api_key)
         assert result is True
 
         retrieved = fresh_tenant_manager.get_tenant_by_key(api_key)
         assert retrieved is None
 
-    def test_delete_nonexistent_tenant(self, fresh_tenant_manager):
-        result = fresh_tenant_manager.delete_tenant("invalid_key")
+    @pytest.mark.asyncio
+    async def test_delete_nonexistent_tenant(self, fresh_tenant_manager):
+        result = await fresh_tenant_manager.delete_tenant("invalid_key")
         assert result is False
 
-    def test_list_tenants(self, fresh_tenant_manager):
-        fresh_tenant_manager.create_tenant("user1")
-        fresh_tenant_manager.create_tenant("user2")
+    @pytest.mark.asyncio
+    async def test_list_tenants(self, fresh_tenant_manager):
+        await fresh_tenant_manager.create_tenant("user1")
+        await fresh_tenant_manager.create_tenant("user2")
 
         tenants = fresh_tenant_manager.list_tenants()
         assert len(tenants) == 2
@@ -53,25 +58,30 @@ class TestTenantManager:
         assert "user1" in names
         assert "user2" in names
 
-    def test_add_webhook(self, fresh_tenant_manager):
-        tenant, _ = fresh_tenant_manager.create_tenant("test_user")
+    @pytest.mark.asyncio
+    async def test_add_webhook(self, fresh_tenant_manager):
+        tenant, _ = await fresh_tenant_manager.create_tenant("test_user")
 
-        fresh_tenant_manager.add_webhook(tenant, "https://example.com/hook")
+        await fresh_tenant_manager.add_webhook(tenant, "https://example.com/hook")
         assert "https://example.com/hook" in tenant.webhook_urls
 
-    def test_remove_webhook(self, fresh_tenant_manager):
-        tenant, _ = fresh_tenant_manager.create_tenant("test_user")
-        fresh_tenant_manager.add_webhook(tenant, "https://example.com/hook")
+    @pytest.mark.asyncio
+    async def test_remove_webhook(self, fresh_tenant_manager):
+        tenant, _ = await fresh_tenant_manager.create_tenant("test_user")
+        await fresh_tenant_manager.add_webhook(tenant, "https://example.com/hook")
 
-        result = fresh_tenant_manager.remove_webhook(tenant, "https://example.com/hook")
+        result = await fresh_tenant_manager.remove_webhook(
+            tenant, "https://example.com/hook"
+        )
         assert result is True
         assert "https://example.com/hook" not in tenant.webhook_urls
 
-    def test_message_store_isolated(self, fresh_tenant_manager):
+    @pytest.mark.asyncio
+    async def test_message_store_isolated(self, fresh_tenant_manager):
         from src.store.messages import InboundMessage
 
-        tenant1, _ = fresh_tenant_manager.create_tenant("user1")
-        tenant2, _ = fresh_tenant_manager.create_tenant("user2")
+        tenant1, _ = await fresh_tenant_manager.create_tenant("user1")
+        tenant2, _ = await fresh_tenant_manager.create_tenant("user2")
 
         msg = InboundMessage(
             id="msg1",
@@ -115,7 +125,7 @@ async def test_admin_list_tenants():
     from src.config import settings
     from src.tenant import tenant_manager
 
-    tenant_manager.create_tenant("list_test_user")
+    await tenant_manager.create_tenant("list_test_user")
 
     with patch.object(settings, "admin_api_key", "test_admin_key"):
         async with AsyncClient(

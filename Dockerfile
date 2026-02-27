@@ -13,6 +13,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
     npm \
+    libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
@@ -23,10 +24,11 @@ COPY pyproject.toml ./
 
 COPY --from=bridge-builder /app/bridge ./bridge
 
-RUN mkdir -p /app/data/auth
+RUN mkdir -p /app/data/auth /app/data
 
 ENV PYTHONUNBUFFERED=1
 ENV WHATSAPP_AUTH_DIR=/app/data/auth
+ENV DATA_DIR=/app/data
 ENV BRIDGE_PATH=/app/bridge/index.mjs
 
 EXPOSE 8080

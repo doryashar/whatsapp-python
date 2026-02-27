@@ -142,7 +142,7 @@ async def add_webhook(
         raise HTTPException(
             status_code=400, detail="URL must start with http:// or https://"
         )
-    tenant_manager.add_webhook(tenant, request.url)
+    await tenant_manager.add_webhook(tenant, request.url)
     return WebhookOperationResponse(status="added", url=request.url)
 
 
@@ -151,7 +151,7 @@ async def remove_webhook(
     url: str = Query(..., description="Webhook URL to remove"),
     tenant: Tenant = Depends(get_tenant),
 ):
-    if tenant_manager.remove_webhook(tenant, url):
+    if await tenant_manager.remove_webhook(tenant, url):
         return WebhookOperationResponse(status="removed", url=url)
     raise HTTPException(status_code=404, detail="Webhook URL not found")
 
@@ -178,7 +178,7 @@ async def create_tenant(
     name: str = Query(..., description="Tenant name"),
     _: str = Depends(get_admin_key),
 ):
-    tenant, api_key = tenant_manager.create_tenant(name)
+    tenant, api_key = await tenant_manager.create_tenant(name)
     return {
         "name": tenant.name,
         "api_key": api_key,
@@ -205,6 +205,6 @@ async def delete_tenant(
     api_key: str = Query(..., description="Tenant API key to delete"),
     _: str = Depends(get_admin_key),
 ):
-    if tenant_manager.delete_tenant(api_key):
+    if await tenant_manager.delete_tenant(api_key):
         return {"status": "deleted"}
     raise HTTPException(status_code=404, detail="Tenant not found")

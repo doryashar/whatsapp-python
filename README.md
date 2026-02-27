@@ -152,13 +152,30 @@ ws.onmessage = (event) => {
 | `DEBUG` | `false` | Enable debug mode |
 | `MAX_MESSAGES` | `1000` | Max messages to store per tenant |
 | `WHATSAPP_AUTH_DIR` | `./data/auth` | Auth credentials directory |
+| `DATA_DIR` | `./data` | Data directory (for SQLite) |
 | `BRIDGE_PATH` | `./bridge/index.mjs` | Path to Node.js bridge |
 | `WEBHOOK_SECRET` | `""` | Secret for HMAC signature |
 | `WEBHOOK_TIMEOUT` | `30` | Webhook request timeout (seconds) |
 | `WEBHOOK_RETRIES` | `3` | Max retries for failed webhooks |
 | `ADMIN_API_KEY` | `""` | Admin API key for tenant management |
+| `DATABASE_URL` | `""` | PostgreSQL URL (empty = SQLite) |
 
 ## Docker Compose
+
+```yaml
+services:
+  whatsapp-api:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - whatsapp-data:/app/data
+    environment:
+      - DEBUG=false
+      - ADMIN_API_KEY=your_secure_admin_key
+```
+
+### With PostgreSQL
 
 ```yaml
 services:
@@ -171,6 +188,18 @@ services:
     environment:
       - DEBUG=false
       - ADMIN_API_KEY=your_secure_admin_key
+      - DATABASE_URL=postgresql://user:pass@postgres:5432/whatsapp
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=pass
+      - POSTGRES_DB=whatsapp
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
 ```
 
 ## WebSocket Event Types

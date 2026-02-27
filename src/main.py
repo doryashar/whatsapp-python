@@ -3,12 +3,23 @@ import json
 from typing import Any, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 from .config import settings
 from .api import router, admin_router
 from .tenant import tenant_manager
+from .store.database import Database
 from .webhooks import WebhookSender
 from .store.messages import InboundMessage
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db = Database(settings.database_url, settings.data_dir)
+    tenant_manager.set_database(db)
+    await tenant_manager.initialize()
+    yield
+    await tenant_manager.close()
 
 
 class ConnectionManager:
@@ -86,6 +97,7 @@ app = FastAPI(
     title="WhatsApp API",
     description="WhatsApp Web API with FastAPI and Baileys bridge - Multi-tenant",
     version="2.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

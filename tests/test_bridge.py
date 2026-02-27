@@ -10,15 +10,15 @@ from src.bridge.protocol import (
 
 def test_encode_request():
     result = encode_request("login", {}, 1)
-    assert '"method":"login"' in result
-    assert '"id":1' in result
-    assert '"jsonrpc":"2.0"' in result
+    assert '"method": "login"' in result
+    assert '"id": 1' in result
+    assert '"jsonrpc": "2.0"' in result
 
 
 def test_encode_request_no_params():
     result = encode_request("get_status", request_id=2)
-    assert '"method":"get_status"' in result
-    assert '"id":2' in result
+    assert '"method": "get_status"' in result
+    assert '"id": 2' in result
 
 
 def test_decode_response():
