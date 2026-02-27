@@ -1,6 +1,8 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from pathlib import Path
+import logging
+import sys
 
 
 class Settings(BaseSettings):
@@ -37,3 +39,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+logger = logging.getLogger("whatsapp")
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+logger.addHandler(handler)
+logger.setLevel(logging.DEBUG if settings.debug else logging.INFO)

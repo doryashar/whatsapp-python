@@ -5,7 +5,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from .config import settings
+from .config import settings, logger
 from .api import router, admin_router
 from .tenant import tenant_manager
 from .store.database import Database
@@ -15,11 +15,15 @@ from .store.messages import InboundMessage
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Starting WhatsApp API...")
     db = Database(settings.database_url, settings.data_dir)
     tenant_manager.set_database(db)
     await tenant_manager.initialize()
+    logger.info("WhatsApp API ready")
     yield
+    logger.info("Shutting down WhatsApp API...")
     await tenant_manager.close()
+    logger.info("Shutdown complete")
 
 
 class ConnectionManager:
@@ -54,7 +58,12 @@ manager = ConnectionManager()
 def handle_bridge_event(
     event_type: str, params: dict[str, Any], tenant_id: Optional[str] = None
 ):
+    logger.debug(
+        f"Bridge event received: type={event_type}, tenant={tenant_id[:16] if tenant_id else 'none'}..."
+    )
+
     if not tenant_id:
+        logger.debug("Event has no tenant_id, ignoring")
         return
 
     tenant = None
@@ -64,7 +73,23 @@ def handle_bridge_event(
             break
 
     if not tenant:
+        logger.debug(f"Tenant not found for event: {tenant_id[:16]}...")
         return
+
+    logger.info(f"Bridge event for tenant {tenant.name}: type={event_type}")
+
+    if event_type == "qr":
+        logger.info(f"QR code generated for tenant {tenant.name}")
+    elif event_type == "connected":
+        logger.info(
+            f"Tenant {tenant.name} connected: jid={params.get('jid')}, phone={params.get('phone')}"
+        )
+    elif event_type == "disconnected":
+        logger.info(f"Tenant {tenant.name} disconnected: reason={params.get('reason')}")
+    elif event_type == "message":
+        logger.debug(
+            f"Message received for tenant {tenant.name}: from={params.get('from')}"
+        )
 
     if event_type == "message":
         msg = InboundMessage(
@@ -82,6 +107,9 @@ def handle_bridge_event(
     asyncio.create_task(manager.broadcast(tenant_id, event_type, params))
 
     if tenant.webhook_urls:
+        logger.debug(
+            f"Sending webhook for event {event_type} to {len(tenant.webhook_urls)} URLs"
+        )
         sender = WebhookSender(
             urls=tenant.webhook_urls,
             secret=settings.webhook_secret,
@@ -122,15 +150,21 @@ async def ws_events(
     websocket: WebSocket,
     api_key: Optional[str] = Query(None),
 ):
+    logger.debug(
+        f"WebSocket connection attempt: api_key={api_key[:20] if api_key else 'none'}..."
+    )
     if not api_key:
+        logger.warning("WebSocket rejected: no API key")
         await websocket.close(code=1008, reason="API key required")
         return
 
     tenant = tenant_manager.get_tenant_by_key(api_key)
     if not tenant:
+        logger.warning("WebSocket rejected: invalid API key")
         await websocket.close(code=1008, reason="Invalid API key")
         return
 
+    logger.info(f"WebSocket connected for tenant: {tenant.name}")
     await manager.connect(tenant.api_key_hash, websocket)
 
     try:
@@ -143,8 +177,10 @@ async def ws_events(
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for tenant: {tenant.name}")
         manager.disconnect(tenant.api_key_hash, websocket)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"WebSocket error for tenant {tenant.name}: {e}")
         manager.disconnect(tenant.api_key_hash, websocket)
 
 

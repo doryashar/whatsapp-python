@@ -4,7 +4,7 @@ from typing import Any, Callable, Optional
 from pathlib import Path
 
 from .protocol import encode_request, decode_response, JsonRpcEvent, JsonRpcResponse
-from ..config import settings
+from ..config import settings, logger
 
 
 class BridgeError(Exception):
@@ -30,12 +30,17 @@ class BaileysBridge:
         self._pending: dict[int, asyncio.Future] = {}
         self._event_handlers: list[Callable[[str, dict, Optional[str]], None]] = []
         self._running = False
+        logger.debug(
+            f"BaileysBridge created: auth_dir={self.auth_dir}, tenant={tenant_id[:16] if tenant_id else 'none'}..."
+        )
 
     def on_event(self, handler: Callable[[str, dict, Optional[str]], None]) -> None:
+        logger.debug("Registering bridge event handler")
         self._event_handlers.append(handler)
 
     async def start(self) -> None:
         if self._running:
+            logger.debug("Bridge already running")
             return
 
         env = os.environ.copy()
@@ -43,6 +48,7 @@ class BaileysBridge:
         if self.auto_login:
             env["AUTO_LOGIN"] = "true"
 
+        logger.info(f"Starting bridge: node {self.bridge_path}")
         self._process = await asyncio.create_subprocess_exec(
             "node",
             str(self.bridge_path),
@@ -55,11 +61,14 @@ class BaileysBridge:
         self._running = True
         self._reader_task = asyncio.create_task(self._read_loop())
         asyncio.create_task(self._stderr_loop())
+        logger.info(f"Bridge started (pid={self._process.pid})")
 
     async def stop(self) -> None:
         if not self._running:
+            logger.debug("Bridge not running, nothing to stop")
             return
 
+        logger.info("Stopping bridge")
         self._running = False
 
         if self._reader_task:
@@ -71,10 +80,12 @@ class BaileysBridge:
 
         if self._process:
             try:
-                self._process.stdin.close()
+                if self._process.stdin:
+                    self._process.stdin.close()
                 await self._process.wait()
-            except Exception:
-                pass
+                logger.info(f"Bridge stopped (pid={self._process.pid})")
+            except Exception as e:
+                logger.debug(f"Error stopping bridge: {e}")
 
     async def _read_loop(self) -> None:
         if not self._process or not self._process.stdout:
@@ -91,25 +102,31 @@ class BaileysBridge:
                 if not data:
                     continue
 
+                logger.debug(
+                    f"Bridge <- {data[:200]}{'...' if len(data) > 200 else ''}"
+                )
                 msg = decode_response(data)
 
                 if isinstance(msg, JsonRpcResponse):
                     if msg.id is not None and msg.id in self._pending:
                         future = self._pending.pop(msg.id)
                         if msg.error:
+                            logger.debug(f"Bridge response error: {msg.error}")
                             future.set_exception(
                                 BridgeError(msg.error.get("message", "Unknown error"))
                             )
                         else:
+                            logger.debug(f"Bridge response success: id={msg.id}")
                             future.set_result(msg.result)
 
                 elif isinstance(msg, JsonRpcEvent):
+                    logger.debug(f"Bridge event: {msg.method}")
                     await self._handle_event(msg.method, msg.params)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                pass
+                logger.debug(f"Bridge read error: {e}")
 
     async def _stderr_loop(self) -> None:
         if not self._process or not self._process.stderr:
@@ -121,6 +138,7 @@ class BaileysBridge:
                 line = await reader.readline()
                 if not line:
                     break
+                logger.debug(f"Bridge stderr: {line.decode('utf-8').strip()}")
             except Exception:
                 break
 
@@ -130,8 +148,8 @@ class BaileysBridge:
                 result = handler(method, params, self.tenant_id)
                 if asyncio.iscoroutine(result):
                     await result
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Event handler error: {e}")
 
     async def call(self, method: str, params: Optional[dict] = None) -> Any:
         if not self._process or not self._process.stdin:
@@ -140,6 +158,7 @@ class BaileysBridge:
         self._request_id += 1
         request_id = self._request_id
 
+        logger.debug(f"Bridge call: {method}(id={request_id}, params={params})")
         future: asyncio.Future = asyncio.get_event_loop().create_future()
         self._pending[request_id] = future
 
@@ -150,19 +169,23 @@ class BaileysBridge:
         return await future
 
     async def login(self) -> dict:
+        logger.info("Bridge login requested")
         return await self.call("login")
 
     async def logout(self) -> dict:
+        logger.info("Bridge logout requested")
         return await self.call("logout")
 
     async def send_message(
         self, to: str, text: str, media_url: Optional[str] = None
     ) -> dict:
+        logger.info(f"Bridge send_message: to={to}")
         return await self.call(
             "send_message", {"to": to, "text": text, "media_url": media_url}
         )
 
     async def send_reaction(self, chat: str, message_id: str, emoji: str) -> dict:
+        logger.debug(f"Bridge send_reaction: chat={chat}, emoji={emoji}")
         return await self.call(
             "send_reaction", {"chat": chat, "message_id": message_id, "emoji": emoji}
         )

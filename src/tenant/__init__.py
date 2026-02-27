@@ -6,7 +6,7 @@ from typing import Optional, Callable, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ..config import settings
+from ..config import settings, logger
 from ..bridge.client import BaileysBridge
 from ..store.messages import MessageStore
 from ..store.database import Database
@@ -44,14 +44,20 @@ class TenantManager:
         ] = None
         self._db = database
         self._initialized = False
+        logger.debug("TenantManager initialized")
 
     def set_database(self, database: Database) -> None:
+        logger.debug("Setting database for TenantManager")
         self._db = database
 
     async def initialize(self) -> None:
         if self._initialized or not self._db:
+            logger.debug(
+                f"TenantManager initialize skipped: initialized={self._initialized}, has_db={self._db is not None}"
+            )
             return
 
+        logger.info("Initializing TenantManager from database")
         await self._db.connect()
         tenants_data = await self._db.load_tenants()
 
@@ -64,16 +70,20 @@ class TenantManager:
                 webhook_urls=data.get("webhook_urls", []),
             )
             self._tenants[tenant.api_key_hash] = tenant
+            logger.debug(f"Loaded tenant: {tenant.name}")
 
         self._initialized = True
+        logger.info(f"TenantManager initialized with {len(self._tenants)} tenants")
 
     async def close(self) -> None:
         if self._db:
+            logger.debug("Closing TenantManager database connection")
             await self._db.close()
 
     def on_event(
         self, handler: Callable[[str, dict[str, Any], Optional[str]], None]
     ) -> None:
+        logger.debug("Registering event handler")
         self._event_handler = handler
 
     @staticmethod
@@ -81,6 +91,7 @@ class TenantManager:
         return hashlib.sha256(api_key.encode()).hexdigest()
 
     async def create_tenant(self, name: str) -> tuple[Tenant, str]:
+        logger.info(f"Creating tenant: {name}")
         raw_key = f"wa_{secrets.token_urlsafe(32)}"
         key_hash = self.hash_api_key(raw_key)
 
@@ -100,25 +111,32 @@ class TenantManager:
                 tenant.webhook_urls,
             )
 
+        logger.info(f"Tenant created: {name}, api_key={raw_key[:20]}...")
         return tenant, raw_key
 
     def get_tenant_by_key(self, api_key: str) -> Optional[Tenant]:
         key_hash = self.hash_api_key(api_key)
-        return self._tenants.get(key_hash)
+        tenant = self._tenants.get(key_hash)
+        logger.debug(f"Lookup tenant by key: found={tenant is not None}")
+        return tenant
 
     def get_tenant_by_name(self, name: str) -> Optional[Tenant]:
         for tenant in self._tenants.values():
             if tenant.name == name:
+                logger.debug(f"Found tenant by name: {name}")
                 return tenant
+        logger.debug(f"Tenant not found by name: {name}")
         return None
 
     def list_tenants(self) -> list[Tenant]:
+        logger.debug(f"Listing {len(self._tenants)} tenants")
         return list(self._tenants.values())
 
     async def delete_tenant(self, api_key: str) -> bool:
         key_hash = self.hash_api_key(api_key)
         tenant = self._tenants.get(key_hash)
         if tenant:
+            logger.info(f"Deleting tenant: {tenant.name}")
             if tenant.bridge:
                 await tenant.bridge.stop()
             del self._tenants[key_hash]
@@ -127,10 +145,12 @@ class TenantManager:
                 await self._db.delete_tenant(key_hash)
 
             return True
+        logger.debug(f"Tenant not found for deletion")
         return False
 
     async def get_or_create_bridge(self, tenant: Tenant) -> BaileysBridge:
         if tenant.bridge is None:
+            logger.debug(f"Creating bridge for tenant: {tenant.name}")
             auth_dir = tenant.get_auth_dir(self._base_auth_dir)
             tenant.bridge = BaileysBridge(
                 bridge_path=settings.bridge_path,
@@ -140,21 +160,25 @@ class TenantManager:
             if self._event_handler:
                 tenant.bridge.on_event(self._event_handler)
             await tenant.bridge.start()
+            logger.info(f"Bridge started for tenant: {tenant.name}")
         return tenant.bridge
 
     async def add_webhook(self, tenant: Tenant, url: str) -> None:
         if url not in tenant.webhook_urls:
+            logger.info(f"Adding webhook for tenant {tenant.name}: {url}")
             tenant.webhook_urls.append(url)
             if self._db:
                 await self._db.update_webhooks(tenant.api_key_hash, tenant.webhook_urls)
 
     async def remove_webhook(self, tenant: Tenant, url: str) -> bool:
         try:
+            logger.info(f"Removing webhook for tenant {tenant.name}: {url}")
             tenant.webhook_urls.remove(url)
             if self._db:
                 await self._db.update_webhooks(tenant.api_key_hash, tenant.webhook_urls)
             return True
         except ValueError:
+            logger.debug(f"Webhook not found: {url}")
             return False
 
 

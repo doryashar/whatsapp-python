@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from ..bridge import BridgeError
 from ..tenant import Tenant, tenant_manager
 from ..store.messages import InboundMessage
+from ..config import logger
 from ..models import (
     SendMessageRequest,
     SendMessageResponse,
@@ -24,23 +25,34 @@ admin_router = APIRouter(prefix="/admin", tags=["Admin"])
 
 @router.get("/status", response_model=StatusResponse)
 async def get_status(tenant: Tenant = Depends(get_tenant)):
+    logger.debug(f"Status check for tenant: {tenant.name}")
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
         result = await bridge.get_status()
+        logger.debug(
+            f"Status result: state={result.get('connection_state')}, has_qr={result.get('has_qr')}"
+        )
         return StatusResponse(
             connection_state=result.get("connection_state", "disconnected"),
             self_info=SelfInfo(**result["self"]) if result.get("self") else None,
             has_qr=result.get("has_qr", False),
         )
     except BridgeError as e:
+        logger.error(f"Status check failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/login", response_model=LoginResponse)
 async def login(tenant: Tenant = Depends(get_tenant)):
+    logger.info(f"Login requested for tenant: {tenant.name}")
     try:
+        logger.debug(f"Getting/creating bridge for tenant: {tenant.name}")
         bridge = await tenant_manager.get_or_create_bridge(tenant)
+        logger.debug(f"Calling bridge.login()")
         result = await bridge.login()
+        logger.info(
+            f"Login result: status={result.get('status')}, state={result.get('connection_state')}, jid={result.get('jid')}"
+        )
         return LoginResponse(
             status=result.get("status", "unknown"),
             qr=result.get("qr"),
@@ -51,17 +63,22 @@ async def login(tenant: Tenant = Depends(get_tenant)):
             name=result.get("name"),
         )
     except BridgeError as e:
+        logger.error(f"Login failed for tenant {tenant.name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/logout", response_model=LogoutResponse)
 async def logout(tenant: Tenant = Depends(get_tenant)):
+    logger.info(f"Logout requested for tenant: {tenant.name}")
     try:
         if tenant.bridge:
             result = await tenant.bridge.logout()
+            logger.info(f"Logout result: {result.get('status')}")
             return LogoutResponse(status=result.get("status", "logged_out"))
+        logger.debug(f"No bridge for tenant {tenant.name}, returning not_connected")
         return LogoutResponse(status="not_connected")
     except BridgeError as e:
+        logger.error(f"Logout failed for tenant {tenant.name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -91,6 +108,7 @@ async def send_message(
     request: SendMessageRequest,
     tenant: Tenant = Depends(get_tenant),
 ):
+    logger.info(f"Send message requested: tenant={tenant.name}, to={request.to}")
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
         result = await bridge.send_message(
@@ -98,11 +116,15 @@ async def send_message(
             text=request.text,
             media_url=request.media_url,
         )
+        logger.info(
+            f"Message sent: message_id={result.get('message_id')}, to={result.get('to')}"
+        )
         return SendMessageResponse(
             message_id=result.get("message_id", "unknown"),
             to=result.get("to", request.to),
         )
     except BridgeError as e:
+        logger.error(f"Send message failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -111,6 +133,9 @@ async def send_reaction(
     request: SendReactionRequest,
     tenant: Tenant = Depends(get_tenant),
 ):
+    logger.info(
+        f"Send reaction: tenant={tenant.name}, chat={request.chat}, emoji={request.emoji}"
+    )
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
         result = await bridge.send_reaction(
@@ -118,6 +143,7 @@ async def send_reaction(
             message_id=request.message_id,
             emoji=request.emoji,
         )
+        logger.debug(f"Reaction result: {result.get('status')}")
         return SendReactionResponse(
             status=result.get("status", "reacted"),
             chat=result.get("chat", request.chat),
@@ -125,6 +151,7 @@ async def send_reaction(
             emoji=request.emoji,
         )
     except BridgeError as e:
+        logger.error(f"Send reaction failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
