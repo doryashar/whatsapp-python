@@ -35,5 +35,5 @@ curl http://localhost:8080/health
 curl http://localhost:8080/api/status
 curl -X POST http://localhost:8080/api/login
 ```
-
+ 
 ## All tests passed ✓
