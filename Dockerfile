@@ -1,0 +1,34 @@
+FROM node:22-alpine AS bridge-builder
+
+WORKDIR /app/bridge
+RUN apk add --no-cache git python3 make g++
+COPY bridge/package.json ./
+RUN npm install
+COPY bridge/index.mjs ./
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src ./src
+COPY pyproject.toml ./
+
+COPY --from=bridge-builder /app/bridge ./bridge
+
+RUN mkdir -p /app/data/auth
+
+ENV PYTHONUNBUFFERED=1
+ENV WHATSAPP_AUTH_DIR=/app/data/auth
+ENV BRIDGE_PATH=/app/bridge/index.mjs
+
+EXPOSE 8080
+
+CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]

@@ -1,0 +1,12 @@
+{
+  "name": "whatsapp-bridge",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "WhatsApp bridge for Python API",
+  "main": "index.mjs",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.6.0",
+    "pino": "^8.0.0",
+    "qrcode": "^1.5.0"
+  }
+}

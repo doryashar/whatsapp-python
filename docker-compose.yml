@@ -1,0 +1,26 @@
+services:
+  whatsapp-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whatsapp-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - whatsapp-auth:/app/data/auth
+      - ./src:/app/src:ro
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8080
+      - DEBUG=false
+      - AUTO_LOGIN=false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  whatsapp-auth:
