@@ -147,6 +147,28 @@ function extractMessageContent(message) {
   return { text: "", type: "unknown" };
 }
 
+async function exportAuthState() {
+  const authData = { creds: null, keys: {} };
+  
+  const credsPath = path.join(AUTH_DIR, "creds.json");
+  if (fs.existsSync(credsPath)) {
+    authData.creds = JSON.parse(fs.readFileSync(credsPath, "utf-8"));
+  }
+  
+  const keysDir = path.join(AUTH_DIR, "keys");
+  if (fs.existsSync(keysDir)) {
+    const keyFiles = fs.readdirSync(keysDir);
+    for (const file of keyFiles) {
+      const filePath = path.join(keysDir, file);
+      if (fs.statSync(filePath).isFile()) {
+        authData.keys[file] = fs.readFileSync(filePath, "utf-8");
+      }
+    }
+  }
+  
+  return authData;
+}
+
 async function createSocket() {
   await ensureAuthDir();
 
@@ -181,15 +203,12 @@ async function createSocket() {
 
   sock.ev.on("creds.update", async () => {
     await saveCreds();
-    const credsPath = path.join(AUTH_DIR, "creds.json");
-    if (fs.existsSync(credsPath)) {
-      try {
-        const credsContent = JSON.parse(fs.readFileSync(credsPath, "utf-8"));
-        sendEvent("creds.update", { creds: credsContent });
-        logger.debug("Sent creds.update event to Python");
-      } catch (err) {
-        logger.error({ err: err.message }, "Failed to read creds.json for sync");
-      }
+    try {
+      const authData = await exportAuthState();
+      sendEvent("auth.update", authData);
+      logger.debug({ hasCreds: !!authData.creds, keyCount: Object.keys(authData.keys).length }, "Sent auth.update event to Python");
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to export auth state");
     }
   });
 

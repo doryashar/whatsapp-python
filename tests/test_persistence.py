@@ -1,6 +1,7 @@
 import pytest
 import tempfile
 import os
+import hashlib
 from pathlib import Path
 
 from src.store.database import Database
@@ -80,6 +81,54 @@ async def test_update_webhooks_persists():
         assert tenants[0]["webhook_urls"] == ["https://hook1.com", "https://hook2.com"]
 
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_auth_state_with_keys_persistence():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        data_dir = Path(tmpdir)
+        auth_dir = Path(tmpdir) / "auth"
+
+        db = Database("", data_dir)
+        manager = TenantManager(base_auth_dir=auth_dir, database=db)
+        await manager.initialize()
+
+        tenant, api_key = await manager.create_tenant("test_user")
+
+        auth_data = {
+            "creds": {"me": {"id": "12345@s.whatsapp.net"}, "noiseKey": "abc123"},
+            "keys": {
+                "app-state-sync-key-1.json": '{"key": "data1"}',
+                "session-1.json": '{"session": "data2"}',
+            },
+        }
+        await manager.save_auth_state(tenant, auth_data)
+
+        await db.close()
+
+        db2 = Database("", data_dir)
+        manager2 = TenantManager(base_auth_dir=auth_dir, database=db2)
+        await manager2.initialize()
+
+        loaded_tenant = manager2.get_tenant_by_key(api_key)
+        assert loaded_tenant is not None
+        assert loaded_tenant.creds_json is not None
+        assert loaded_tenant.creds_json["creds"]["me"]["id"] == "12345@s.whatsapp.net"
+        assert "keys" in loaded_tenant.creds_json
+        assert "app-state-sync-key-1.json" in loaded_tenant.creds_json["keys"]
+
+        manager2._restore_auth_to_filesystem(loaded_tenant)
+
+        keys_dir = (
+            auth_dir
+            / hashlib.sha256(loaded_tenant.api_key_hash.encode()).hexdigest()[:16]
+            / "keys"
+        )
+        assert keys_dir.exists()
+        assert (keys_dir / "app-state-sync-key-1.json").exists()
+        assert (keys_dir / "session-1.json").exists()
+
+        await db2.close()
 
 
 @pytest.mark.asyncio

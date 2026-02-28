@@ -97,20 +97,40 @@ class TenantManager:
         self._initialized = True
         logger.info(f"TenantManager initialized with {len(self._tenants)} tenants")
 
-    def _restore_creds_to_filesystem(self, tenant: Tenant) -> bool:
+    def _restore_auth_to_filesystem(self, tenant: Tenant) -> bool:
         if not tenant.creds_json:
             return False
 
         auth_dir = tenant.get_auth_dir(self._base_auth_dir)
-        creds_file = auth_dir / "creds.json"
+        auth_data = tenant.creds_json
 
         try:
-            with open(creds_file, "w") as f:
-                json.dump(tenant.creds_json, f)
-            logger.info(f"Restored credentials to filesystem for tenant: {tenant.name}")
+            if "creds" in auth_data:
+                creds_file = auth_dir / "creds.json"
+                with open(creds_file, "w") as f:
+                    json.dump(auth_data["creds"], f)
+                logger.debug(f"Restored creds.json for tenant: {tenant.name}")
+            elif isinstance(auth_data, dict) and "noiseKey" in auth_data:
+                creds_file = auth_dir / "creds.json"
+                with open(creds_file, "w") as f:
+                    json.dump(auth_data, f)
+                logger.debug(f"Restored legacy creds.json for tenant: {tenant.name}")
+
+            if "keys" in auth_data and isinstance(auth_data["keys"], dict):
+                keys_dir = auth_dir / "keys"
+                keys_dir.mkdir(parents=True, exist_ok=True)
+                for filename, content in auth_data["keys"].items():
+                    key_file = keys_dir / filename
+                    with open(key_file, "w") as f:
+                        f.write(content)
+                logger.debug(
+                    f"Restored {len(auth_data['keys'])} key files for tenant: {tenant.name}"
+                )
+
+            logger.info(f"Restored auth state to filesystem for tenant: {tenant.name}")
             return True
         except Exception as e:
-            logger.error(f"Failed to restore credentials for {tenant.name}: {e}")
+            logger.error(f"Failed to restore auth state for {tenant.name}: {e}")
             return False
 
     async def restore_sessions(self) -> None:
@@ -121,7 +141,7 @@ class TenantManager:
         for tenant in self._tenants.values():
             if tenant.creds_json:
                 logger.info(f"Restoring session for tenant: {tenant.name}")
-                self._restore_creds_to_filesystem(tenant)
+                self._restore_auth_to_filesystem(tenant)
                 try:
                     bridge = await self.get_or_create_bridge(tenant)
                     result = await bridge.login()
@@ -138,12 +158,17 @@ class TenantManager:
 
         logger.info(f"Session restoration complete: {restored} sessions restored")
 
-    async def save_creds(self, tenant: Tenant, creds_json: dict) -> None:
-        tenant.creds_json = creds_json
+    async def save_auth_state(self, tenant: Tenant, auth_data: dict) -> None:
+        tenant.creds_json = auth_data
         tenant.has_auth = True
         if self._db:
-            await self._db.save_creds(tenant.api_key_hash, creds_json)
-            logger.info(f"Credentials saved to database for tenant: {tenant.name}")
+            await self._db.save_creds(tenant.api_key_hash, auth_data)
+            key_count = (
+                len(auth_data.get("keys", {})) if isinstance(auth_data, dict) else 0
+            )
+            logger.info(
+                f"Auth state saved to database for tenant: {tenant.name} (keys: {key_count})"
+            )
 
     async def clear_creds(self, tenant: Tenant) -> None:
         tenant.creds_json = None
@@ -229,7 +254,7 @@ class TenantManager:
         if tenant.bridge is None:
             logger.debug(f"Creating bridge for tenant: {tenant.name}")
             if tenant.creds_json:
-                self._restore_creds_to_filesystem(tenant)
+                self._restore_auth_to_filesystem(tenant)
             auth_dir = tenant.get_auth_dir(self._base_auth_dir)
             tenant.bridge = BaileysBridge(
                 bridge_path=settings.bridge_path,
