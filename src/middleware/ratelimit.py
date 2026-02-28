@@ -16,31 +16,42 @@ class RateLimiter:
         requests_per_minute: int = 60,
         requests_per_hour: int = 1000,
         block_duration_minutes: int = 15,
+        max_failed_auth_attempts: int = 5,
+        failed_auth_window_minutes: int = 15,
     ):
         self.requests_per_minute = requests_per_minute
         self.requests_per_hour = requests_per_hour
         self.block_duration_seconds = block_duration_minutes * 60
+        self.max_failed_auth_attempts = max_failed_auth_attempts
+        self.failed_auth_window_seconds = failed_auth_window_minutes * 60
 
         self._minute_requests: dict[str, list[float]] = defaultdict(list)
         self._hour_requests: dict[str, list[float]] = defaultdict(list)
-        self._blocked_ips: dict[str, float] = {}
+        self._blocked_ips: dict[str, dict] = {}
+        self._failed_auth_attempts: dict[str, list[float]] = defaultdict(list)
 
     def is_blocked(self, ip: str) -> bool:
         if ip in self._blocked_ips:
-            if time.time() - self._blocked_ips[ip] > self.block_duration_seconds:
+            block_info = self._blocked_ips[ip]
+            if time.time() - block_info["blocked_at"] > self.block_duration_seconds:
                 del self._blocked_ips[ip]
+                self._failed_auth_attempts.pop(ip, None)
                 logger.info(f"IP unblocked after cooldown", extra={"ip": ip})
                 return False
             return True
         return False
 
     def block_ip(self, ip: str, reason: str = "rate_limit") -> None:
-        self._blocked_ips[ip] = time.time()
+        self._blocked_ips[ip] = {
+            "blocked_at": time.time(),
+            "reason": reason,
+        }
         logger.warning(f"IP blocked", extra={"ip": ip, "reason": reason})
 
     def unblock_ip(self, ip: str) -> bool:
         if ip in self._blocked_ips:
             del self._blocked_ips[ip]
+            self._failed_auth_attempts.pop(ip, None)
             logger.info(f"IP manually unblocked", extra={"ip": ip})
             return True
         return False
@@ -50,16 +61,80 @@ class RateLimiter:
         return [
             {
                 "ip": ip,
-                "blocked_at": blocked_at,
+                "blocked_at": info["blocked_at"],
+                "reason": info.get("reason", "unknown"),
                 "remaining_seconds": max(
-                    0, self.block_duration_seconds - (now - blocked_at)
+                    0, self.block_duration_seconds - (now - info["blocked_at"])
                 ),
             }
-            for ip, blocked_at in self._blocked_ips.items()
-            if now - blocked_at <= self.block_duration_seconds
+            for ip, info in self._blocked_ips.items()
+            if now - info["blocked_at"] <= self.block_duration_seconds
         ]
 
+    def record_failed_auth(self, ip: str) -> tuple[int, bool]:
+        now = time.time()
+        window_start = now - self.failed_auth_window_seconds
+
+        self._failed_auth_attempts[ip] = [
+            t for t in self._failed_auth_attempts[ip] if t > window_start
+        ]
+        self._failed_auth_attempts[ip].append(now)
+
+        attempt_count = len(self._failed_auth_attempts[ip])
+        blocked = False
+
+        if attempt_count >= self.max_failed_auth_attempts:
+            self.block_ip(ip, f"failed_auth:{attempt_count}")
+            blocked = True
+            logger.warning(
+                f"IP auto-blocked after failed auth attempts",
+                extra={"ip": ip, "attempts": attempt_count},
+            )
+        else:
+            logger.info(
+                f"Failed auth attempt recorded",
+                extra={
+                    "ip": ip,
+                    "attempts": attempt_count,
+                    "max": self.max_failed_auth_attempts,
+                },
+            )
+
+        return attempt_count, blocked
+
+    def clear_failed_auth(self, ip: str) -> None:
+        if ip in self._failed_auth_attempts:
+            del self._failed_auth_attempts[ip]
+            logger.debug(f"Failed auth attempts cleared for IP", extra={"ip": ip})
+
+    def get_failed_auth_attempts(self, ip: Optional[str] = None) -> dict:
+        now = time.time()
+        window_start = now - self.failed_auth_window_seconds
+
+        if ip:
+            attempts = len(
+                [t for t in self._failed_auth_attempts.get(ip, []) if t > window_start]
+            )
+            return {
+                "ip": ip,
+                "attempts": attempts,
+                "max_attempts": self.max_failed_auth_attempts,
+                "blocked": self.is_blocked(ip),
+            }
+
+        return {
+            "ips_with_failures": {
+                ip: len([t for t in times if t > window_start])
+                for ip, times in self._failed_auth_attempts.items()
+                if any(t > window_start for t in times)
+            },
+            "max_attempts": self.max_failed_auth_attempts,
+        }
+
     def check_rate_limit(self, ip: str) -> tuple[bool, Optional[str]]:
+        if self.is_blocked(ip):
+            return False, "IP is blocked"
+
         now = time.time()
         minute_ago = now - 60
         hour_ago = now - 3600
@@ -70,16 +145,17 @@ class RateLimiter:
         self._hour_requests[ip] = [t for t in self._hour_requests[ip] if t > hour_ago]
 
         if len(self._minute_requests[ip]) >= self.requests_per_minute:
+            self.block_ip(ip, "minute_limit")
             return (
                 False,
                 f"Rate limit exceeded: {self.requests_per_minute} requests per minute",
             )
 
         if len(self._hour_requests[ip]) >= self.requests_per_hour:
-            self.block_ip(ip, "hourly_limit_exceeded")
+            self.block_ip(ip, "hourly_limit")
             return (
                 False,
-                f"Rate limit exceeded: {self.requests_per_hour} requests per hour. IP blocked.",
+                f"Rate limit exceeded: {self.requests_per_hour} requests per hour",
             )
 
         self._minute_requests[ip].append(now)
@@ -93,15 +169,19 @@ class RateLimiter:
         hour_ago = now - 3600
 
         if ip:
+            minute_count = len(
+                [t for t in self._minute_requests.get(ip, []) if t > minute_ago]
+            )
+            hour_count = len(
+                [t for t in self._hour_requests.get(ip, []) if t > hour_ago]
+            )
             return {
                 "ip": ip,
+                "requests_last_minute": minute_count,
+                "requests_last_hour": hour_count,
                 "blocked": self.is_blocked(ip),
-                "requests_last_minute": len(
-                    [t for t in self._minute_requests.get(ip, []) if t > minute_ago]
-                ),
-                "requests_last_hour": len(
-                    [t for t in self._hour_requests.get(ip, []) if t > hour_ago]
-                ),
+                "minute_limit": self.requests_per_minute,
+                "hour_limit": self.requests_per_hour,
             }
 
         return {
@@ -124,35 +204,20 @@ class RateLimiter:
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(
-        self,
-        app,
-        rate_limiter: RateLimiter,
-        exclude_paths: Optional[list[str]] = None,
-    ):
+    def __init__(self, app, rate_limiter: RateLimiter):
         super().__init__(app)
         self.rate_limiter = rate_limiter
-        self.exclude_paths = exclude_paths or ["/health", "/metrics"]
 
     def get_client_ip(self, request: Request) -> str:
         forwarded = request.headers.get("X-Forwarded-For")
         if forwarded:
             return forwarded.split(",")[0].strip()
-
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip:
-            return real_ip
-
-        if request.client:
-            return request.client.host
-
-        return "unknown"
+        return request.client.host if request.client else "unknown"
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        if request.url.path in self.exclude_paths:
-            return await call_next(request)
-
-        if request.url.path.startswith("/admin/"):
+        if request.url.path in ["/health", "/ready"] or request.url.path.startswith(
+            "/admin/"
+        ):
             return await call_next(request)
 
         ip = self.get_client_ip(request)

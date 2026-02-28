@@ -114,3 +114,76 @@ def test_rate_limit_stats():
     ip_stats = limiter.get_stats("192.168.1.1")
     assert ip_stats["ip"] == "192.168.1.1"
     assert ip_stats["requests_last_minute"] == 2
+
+
+def test_failed_auth_auto_block():
+    limiter = RateLimiter(
+        max_failed_auth_attempts=3,
+        failed_auth_window_minutes=15,
+        block_duration_minutes=30,
+    )
+
+    assert not limiter.is_blocked("10.0.0.1")
+
+    attempts, blocked = limiter.record_failed_auth("10.0.0.1")
+    assert attempts == 1
+    assert not blocked
+
+    attempts, blocked = limiter.record_failed_auth("10.0.0.1")
+    assert attempts == 2
+    assert not blocked
+
+    attempts, blocked = limiter.record_failed_auth("10.0.0.1")
+    assert attempts == 3
+    assert blocked
+
+    assert limiter.is_blocked("10.0.0.1")
+
+    blocked_ips = limiter.get_blocked_ips()
+    assert len(blocked_ips) == 1
+    assert blocked_ips[0]["ip"] == "10.0.0.1"
+    assert "failed_auth" in blocked_ips[0]["reason"]
+
+
+def test_clear_failed_auth():
+    limiter = RateLimiter(max_failed_auth_attempts=5)
+
+    limiter.record_failed_auth("192.168.1.1")
+    limiter.record_failed_auth("192.168.1.1")
+
+    stats = limiter.get_failed_auth_attempts("192.168.1.1")
+    assert stats["attempts"] == 2
+
+    limiter.clear_failed_auth("192.168.1.1")
+
+    stats = limiter.get_failed_auth_attempts("192.168.1.1")
+    assert stats["attempts"] == 0
+
+
+def test_failed_auth_multiple_ips():
+    limiter = RateLimiter(max_failed_auth_attempts=5)
+
+    limiter.record_failed_auth("10.0.0.1")
+    limiter.record_failed_auth("10.0.0.2")
+    limiter.record_failed_auth("10.0.0.1")
+
+    all_stats = limiter.get_failed_auth_attempts()
+    assert "10.0.0.1" in all_stats["ips_with_failures"]
+    assert "10.0.0.2" in all_stats["ips_with_failures"]
+    assert all_stats["ips_with_failures"]["10.0.0.1"] == 2
+    assert all_stats["ips_with_failures"]["10.0.0.2"] == 1
+
+
+def test_unblock_clears_failed_auth():
+    limiter = RateLimiter(max_failed_auth_attempts=3)
+
+    for _ in range(3):
+        limiter.record_failed_auth("10.0.0.5")
+
+    assert limiter.is_blocked("10.0.0.5")
+    assert limiter.get_failed_auth_attempts("10.0.0.5")["attempts"] == 3
+
+    limiter.unblock_ip("10.0.0.5")
+
+    assert not limiter.is_blocked("10.0.0.5")
+    assert limiter.get_failed_auth_attempts("10.0.0.5")["attempts"] == 0

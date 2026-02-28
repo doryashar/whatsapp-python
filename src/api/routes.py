@@ -364,3 +364,22 @@ async def rate_limit_stats(
     ip: Optional[str] = Query(None, description="Get stats for specific IP"),
 ):
     return rate_limiter.get_stats(ip)
+
+
+@admin_router.get("/rate-limit/failed-auth")
+async def list_failed_auth_attempts(
+    _: str = Depends(get_admin_key),
+    ip: Optional[str] = Query(
+        None, description="Get failed auth attempts for specific IP"
+    ),
+):
+    return rate_limiter.get_failed_auth_attempts(ip)
+
+
+@admin_router.delete("/rate-limit/failed-auth")
+async def clear_failed_auth_attempts(
+    ip: str = Query(..., description="IP address to clear failed attempts for"),
+    _: str = Depends(get_admin_key),
+):
+    rate_limiter.clear_failed_auth(ip)
+    return {"status": "cleared", "ip": ip}

@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = Field(default=60, alias="RATE_LIMIT_PER_MINUTE")
     rate_limit_per_hour: int = Field(default=1000, alias="RATE_LIMIT_PER_HOUR")
     rate_limit_block_minutes: int = Field(default=15, alias="RATE_LIMIT_BLOCK_MINUTES")
+    max_failed_auth_attempts: int = Field(default=5, alias="MAX_FAILED_AUTH_ATTEMPTS")
+    failed_auth_window_minutes: int = Field(
+        default=15, alias="FAILED_AUTH_WINDOW_MINUTES"
+    )
 
     model_config = {"env_prefix": "", "populate_by_name": True}
 
