@@ -78,12 +78,12 @@ class TestTenantManager:
 
     @pytest.mark.asyncio
     async def test_message_store_isolated(self, fresh_tenant_manager):
-        from src.store.messages import InboundMessage
+        from src.store.messages import StoredMessage
 
         tenant1, _ = await fresh_tenant_manager.create_tenant("user1")
         tenant2, _ = await fresh_tenant_manager.create_tenant("user2")
 
-        msg = InboundMessage(
+        msg = StoredMessage(
             id="msg1",
             from_jid="12345",
             chat_jid="12345",

@@ -57,6 +57,7 @@ class SendReactionRequest(BaseModel):
     chat: str
     message_id: str
     emoji: str
+    from_me: bool = False
 
 
 class SendReactionResponse(BaseModel):
@@ -104,3 +105,34 @@ class WebhookListResponse(BaseModel):
 class WebhookOperationResponse(BaseModel):
     status: str
     url: Optional[str] = None
+
+
+class SendPollRequest(BaseModel):
+    to: str
+    name: str
+    values: list[str]
+    selectable_count: int = 1
+
+
+class SendPollResponse(BaseModel):
+    message_id: str
+    to: str
+
+
+class SendTypingResponse(BaseModel):
+    status: str
+    to: str
+
+
+class AuthExistsResponse(BaseModel):
+    exists: bool
+
+
+class AuthAgeResponse(BaseModel):
+    age_ms: Optional[int] = None
+
+
+class SelfIdResponse(BaseModel):
+    jid: Optional[str] = None
+    e164: Optional[str] = None
+    name: Optional[str] = None

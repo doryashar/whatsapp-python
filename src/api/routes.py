@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query, Depends
 from ..bridge import BridgeError
 from ..tenant import Tenant, tenant_manager
-from ..store.messages import InboundMessage
 from ..config import logger
 from ..models import (
     SendMessageRequest,
@@ -16,6 +15,13 @@ from ..models import (
     AddWebhookRequest,
     WebhookListResponse,
     WebhookOperationResponse,
+    InboundMessage,
+    SendPollRequest,
+    SendPollResponse,
+    SendTypingResponse,
+    AuthExistsResponse,
+    AuthAgeResponse,
+    SelfIdResponse,
 )
 from .auth import get_tenant, get_admin_key
 
@@ -142,6 +148,7 @@ async def send_reaction(
             chat=request.chat,
             message_id=request.message_id,
             emoji=request.emoji,
+            from_me=request.from_me,
         )
         logger.debug(f"Reaction result: {result.get('status')}")
         return SendReactionResponse(
@@ -152,6 +159,92 @@ async def send_reaction(
         )
     except BridgeError as e:
         logger.error(f"Send reaction failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/poll", response_model=SendPollResponse)
+async def send_poll(
+    request: SendPollRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(
+        f"Send poll: tenant={tenant.name}, to={request.to}, name={request.name}"
+    )
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.send_poll(
+            to=request.to,
+            name=request.name,
+            values=request.values,
+            selectable_count=request.selectable_count,
+        )
+        logger.info(
+            f"Poll sent: message_id={result.get('message_id')}, to={result.get('to')}"
+        )
+        return SendPollResponse(
+            message_id=result.get("message_id", "unknown"),
+            to=result.get("to", request.to),
+        )
+    except BridgeError as e:
+        logger.error(f"Send poll failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/typing", response_model=SendTypingResponse)
+async def send_typing(
+    to: str = Query(..., description="Recipient phone number or JID"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.debug(f"Send typing: tenant={tenant.name}, to={to}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.send_typing(to=to)
+        return SendTypingResponse(
+            status=result.get("status", "typing"),
+            to=result.get("to", to),
+        )
+    except BridgeError as e:
+        logger.error(f"Send typing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/auth/exists", response_model=AuthExistsResponse)
+async def check_auth_exists(tenant: Tenant = Depends(get_tenant)):
+    logger.debug(f"Check auth exists: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.auth_exists()
+        return AuthExistsResponse(exists=result.get("exists", False))
+    except BridgeError as e:
+        logger.error(f"Check auth exists failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/auth/age", response_model=AuthAgeResponse)
+async def get_auth_age(tenant: Tenant = Depends(get_tenant)):
+    logger.debug(f"Get auth age: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.auth_age()
+        return AuthAgeResponse(age_ms=result.get("age_ms"))
+    except BridgeError as e:
+        logger.error(f"Get auth age failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/auth/self", response_model=SelfIdResponse)
+async def get_self_id(tenant: Tenant = Depends(get_tenant)):
+    logger.debug(f"Get self ID: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.self_id()
+        return SelfIdResponse(
+            jid=result.get("jid"),
+            e164=result.get("e164"),
+            name=result.get("name"),
+        )
+    except BridgeError as e:
+        logger.error(f"Get self ID failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

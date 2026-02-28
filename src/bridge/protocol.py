@@ -32,6 +32,6 @@ def encode_request(
 
 def decode_response(data: str) -> JsonRpcResponse | JsonRpcEvent:
     parsed = json.loads(data)
-    if "id" in parsed or "result" in parsed or "error" in parsed:
+    if "id" in parsed and ("result" in parsed or "error" in parsed):
         return JsonRpcResponse(**parsed)
     return JsonRpcEvent(**parsed)

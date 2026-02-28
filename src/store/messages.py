@@ -3,7 +3,7 @@ from typing import Optional
 from ..config import settings
 
 
-class InboundMessage:
+class StoredMessage:
     def __init__(
         self,
         id: str,
@@ -27,7 +27,7 @@ class InboundMessage:
     def to_dict(self) -> dict:
         return {
             "id": self.id,
-            "from": self.from_jid,
+            "from_jid": self.from_jid,
             "chat_jid": self.chat_jid,
             "is_group": self.is_group,
             "push_name": self.push_name,
@@ -40,9 +40,9 @@ class InboundMessage:
 class MessageStore:
     def __init__(self, max_messages: int = 1000):
         self.max_messages = max_messages
-        self._messages: deque[InboundMessage] = deque(maxlen=max_messages)
+        self._messages: deque[StoredMessage] = deque(maxlen=max_messages)
 
-    def add(self, msg: InboundMessage) -> None:
+    def add(self, msg: StoredMessage) -> None:
         self._messages.append(msg)
 
     def list(self, limit: int = 100, offset: int = 0) -> tuple[list[dict], int]:

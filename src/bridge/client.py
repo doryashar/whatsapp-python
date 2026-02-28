@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Awaitable, Union, cast
 from pathlib import Path
 
 from .protocol import encode_request, decode_response, JsonRpcEvent, JsonRpcResponse
@@ -147,7 +147,7 @@ class BaileysBridge:
             try:
                 result = handler(method, params, self.tenant_id)
                 if asyncio.iscoroutine(result):
-                    await result
+                    await result  # type: ignore[arg-type]
             except Exception as e:
                 logger.debug(f"Event handler error: {e}")
 
@@ -159,7 +159,7 @@ class BaileysBridge:
         request_id = self._request_id
 
         logger.debug(f"Bridge call: {method}(id={request_id}, params={params})")
-        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
 
         data = encode_request(method, params, request_id) + "\n"
@@ -184,11 +184,48 @@ class BaileysBridge:
             "send_message", {"to": to, "text": text, "media_url": media_url}
         )
 
-    async def send_reaction(self, chat: str, message_id: str, emoji: str) -> dict:
+    async def send_reaction(
+        self, chat: str, message_id: str, emoji: str, from_me: bool = False
+    ) -> dict:
         logger.debug(f"Bridge send_reaction: chat={chat}, emoji={emoji}")
         return await self.call(
-            "send_reaction", {"chat": chat, "message_id": message_id, "emoji": emoji}
+            "send_reaction",
+            {
+                "chat": chat,
+                "message_id": message_id,
+                "emoji": emoji,
+                "from_me": from_me,
+            },
         )
+
+    async def send_poll(
+        self, to: str, name: str, values: list[str], selectable_count: int = 1
+    ) -> dict:
+        logger.info(f"Bridge send_poll: to={to}, name={name}")
+        return await self.call(
+            "send_poll",
+            {
+                "to": to,
+                "poll": {
+                    "name": name,
+                    "values": values,
+                    "selectableCount": selectable_count,
+                },
+            },
+        )
+
+    async def send_typing(self, to: str) -> dict:
+        logger.debug(f"Bridge send_typing: to={to}")
+        return await self.call("send_typing", {"to": to})
+
+    async def auth_exists(self) -> dict:
+        return await self.call("auth_exists")
+
+    async def auth_age(self) -> dict:
+        return await self.call("auth_age")
+
+    async def self_id(self) -> dict:
+        return await self.call("self_id")
 
     async def get_status(self) -> dict:
         return await self.call("get_status")

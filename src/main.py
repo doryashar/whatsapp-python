@@ -10,7 +10,7 @@ from .api import router, admin_router
 from .tenant import tenant_manager
 from .store.database import Database
 from .webhooks import WebhookSender
-from .store.messages import InboundMessage
+from .store.messages import StoredMessage
 
 
 @asynccontextmanager
@@ -105,7 +105,7 @@ def handle_bridge_event(
         )
 
     if event_type == "message":
-        msg = InboundMessage(
+        msg = StoredMessage(
             id=params["id"],
             from_jid=params["from"],
             chat_jid=params["chat_jid"],

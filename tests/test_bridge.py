@@ -25,6 +25,7 @@ def test_decode_response():
     data = '{"jsonrpc":"2.0","result":{"status":"ok"},"id":1}'
     result = decode_response(data)
     assert isinstance(result, JsonRpcResponse)
+    assert result.result is not None
     assert result.result["status"] == "ok"
     assert result.id == 1
 
@@ -33,6 +34,7 @@ def test_decode_response_error():
     data = '{"jsonrpc":"2.0","error":{"code":-32000,"message":"Error"},"id":1}'
     result = decode_response(data)
     assert isinstance(result, JsonRpcResponse)
+    assert result.error is not None
     assert result.error["code"] == -32000
 
 

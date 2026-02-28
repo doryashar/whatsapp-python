@@ -175,7 +175,7 @@ async function createSocket() {
       const isGroup = isJidGroup(jid);
       const isBroadcast = jid.endsWith("@broadcast");
       const isStatus = jid === "status@broadcast";
-      return !(isGroup || isBroadcast || isStatus);
+      return isBroadcast || isStatus;
     },
   });
 
@@ -298,7 +298,7 @@ async function createSocket() {
       if (msg.key.fromMe) continue;
 
       const remoteJid = msg.key.remoteJid;
-      if (remoteJid.endsWith("@status") || remoteJid.endsWith("@broadcast")) {
+      if (remoteJid === "status@broadcast" || remoteJid.endsWith("@broadcast")) {
         continue;
       }
 
@@ -414,7 +414,7 @@ const methods = {
   },
 
   async send_reaction(params) {
-    const { chat, message_id, emoji } = params;
+    const { chat, message_id, emoji, from_me } = params;
 
     if (!sock || connectionState !== "connected") {
       throw new Error("Not connected to WhatsApp");
@@ -425,11 +425,71 @@ const methods = {
     await sock.sendMessage(jid, {
       react: {
         text: emoji,
-        key: { remoteJid: jid, id: message_id, fromMe: false },
+        key: { remoteJid: jid, id: message_id, fromMe: from_me ?? false },
       },
     });
 
     return { status: "reacted", chat: jid, message_id, emoji };
+  },
+
+  async send_poll(params) {
+    const { to, poll } = params;
+    const { name, values, selectableCount, messageContextInfo } = poll;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(to);
+
+    const result = await sock.sendMessage(jid, {
+      poll: {
+        name,
+        values,
+        selectableCount: selectableCount ?? 1,
+        messageContextInfo,
+      },
+    });
+
+    const messageId = result?.key?.id || "unknown";
+    sendEvent("sent", { message_id: messageId, to: jid, type: "poll" });
+
+    return { message_id: messageId, to: jid };
+  },
+
+  async send_typing(params) {
+    const { to } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(to);
+    await sock.sendPresenceUpdate("composing", jid);
+
+    return { status: "typing", to: jid };
+  },
+
+  async auth_exists() {
+    const credsPath = path.join(AUTH_DIR, "creds.json");
+    return { exists: fs.existsSync(credsPath) };
+  },
+
+  async auth_age() {
+    const credsPath = path.join(AUTH_DIR, "creds.json");
+    if (!fs.existsSync(credsPath)) {
+      return { age_ms: null };
+    }
+    const stats = fs.statSync(credsPath);
+    return { age_ms: Date.now() - stats.mtimeMs };
+  },
+
+  async self_id() {
+    return {
+      jid: selfInfo?.jid || null,
+      e164: selfInfo?.phone || null,
+      name: selfInfo?.name || null,
+    };
   },
 
   async get_status() {
