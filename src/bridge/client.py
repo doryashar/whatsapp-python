@@ -4,7 +4,10 @@ from typing import Any, Callable, Optional, Awaitable, Union, cast
 from pathlib import Path
 
 from .protocol import encode_request, decode_response, JsonRpcEvent, JsonRpcResponse
-from ..config import settings, logger
+from ..config import settings
+from ..telemetry import get_logger
+
+logger = get_logger("whatsapp.bridge")
 
 
 class BridgeError(Exception):

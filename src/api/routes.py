@@ -1,7 +1,9 @@
 from fastapi import APIRouter, HTTPException, Query, Depends
+from typing import Optional
 from ..bridge import BridgeError
 from ..tenant import Tenant, tenant_manager
-from ..config import logger
+from ..telemetry import get_logger
+from ..middleware import rate_limiter
 from ..models import (
     SendMessageRequest,
     SendMessageResponse,
@@ -24,6 +26,8 @@ from ..models import (
     SelfIdResponse,
 )
 from .auth import get_tenant, get_admin_key
+
+logger = get_logger("whatsapp.api")
 
 router = APIRouter(prefix="/api", tags=["WhatsApp"])
 admin_router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -328,3 +332,35 @@ async def delete_tenant(
     if await tenant_manager.delete_tenant(api_key):
         return {"status": "deleted"}
     raise HTTPException(status_code=404, detail="Tenant not found")
+
+
+@admin_router.get("/rate-limit/blocked")
+async def list_blocked_ips(_: str = Depends(get_admin_key)):
+    return {"blocked_ips": rate_limiter.get_blocked_ips()}
+
+
+@admin_router.post("/rate-limit/block")
+async def block_ip(
+    ip: str = Query(..., description="IP address to block"),
+    _: str = Depends(get_admin_key),
+):
+    rate_limiter.block_ip(ip, reason="admin")
+    return {"status": "blocked", "ip": ip}
+
+
+@admin_router.delete("/rate-limit/block")
+async def unblock_ip(
+    ip: str = Query(..., description="IP address to unblock"),
+    _: str = Depends(get_admin_key),
+):
+    if rate_limiter.unblock_ip(ip):
+        return {"status": "unblocked", "ip": ip}
+    raise HTTPException(status_code=404, detail="IP not found in block list")
+
+
+@admin_router.get("/rate-limit/stats")
+async def rate_limit_stats(
+    _: str = Depends(get_admin_key),
+    ip: Optional[str] = Query(None, description="Get stats for specific IP"),
+):
+    return rate_limiter.get_stats(ip)

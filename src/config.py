@@ -1,8 +1,6 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from pathlib import Path
-import logging
-import sys
 
 
 class Settings(BaseSettings):
@@ -32,13 +30,15 @@ class Settings(BaseSettings):
     admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")
     database_url: str = Field(default="", alias="DATABASE_URL")
 
+    otlp_endpoint: str = Field(default="", alias="OTEL_EXPORTER_OTLP_ENDPOINT")
+    service_name: str = Field(default="whatsapp-api", alias="OTEL_SERVICE_NAME")
+    service_version: str = Field(default="2.0.0", alias="OTEL_SERVICE_VERSION")
+
+    rate_limit_per_minute: int = Field(default=60, alias="RATE_LIMIT_PER_MINUTE")
+    rate_limit_per_hour: int = Field(default=1000, alias="RATE_LIMIT_PER_HOUR")
+    rate_limit_block_minutes: int = Field(default=15, alias="RATE_LIMIT_BLOCK_MINUTES")
+
     model_config = {"env_prefix": "", "populate_by_name": True}
 
 
 settings = Settings()
-
-logger = logging.getLogger("whatsapp")
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-logger.addHandler(handler)
-logger.setLevel(logging.DEBUG if settings.debug else logging.INFO)

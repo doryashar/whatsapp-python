@@ -5,17 +5,30 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from .config import settings, logger
+from .config import settings
+from .telemetry import setup_telemetry, instrument_app, get_logger
 from .api import router, admin_router
+from .middleware import RateLimitMiddleware, rate_limiter
 from .tenant import tenant_manager
 from .store.database import Database
 from .webhooks import WebhookSender
 from .store.messages import StoredMessage
 
+setup_telemetry(
+    service_name=settings.service_name,
+    service_version=settings.service_version,
+    otlp_endpoint=settings.otlp_endpoint if settings.otlp_endpoint else None,
+    debug=settings.debug,
+)
+logger = get_logger()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting WhatsApp API...")
+    logger.info(
+        "Starting WhatsApp API",
+        extra={"service": settings.service_name, "version": settings.service_version},
+    )
     db = Database(settings.database_url, settings.data_dir)
     tenant_manager.set_database(db)
     await tenant_manager.initialize()
@@ -132,6 +145,8 @@ def handle_bridge_event(
         logger.debug(
             f"Message received for tenant {tenant.name}: from={params.get('from')}"
         )
+    else:
+        logger.debug(f"Unknown event type arrived: {event_type} with params: {params}")
 
     if event_type == "message":
         msg = StoredMessage(
@@ -170,6 +185,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+instrument_app(app)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -177,6 +194,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(RateLimitMiddleware, rate_limiter=rate_limiter)
 
 app.include_router(router)
 app.include_router(admin_router)

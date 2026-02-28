@@ -3,7 +3,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from ..config import logger
+from ..telemetry import get_logger
+
+logger = get_logger("whatsapp.database")
 
 
 class Database:

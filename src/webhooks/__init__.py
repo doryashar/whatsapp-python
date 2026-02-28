@@ -2,14 +2,14 @@ import asyncio
 import hashlib
 import hmac
 import json
-import logging
 import time
 from typing import Any, Optional
 import httpx
 
 from ..config import settings
+from ..telemetry import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("whatsapp.webhooks")
 
 
 class WebhookSender:

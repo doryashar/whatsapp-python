@@ -7,10 +7,13 @@ from typing import Optional, Callable, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ..config import settings, logger
+from ..config import settings
+from ..telemetry import get_logger
 from ..bridge.client import BaileysBridge
 from ..store.messages import MessageStore
 from ..store.database import Database
+
+logger = get_logger("whatsapp.tenant")
 
 
 @dataclass
