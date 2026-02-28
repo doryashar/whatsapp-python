@@ -57,7 +57,8 @@ class Database:
                     self_name TEXT,
                     last_connected_at TIMESTAMP,
                     last_disconnected_at TIMESTAMP,
-                    has_auth BOOLEAN DEFAULT FALSE
+                    has_auth BOOLEAN DEFAULT FALSE,
+                    creds_json JSONB
                 )
             """)
             await conn.execute("""
@@ -81,6 +82,9 @@ class Database:
             await conn.execute("""
                 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS has_auth BOOLEAN DEFAULT FALSE
             """)
+            await conn.execute("""
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS creds_json JSONB
+            """)
 
     async def _create_tables_sqlite(self) -> None:
         logger.debug("Creating SQLite tables if not exist")
@@ -96,7 +100,8 @@ class Database:
                 self_name TEXT,
                 last_connected_at TEXT,
                 last_disconnected_at TEXT,
-                has_auth INTEGER DEFAULT 0
+                has_auth INTEGER DEFAULT 0,
+                creds_json TEXT
             )
         """)
         await self._pool.commit()
@@ -162,7 +167,7 @@ class Database:
                 rows = await conn.fetch(
                     """SELECT api_key_hash, name, created_at, webhook_urls, 
                               connection_state, self_jid, self_phone, self_name,
-                              last_connected_at, last_disconnected_at, has_auth
+                              last_connected_at, last_disconnected_at, has_auth, creds_json
                        FROM tenants"""
                 )
                 tenants = [
@@ -180,6 +185,7 @@ class Database:
                         "last_connected_at": row["last_connected_at"],
                         "last_disconnected_at": row["last_disconnected_at"],
                         "has_auth": bool(row["has_auth"]),
+                        "creds_json": row["creds_json"],
                     }
                     for row in rows
                 ]
@@ -187,7 +193,7 @@ class Database:
             async with self._pool.execute(
                 """SELECT api_key_hash, name, created_at, webhook_urls,
                           connection_state, self_jid, self_phone, self_name,
-                          last_connected_at, last_disconnected_at, has_auth
+                          last_connected_at, last_disconnected_at, has_auth, creds_json
                    FROM tenants"""
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -208,6 +214,7 @@ class Database:
                         if row[9]
                         else None,
                         "has_auth": bool(row[10]),
+                        "creds_json": json.loads(row[11]) if row[11] else None,
                     }
                     for row in rows
                 ]
@@ -354,3 +361,69 @@ class Database:
                 )
             await self._pool.commit()
         logger.debug("Session state updated")
+
+    async def save_creds(self, api_key_hash: str, creds_json: dict) -> None:
+        logger.debug(f"Saving credentials for tenant: hash={api_key_hash[:16]}...")
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE tenants SET creds_json = $1, has_auth = TRUE
+                    WHERE api_key_hash = $2
+                    """,
+                    json.dumps(creds_json),
+                    api_key_hash,
+                )
+        else:
+            await self._pool.execute(
+                """
+                UPDATE tenants SET creds_json = ?, has_auth = 1
+                WHERE api_key_hash = ?
+                """,
+                (json.dumps(creds_json), api_key_hash),
+            )
+            await self._pool.commit()
+        logger.debug("Credentials saved")
+
+    async def load_creds(self, api_key_hash: str) -> Optional[dict]:
+        logger.debug(f"Loading credentials for tenant: hash={api_key_hash[:16]}...")
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT creds_json FROM tenants WHERE api_key_hash = $1",
+                    api_key_hash,
+                )
+                if row and row["creds_json"]:
+                    creds = row["creds_json"]
+                    return json.loads(creds) if isinstance(creds, str) else creds
+        else:
+            async with self._pool.execute(
+                "SELECT creds_json FROM tenants WHERE api_key_hash = ?",
+                (api_key_hash,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    return json.loads(row[0])
+        return None
+
+    async def clear_creds(self, api_key_hash: str) -> None:
+        logger.debug(f"Clearing credentials for tenant: hash={api_key_hash[:16]}...")
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE tenants SET creds_json = NULL, has_auth = FALSE
+                    WHERE api_key_hash = $1
+                    """,
+                    api_key_hash,
+                )
+        else:
+            await self._pool.execute(
+                """
+                UPDATE tenants SET creds_json = NULL, has_auth = 0
+                WHERE api_key_hash = ?
+                """,
+                (api_key_hash,),
+            )
+            await self._pool.commit()
+        logger.debug("Credentials cleared")

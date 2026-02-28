@@ -24,15 +24,12 @@ class Settings(BaseSettings):
     )
 
     max_messages: int = Field(default=1000, alias="MAX_MESSAGES")
-    auto_login: bool = Field(default=False, alias="AUTO_LOGIN")
-
+    auto_login: bool = Field(default=True, alias="AUTO_LOGIN")
     webhook_urls: list[str] = Field(default_factory=list, alias="WEBHOOK_URLS")
     webhook_secret: str = Field(default="", alias="WEBHOOK_SECRET")
     webhook_timeout: int = Field(default=30, alias="WEBHOOK_TIMEOUT")
     webhook_retries: int = Field(default=3, alias="WEBHOOK_RETRIES")
-
     admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")
-
     database_url: str = Field(default="", alias="DATABASE_URL")
 
     model_config = {"env_prefix": "", "populate_by_name": True}

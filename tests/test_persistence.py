@@ -80,3 +80,62 @@ async def test_update_webhooks_persists():
         assert tenants[0]["webhook_urls"] == ["https://hook1.com", "https://hook2.com"]
 
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_credential_persistence():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        data_dir = Path(tmpdir)
+        db = Database("", data_dir)
+        await db.connect()
+
+        await db.save_tenant("hash1", "tenant1", datetime.utcnow(), [])
+
+        creds = {"me": {"id": "12345@s.whatsapp.net"}, "noiseKey": "abc123"}
+        await db.save_creds("hash1", creds)
+
+        loaded_creds = await db.load_creds("hash1")
+        assert loaded_creds is not None
+        assert loaded_creds["me"]["id"] == "12345@s.whatsapp.net"
+
+        tenants = await db.load_tenants()
+        assert tenants[0]["has_auth"] is True
+        assert tenants[0]["creds_json"] is not None
+
+        await db.clear_creds("hash1")
+        loaded_creds = await db.load_creds("hash1")
+        assert loaded_creds is None
+
+        tenants = await db.load_tenants()
+        assert tenants[0]["has_auth"] is False
+        assert tenants[0]["creds_json"] is None
+
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_session_state_persistence():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        data_dir = Path(tmpdir)
+        db = Database("", data_dir)
+        await db.connect()
+
+        await db.save_tenant("hash1", "tenant1", datetime.utcnow(), [])
+
+        await db.update_session_state(
+            "hash1",
+            "connected",
+            self_jid="123456789@s.whatsapp.net",
+            self_phone="123456789",
+            self_name="Test User",
+            has_auth=True,
+        )
+
+        tenants = await db.load_tenants()
+        assert tenants[0]["connection_state"] == "connected"
+        assert tenants[0]["self_jid"] == "123456789@s.whatsapp.net"
+        assert tenants[0]["self_phone"] == "123456789"
+        assert tenants[0]["self_name"] == "Test User"
+        assert tenants[0]["has_auth"] is True
+
+        await db.close()

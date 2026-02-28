@@ -179,7 +179,19 @@ async function createSocket() {
     },
   });
 
-  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("creds.update", async () => {
+    await saveCreds();
+    const credsPath = path.join(AUTH_DIR, "creds.json");
+    if (fs.existsSync(credsPath)) {
+      try {
+        const credsContent = JSON.parse(fs.readFileSync(credsPath, "utf-8"));
+        sendEvent("creds.update", { creds: credsContent });
+        logger.debug("Sent creds.update event to Python");
+      } catch (err) {
+        logger.error({ err: err.message }, "Failed to read creds.json for sync");
+      }
+    }
+  });
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr, receivedPendingNotifications, isNewLogin, isOnline } = update;

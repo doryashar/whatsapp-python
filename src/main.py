@@ -110,6 +110,8 @@ def handle_bridge_event(
                     tenant, "disconnected", has_auth=False
                 )
             )
+            asyncio.create_task(tenant_manager.clear_creds(tenant))
+            logger.info(f"Cleared credentials for logged out tenant: {tenant.name}")
         else:
             asyncio.create_task(
                 tenant_manager.update_session_state(tenant, "disconnected")
@@ -122,6 +124,11 @@ def handle_bridge_event(
     elif event_type == "connecting":
         logger.info(f"Tenant {tenant.name} connecting to WhatsApp...")
         asyncio.create_task(tenant_manager.update_session_state(tenant, "connecting"))
+    elif event_type == "creds.update":
+        creds = params.get("creds")
+        if creds:
+            asyncio.create_task(tenant_manager.save_creds(tenant, creds))
+            logger.info(f"Credentials saved for tenant: {tenant.name}")
     elif event_type == "message":
         logger.debug(
             f"Message received for tenant {tenant.name}: from={params.get('from')}"

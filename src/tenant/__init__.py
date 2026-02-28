@@ -1,6 +1,7 @@
 import secrets
 import hashlib
 import asyncio
+import json
 from pathlib import Path
 from typing import Optional, Callable, Any
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ class Tenant:
     last_connected_at: Optional[datetime] = None
     last_disconnected_at: Optional[datetime] = None
     has_auth: bool = False
+    creds_json: Optional[dict] = None
 
     def get_auth_dir(self, base_dir: Path) -> Path:
         auth_dir = (
@@ -39,7 +41,7 @@ class Tenant:
         return auth_dir
 
     def has_valid_auth(self) -> bool:
-        return self.has_auth or self.self_jid is not None
+        return self.has_auth or self.creds_json is not None
 
 
 class TenantManager:
@@ -85,26 +87,41 @@ class TenantManager:
                 last_connected_at=data.get("last_connected_at"),
                 last_disconnected_at=data.get("last_disconnected_at"),
                 has_auth=data.get("has_auth", False),
+                creds_json=data.get("creds_json"),
             )
             self._tenants[tenant.api_key_hash] = tenant
-            logger.debug(f"Loaded tenant: {tenant.name}, has_auth={tenant.has_auth}")
+            logger.debug(
+                f"Loaded tenant: {tenant.name}, has_auth={tenant.has_auth}, has_creds={tenant.creds_json is not None}"
+            )
 
         self._initialized = True
         logger.info(f"TenantManager initialized with {len(self._tenants)} tenants")
 
-    async def restore_sessions(self) -> None:
-        if not settings.auto_login:
-            logger.info("Auto-login disabled, skipping session restoration")
-            return
+    def _restore_creds_to_filesystem(self, tenant: Tenant) -> bool:
+        if not tenant.creds_json:
+            return False
 
-        logger.info("Restoring WhatsApp sessions for tenants with auth...")
+        auth_dir = tenant.get_auth_dir(self._base_auth_dir)
+        creds_file = auth_dir / "creds.json"
+
+        try:
+            with open(creds_file, "w") as f:
+                json.dump(tenant.creds_json, f)
+            logger.info(f"Restored credentials to filesystem for tenant: {tenant.name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to restore credentials for {tenant.name}: {e}")
+            return False
+
+    async def restore_sessions(self) -> None:
+        logger.info(
+            "Restoring WhatsApp sessions for tenants with stored credentials..."
+        )
         restored = 0
         for tenant in self._tenants.values():
-            auth_dir = tenant.get_auth_dir(self._base_auth_dir)
-            creds_file = auth_dir / "creds.json"
-
-            if creds_file.exists():
+            if tenant.creds_json:
                 logger.info(f"Restoring session for tenant: {tenant.name}")
+                self._restore_creds_to_filesystem(tenant)
                 try:
                     bridge = await self.get_or_create_bridge(tenant)
                     result = await bridge.login()
@@ -117,9 +134,23 @@ class TenantManager:
                 except Exception as e:
                     logger.error(f"Failed to restore session for {tenant.name}: {e}")
             else:
-                logger.debug(f"No auth credentials for tenant: {tenant.name}")
+                logger.debug(f"No stored credentials for tenant: {tenant.name}")
 
         logger.info(f"Session restoration complete: {restored} sessions restored")
+
+    async def save_creds(self, tenant: Tenant, creds_json: dict) -> None:
+        tenant.creds_json = creds_json
+        tenant.has_auth = True
+        if self._db:
+            await self._db.save_creds(tenant.api_key_hash, creds_json)
+            logger.info(f"Credentials saved to database for tenant: {tenant.name}")
+
+    async def clear_creds(self, tenant: Tenant) -> None:
+        tenant.creds_json = None
+        tenant.has_auth = False
+        if self._db:
+            await self._db.clear_creds(tenant.api_key_hash)
+            logger.info(f"Credentials cleared from database for tenant: {tenant.name}")
 
     async def close(self) -> None:
         if self._db:
@@ -197,12 +228,14 @@ class TenantManager:
     async def get_or_create_bridge(self, tenant: Tenant) -> BaileysBridge:
         if tenant.bridge is None:
             logger.debug(f"Creating bridge for tenant: {tenant.name}")
+            if tenant.creds_json:
+                self._restore_creds_to_filesystem(tenant)
             auth_dir = tenant.get_auth_dir(self._base_auth_dir)
             tenant.bridge = BaileysBridge(
                 bridge_path=settings.bridge_path,
                 auth_dir=auth_dir,
                 tenant_id=tenant.api_key_hash,
-                auto_login=settings.auto_login,
+                auto_login=True,
             )
             if self._event_handler:
                 tenant.bridge.on_event(self._event_handler)
