@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from ..config import logger
 
@@ -50,8 +50,36 @@ class Database:
                     api_key_hash TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     created_at TIMESTAMP NOT NULL,
-                    webhook_urls JSONB DEFAULT '[]'
+                    webhook_urls JSONB DEFAULT '[]',
+                    connection_state TEXT DEFAULT 'disconnected',
+                    self_jid TEXT,
+                    self_phone TEXT,
+                    self_name TEXT,
+                    last_connected_at TIMESTAMP,
+                    last_disconnected_at TIMESTAMP,
+                    has_auth BOOLEAN DEFAULT FALSE
                 )
+            """)
+            await conn.execute("""
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS connection_state TEXT DEFAULT 'disconnected'
+            """)
+            await conn.execute("""
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS self_jid TEXT
+            """)
+            await conn.execute("""
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS self_phone TEXT
+            """)
+            await conn.execute("""
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS self_name TEXT
+            """)
+            await conn.execute("""
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_connected_at TIMESTAMP
+            """)
+            await conn.execute("""
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_disconnected_at TIMESTAMP
+            """)
+            await conn.execute("""
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS has_auth BOOLEAN DEFAULT FALSE
             """)
 
     async def _create_tables_sqlite(self) -> None:
@@ -61,7 +89,14 @@ class Database:
                 api_key_hash TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                webhook_urls TEXT DEFAULT '[]'
+                webhook_urls TEXT DEFAULT '[]',
+                connection_state TEXT DEFAULT 'disconnected',
+                self_jid TEXT,
+                self_phone TEXT,
+                self_name TEXT,
+                last_connected_at TEXT,
+                last_disconnected_at TEXT,
+                has_auth INTEGER DEFAULT 0
             )
         """)
         await self._pool.commit()
@@ -92,10 +127,30 @@ class Database:
         else:
             await self._pool.execute(
                 """
-                INSERT OR REPLACE INTO tenants (api_key_hash, name, created_at, webhook_urls)
-                VALUES (?, ?, ?, ?)
+                INSERT OR REPLACE INTO tenants (api_key_hash, name, created_at, webhook_urls, connection_state, self_jid, self_phone, self_name, last_connected_at, last_disconnected_at, has_auth)
+                VALUES (?, ?, ?, ?, 
+                    COALESCE((SELECT connection_state FROM tenants WHERE api_key_hash = ?), 'disconnected'),
+                    COALESCE((SELECT self_jid FROM tenants WHERE api_key_hash = ?), NULL),
+                    COALESCE((SELECT self_phone FROM tenants WHERE api_key_hash = ?), NULL),
+                    COALESCE((SELECT self_name FROM tenants WHERE api_key_hash = ?), NULL),
+                    COALESCE((SELECT last_connected_at FROM tenants WHERE api_key_hash = ?), NULL),
+                    COALESCE((SELECT last_disconnected_at FROM tenants WHERE api_key_hash = ?), NULL),
+                    COALESCE((SELECT has_auth FROM tenants WHERE api_key_hash = ?), 0)
+                )
                 """,
-                (api_key_hash, name, created_at.isoformat(), json.dumps(webhook_urls)),
+                (
+                    api_key_hash,
+                    name,
+                    created_at.isoformat(),
+                    json.dumps(webhook_urls),
+                    api_key_hash,
+                    api_key_hash,
+                    api_key_hash,
+                    api_key_hash,
+                    api_key_hash,
+                    api_key_hash,
+                    api_key_hash,
+                ),
             )
             await self._pool.commit()
         logger.debug(f"Tenant saved: {name}")
@@ -105,7 +160,10 @@ class Database:
         if self._is_postgres:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
-                    "SELECT api_key_hash, name, created_at, webhook_urls FROM tenants"
+                    """SELECT api_key_hash, name, created_at, webhook_urls, 
+                              connection_state, self_jid, self_phone, self_name,
+                              last_connected_at, last_disconnected_at, has_auth
+                       FROM tenants"""
                 )
                 tenants = [
                     {
@@ -115,12 +173,22 @@ class Database:
                         "webhook_urls": json.loads(row["webhook_urls"])
                         if isinstance(row["webhook_urls"], str)
                         else row["webhook_urls"],
+                        "connection_state": row["connection_state"] or "disconnected",
+                        "self_jid": row["self_jid"],
+                        "self_phone": row["self_phone"],
+                        "self_name": row["self_name"],
+                        "last_connected_at": row["last_connected_at"],
+                        "last_disconnected_at": row["last_disconnected_at"],
+                        "has_auth": bool(row["has_auth"]),
                     }
                     for row in rows
                 ]
         else:
             async with self._pool.execute(
-                "SELECT api_key_hash, name, created_at, webhook_urls FROM tenants"
+                """SELECT api_key_hash, name, created_at, webhook_urls,
+                          connection_state, self_jid, self_phone, self_name,
+                          last_connected_at, last_disconnected_at, has_auth
+                   FROM tenants"""
             ) as cursor:
                 rows = await cursor.fetchall()
                 tenants = [
@@ -129,6 +197,17 @@ class Database:
                         "name": row[1],
                         "created_at": datetime.fromisoformat(row[2]),
                         "webhook_urls": json.loads(row[3]),
+                        "connection_state": row[4] or "disconnected",
+                        "self_jid": row[5],
+                        "self_phone": row[6],
+                        "self_name": row[7],
+                        "last_connected_at": datetime.fromisoformat(row[8])
+                        if row[8]
+                        else None,
+                        "last_disconnected_at": datetime.fromisoformat(row[9])
+                        if row[9]
+                        else None,
+                        "has_auth": bool(row[10]),
                     }
                     for row in rows
                 ]
@@ -171,3 +250,107 @@ class Database:
             )
             await self._pool.commit()
         logger.debug("Webhooks updated")
+
+    async def update_session_state(
+        self,
+        api_key_hash: str,
+        connection_state: str,
+        self_jid: Optional[str] = None,
+        self_phone: Optional[str] = None,
+        self_name: Optional[str] = None,
+        has_auth: Optional[bool] = None,
+    ) -> None:
+        logger.debug(
+            f"Updating session state for tenant: hash={api_key_hash[:16]}..., state={connection_state}"
+        )
+        now = datetime.utcnow()
+
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                if connection_state == "connected":
+                    await conn.execute(
+                        """
+                        UPDATE tenants SET 
+                            connection_state = $1,
+                            self_jid = COALESCE($2, self_jid),
+                            self_phone = COALESCE($3, self_phone),
+                            self_name = COALESCE($4, self_name),
+                            last_connected_at = $5,
+                            has_auth = COALESCE($6, has_auth)
+                        WHERE api_key_hash = $7
+                        """,
+                        connection_state,
+                        self_jid,
+                        self_phone,
+                        self_name,
+                        now,
+                        has_auth,
+                        api_key_hash,
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE tenants SET 
+                            connection_state = $1,
+                            self_jid = COALESCE($2, self_jid),
+                            self_phone = COALESCE($3, self_phone),
+                            self_name = COALESCE($4, self_name),
+                            last_disconnected_at = $5,
+                            has_auth = COALESCE($6, has_auth)
+                        WHERE api_key_hash = $7
+                        """,
+                        connection_state,
+                        self_jid,
+                        self_phone,
+                        self_name,
+                        now,
+                        has_auth,
+                        api_key_hash,
+                    )
+        else:
+            if connection_state == "connected":
+                await self._pool.execute(
+                    """
+                    UPDATE tenants SET 
+                        connection_state = ?,
+                        self_jid = COALESCE(?, self_jid),
+                        self_phone = COALESCE(?, self_phone),
+                        self_name = COALESCE(?, self_name),
+                        last_connected_at = ?,
+                        has_auth = COALESCE(?, has_auth)
+                    WHERE api_key_hash = ?
+                    """,
+                    (
+                        connection_state,
+                        self_jid,
+                        self_phone,
+                        self_name,
+                        now.isoformat(),
+                        1 if has_auth else None,
+                        api_key_hash,
+                    ),
+                )
+            else:
+                await self._pool.execute(
+                    """
+                    UPDATE tenants SET 
+                        connection_state = ?,
+                        self_jid = COALESCE(?, self_jid),
+                        self_phone = COALESCE(?, self_phone),
+                        self_name = COALESCE(?, self_name),
+                        last_disconnected_at = ?,
+                        has_auth = COALESCE(?, has_auth)
+                    WHERE api_key_hash = ?
+                    """,
+                    (
+                        connection_state,
+                        self_jid,
+                        self_phone,
+                        self_name,
+                        now.isoformat(),
+                        1 if has_auth else None,
+                        api_key_hash,
+                    ),
+                )
+            await self._pool.commit()
+        logger.debug("Session state updated")

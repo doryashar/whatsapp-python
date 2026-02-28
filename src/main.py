@@ -19,6 +19,7 @@ async def lifespan(app: FastAPI):
     db = Database(settings.database_url, settings.data_dir)
     tenant_manager.set_database(db)
     await tenant_manager.initialize()
+    await tenant_manager.restore_sessions()
     logger.info("WhatsApp API ready")
     yield
     logger.info("Shutting down WhatsApp API...")
@@ -84,6 +85,16 @@ def handle_bridge_event(
         logger.info(
             f"Tenant {tenant.name} connected: jid={params.get('jid')}, phone={params.get('phone')}"
         )
+        asyncio.create_task(
+            tenant_manager.update_session_state(
+                tenant,
+                "connected",
+                self_jid=params.get("jid"),
+                self_phone=params.get("phone"),
+                self_name=params.get("name"),
+                has_auth=True,
+            )
+        )
     elif event_type == "disconnected":
         reason = params.get("reason")
         reason_name = params.get("reason_name", "unknown")
@@ -93,12 +104,24 @@ def handle_bridge_event(
             f"Tenant {tenant.name} disconnected: reason={reason} ({reason_name}), "
             f"error={error}, should_reconnect={should_reconnect}"
         )
+        if reason_name == "loggedOut":
+            asyncio.create_task(
+                tenant_manager.update_session_state(
+                    tenant, "disconnected", has_auth=False
+                )
+            )
+        else:
+            asyncio.create_task(
+                tenant_manager.update_session_state(tenant, "disconnected")
+            )
     elif event_type == "reconnecting":
         logger.info(f"Tenant {tenant.name} reconnecting: reason={params.get('reason')}")
+        asyncio.create_task(tenant_manager.update_session_state(tenant, "connecting"))
     elif event_type == "reconnect_failed":
         logger.error(f"Tenant {tenant.name} reconnect failed: {params.get('error')}")
     elif event_type == "connecting":
         logger.info(f"Tenant {tenant.name} connecting to WhatsApp...")
+        asyncio.create_task(tenant_manager.update_session_state(tenant, "connecting"))
     elif event_type == "message":
         logger.debug(
             f"Message received for tenant {tenant.name}: from={params.get('from')}"

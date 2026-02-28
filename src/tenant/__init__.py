@@ -23,6 +23,13 @@ class Tenant:
     )
     webhook_urls: list[str] = field(default_factory=list)
     _raw_api_key: Optional[str] = None
+    connection_state: str = "disconnected"
+    self_jid: Optional[str] = None
+    self_phone: Optional[str] = None
+    self_name: Optional[str] = None
+    last_connected_at: Optional[datetime] = None
+    last_disconnected_at: Optional[datetime] = None
+    has_auth: bool = False
 
     def get_auth_dir(self, base_dir: Path) -> Path:
         auth_dir = (
@@ -30,6 +37,9 @@ class Tenant:
         )
         auth_dir.mkdir(parents=True, exist_ok=True)
         return auth_dir
+
+    def has_valid_auth(self) -> bool:
+        return self.has_auth or self.self_jid is not None
 
 
 class TenantManager:
@@ -68,12 +78,48 @@ class TenantManager:
                 created_at=data["created_at"],
                 message_store=MessageStore(max_messages=settings.max_messages),
                 webhook_urls=data.get("webhook_urls", []),
+                connection_state=data.get("connection_state", "disconnected"),
+                self_jid=data.get("self_jid"),
+                self_phone=data.get("self_phone"),
+                self_name=data.get("self_name"),
+                last_connected_at=data.get("last_connected_at"),
+                last_disconnected_at=data.get("last_disconnected_at"),
+                has_auth=data.get("has_auth", False),
             )
             self._tenants[tenant.api_key_hash] = tenant
-            logger.debug(f"Loaded tenant: {tenant.name}")
+            logger.debug(f"Loaded tenant: {tenant.name}, has_auth={tenant.has_auth}")
 
         self._initialized = True
         logger.info(f"TenantManager initialized with {len(self._tenants)} tenants")
+
+    async def restore_sessions(self) -> None:
+        if not settings.auto_login:
+            logger.info("Auto-login disabled, skipping session restoration")
+            return
+
+        logger.info("Restoring WhatsApp sessions for tenants with auth...")
+        restored = 0
+        for tenant in self._tenants.values():
+            auth_dir = tenant.get_auth_dir(self._base_auth_dir)
+            creds_file = auth_dir / "creds.json"
+
+            if creds_file.exists():
+                logger.info(f"Restoring session for tenant: {tenant.name}")
+                try:
+                    bridge = await self.get_or_create_bridge(tenant)
+                    result = await bridge.login()
+                    status = result.get("status", "unknown")
+                    if status in ("already_connected", "connected"):
+                        restored += 1
+                        logger.info(f"Session restored for tenant: {tenant.name}")
+                    elif status == "qr_ready":
+                        logger.info(f"Tenant {tenant.name} needs QR scan")
+                except Exception as e:
+                    logger.error(f"Failed to restore session for {tenant.name}: {e}")
+            else:
+                logger.debug(f"No auth credentials for tenant: {tenant.name}")
+
+        logger.info(f"Session restoration complete: {restored} sessions restored")
 
     async def close(self) -> None:
         if self._db:
@@ -156,12 +202,48 @@ class TenantManager:
                 bridge_path=settings.bridge_path,
                 auth_dir=auth_dir,
                 tenant_id=tenant.api_key_hash,
+                auto_login=settings.auto_login,
             )
             if self._event_handler:
                 tenant.bridge.on_event(self._event_handler)
             await tenant.bridge.start()
             logger.info(f"Bridge started for tenant: {tenant.name}")
         return tenant.bridge
+
+    async def update_session_state(
+        self,
+        tenant: Tenant,
+        connection_state: str,
+        self_jid: Optional[str] = None,
+        self_phone: Optional[str] = None,
+        self_name: Optional[str] = None,
+        has_auth: Optional[bool] = None,
+    ) -> None:
+        tenant.connection_state = connection_state
+        if self_jid:
+            tenant.self_jid = self_jid
+        if self_phone:
+            tenant.self_phone = self_phone
+        if self_name:
+            tenant.self_name = self_name
+        if has_auth is not None:
+            tenant.has_auth = has_auth
+
+        if connection_state == "connected":
+            tenant.last_connected_at = datetime.utcnow()
+        elif connection_state == "disconnected":
+            tenant.last_disconnected_at = datetime.utcnow()
+
+        if self._db:
+            await self._db.update_session_state(
+                tenant.api_key_hash,
+                connection_state,
+                self_jid,
+                self_phone,
+                self_name,
+                has_auth,
+            )
+            logger.debug(f"Session state persisted for tenant: {tenant.name}")
 
     async def add_webhook(self, tenant: Tenant, url: str) -> None:
         if url not in tenant.webhook_urls:
