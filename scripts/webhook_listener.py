@@ -10,6 +10,7 @@ import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.request
 import urllib.error
+import urllib.parse
 
 
 class WebhookHandler(BaseHTTPRequestHandler):
