@@ -187,7 +187,9 @@ class Database:
                         "last_connected_at": row["last_connected_at"],
                         "last_disconnected_at": row["last_disconnected_at"],
                         "has_auth": bool(row["has_auth"]),
-                        "creds_json": row["creds_json"],
+                        "creds_json": json.loads(row["creds_json"])
+                        if isinstance(row["creds_json"], str)
+                        else row["creds_json"],
                     }
                     for row in rows
                 ]

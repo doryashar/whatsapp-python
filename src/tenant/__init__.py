@@ -263,7 +263,7 @@ class TenantManager:
                 bridge_path=settings.bridge_path,
                 auth_dir=auth_dir,
                 tenant_id=tenant.api_key_hash,
-                auto_login=True,
+                auto_login=settings.auto_login,
             )
             if self._event_handler:
                 tenant.bridge.on_event(self._event_handler)

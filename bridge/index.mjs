@@ -379,8 +379,11 @@ const methods = {
   async logout() {
     if (sock) {
       try {
+        await sock.logout();
+      } catch (e) {
+        logger.debug({ err: e.message }, "Logout error (ignored)");
         sock.ws?.close();
-      } catch {}
+      }
       sock = null;
     }
 
