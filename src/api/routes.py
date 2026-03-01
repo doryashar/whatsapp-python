@@ -30,7 +30,7 @@ from .auth import get_tenant, get_admin_key
 logger = get_logger("whatsapp.api")
 
 router = APIRouter(prefix="/api", tags=["WhatsApp"])
-admin_router = APIRouter(prefix="/admin", tags=["Admin"])
+admin_router = APIRouter(prefix="/admin/v1", tags=["Admin"])
 
 
 @router.get("/status", response_model=StatusResponse)
