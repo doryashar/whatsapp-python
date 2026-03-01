@@ -18,6 +18,8 @@ services:
       - DATABASE_URL=postgres://postgres:b7854fa932f60c54@wa-postgres.cap.yashar.us:5432/postgres
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
       - OTEL_SERVICE_NAME=whatsapp-api
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -81,6 +83,19 @@ services:
       - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - loki
+    networks:
+      - whatsapp-net
+
+  webhook-listener:
+    image: python:3.12-slim
+    container_name: webhook-listener
+    ports:
+      - "5555:5555"
+    volumes:
+      - ./scripts:/scripts:ro
+    command: python3 -u /scripts/webhook_listener.py --api-key "wa_rRRTpFyByW_ktn6MP55_PHh17YkirrlqZATbDzRmaMs" --api-url "http://whatsapp-api:8080" --external-url "http://webhook-listener:5555/webhook" --host "0.0.0.0"
+    depends_on:
+      - whatsapp-api
     networks:
       - whatsapp-net
 
