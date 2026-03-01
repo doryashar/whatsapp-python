@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from .config import settings
 from .telemetry import setup_telemetry, instrument_app, get_logger
 from .api import router, admin_router
+from .admin import router as admin_ui_router, api_router as admin_api_router
 from .middleware import RateLimitMiddleware, rate_limiter
 from .tenant import tenant_manager
 from .store.database import Database
@@ -160,6 +161,8 @@ def handle_bridge_event(
             timestamp=params.get("timestamp", 0),
         )
         tenant.message_store.add(msg)
+        if hasattr(tenant.message_store, "add_with_persist"):
+            asyncio.create_task(tenant.message_store.add_with_persist(msg))
 
     asyncio.create_task(manager.broadcast(tenant_id, event_type, params))
 
@@ -172,6 +175,8 @@ def handle_bridge_event(
             secret=settings.webhook_secret,
             timeout=settings.webhook_timeout,
             max_retries=settings.webhook_retries,
+            tenant_hash=tenant.api_key_hash,
+            db=tenant_manager._db,
         )
         asyncio.create_task(sender.send(event_type, params))
 
@@ -199,6 +204,8 @@ app.add_middleware(RateLimitMiddleware, rate_limiter=rate_limiter)
 
 app.include_router(router)
 app.include_router(admin_router)
+app.include_router(admin_ui_router)
+app.include_router(admin_api_router)
 
 
 @app.get("/health")

@@ -22,9 +22,7 @@ class Tenant:
     name: str
     created_at: datetime = field(default_factory=datetime.utcnow)
     bridge: Optional[BaileysBridge] = None
-    message_store: MessageStore = field(
-        default_factory=lambda: MessageStore(max_messages=settings.max_messages)
-    )
+    message_store: Optional[MessageStore] = None
     webhook_urls: list[str] = field(default_factory=list)
     _raw_api_key: Optional[str] = None
     connection_state: str = "disconnected"
@@ -35,6 +33,10 @@ class Tenant:
     last_disconnected_at: Optional[datetime] = None
     has_auth: bool = False
     creds_json: Optional[dict] = None
+
+    def __post_init__(self):
+        if self.message_store is None:
+            self.message_store = MessageStore(max_messages=settings.max_messages)
 
     def get_auth_dir(self, base_dir: Path) -> Path:
         auth_dir = (
@@ -81,7 +83,11 @@ class TenantManager:
                 api_key_hash=data["api_key_hash"],
                 name=data["name"],
                 created_at=data["created_at"],
-                message_store=MessageStore(max_messages=settings.max_messages),
+                message_store=MessageStore(
+                    max_messages=settings.max_messages,
+                    tenant_hash=data["api_key_hash"],
+                    db=self._db,
+                ),
                 webhook_urls=data.get("webhook_urls", []),
                 connection_state=data.get("connection_state", "disconnected"),
                 self_jid=data.get("self_jid"),
@@ -203,7 +209,11 @@ class TenantManager:
         tenant = Tenant(
             api_key_hash=key_hash,
             name=name,
-            message_store=MessageStore(max_messages=settings.max_messages),
+            message_store=MessageStore(
+                max_messages=settings.max_messages,
+                tenant_hash=key_hash,
+                db=self._db,
+            ),
         )
         tenant._raw_api_key = raw_key
         self._tenants[key_hash] = tenant

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     webhook_timeout: int = Field(default=30, alias="WEBHOOK_TIMEOUT")
     webhook_retries: int = Field(default=3, alias="WEBHOOK_RETRIES")
     admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")
+    admin_password: str = Field(default="", alias="ADMIN_PASSWORD")
     database_url: str = Field(default="", alias="DATABASE_URL")
 
     otlp_endpoint: str = Field(default="", alias="OTEL_EXPORTER_OTLP_ENDPOINT")

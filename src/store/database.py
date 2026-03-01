@@ -64,6 +64,58 @@ class Database:
                 )
             """)
             await conn.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id SERIAL PRIMARY KEY,
+                    tenant_hash TEXT NOT NULL REFERENCES tenants(api_key_hash) ON DELETE CASCADE,
+                    message_id TEXT NOT NULL,
+                    from_jid TEXT NOT NULL,
+                    chat_jid TEXT NOT NULL,
+                    is_group BOOLEAN DEFAULT FALSE,
+                    push_name TEXT,
+                    text TEXT,
+                    msg_type TEXT DEFAULT 'text',
+                    timestamp BIGINT NOT NULL,
+                    direction TEXT DEFAULT 'inbound',
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages(tenant_hash, created_at DESC)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_jid, created_at DESC)"
+            )
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS webhook_attempts (
+                    id SERIAL PRIMARY KEY,
+                    tenant_hash TEXT NOT NULL REFERENCES tenants(api_key_hash) ON DELETE CASCADE,
+                    url TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    success BOOLEAN NOT NULL,
+                    status_code INTEGER,
+                    error_message TEXT,
+                    attempt_number INTEGER DEFAULT 1,
+                    latency_ms INTEGER,
+                    payload_preview TEXT,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_webhook_tenant ON webhook_attempts(tenant_hash, created_at DESC)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_webhook_url ON webhook_attempts(url, created_at DESC)"
+            )
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS admin_sessions (
+                    id TEXT PRIMARY KEY,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    expires_at TIMESTAMP NOT NULL,
+                    user_agent TEXT,
+                    ip_address TEXT
+                )
+            """)
+            await conn.execute("""
                 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS connection_state TEXT DEFAULT 'disconnected'
             """)
             await conn.execute("""
@@ -104,6 +156,58 @@ class Database:
                 last_disconnected_at TEXT,
                 has_auth INTEGER DEFAULT 0,
                 creds_json TEXT
+            )
+        """)
+        await self._pool.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_hash TEXT NOT NULL REFERENCES tenants(api_key_hash) ON DELETE CASCADE,
+                message_id TEXT NOT NULL,
+                from_jid TEXT NOT NULL,
+                chat_jid TEXT NOT NULL,
+                is_group INTEGER DEFAULT 0,
+                push_name TEXT,
+                text TEXT,
+                msg_type TEXT DEFAULT 'text',
+                timestamp INTEGER NOT NULL,
+                direction TEXT DEFAULT 'inbound',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await self._pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_tenant ON messages(tenant_hash, created_at DESC)"
+        )
+        await self._pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_jid, created_at DESC)"
+        )
+        await self._pool.execute("""
+            CREATE TABLE IF NOT EXISTS webhook_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_hash TEXT NOT NULL REFERENCES tenants(api_key_hash) ON DELETE CASCADE,
+                url TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                status_code INTEGER,
+                error_message TEXT,
+                attempt_number INTEGER DEFAULT 1,
+                latency_ms INTEGER,
+                payload_preview TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await self._pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_webhook_tenant ON webhook_attempts(tenant_hash, created_at DESC)"
+        )
+        await self._pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_webhook_url ON webhook_attempts(url, created_at DESC)"
+        )
+        await self._pool.execute("""
+            CREATE TABLE IF NOT EXISTS admin_sessions (
+                id TEXT PRIMARY KEY,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                expires_at TEXT NOT NULL,
+                user_agent TEXT,
+                ip_address TEXT
             )
         """)
         await self._pool.commit()
@@ -431,3 +535,474 @@ class Database:
             )
             await self._pool.commit()
         logger.debug("Credentials cleared")
+
+    async def save_message(
+        self,
+        tenant_hash: str,
+        message_id: str,
+        from_jid: str,
+        chat_jid: str,
+        is_group: bool = False,
+        push_name: Optional[str] = None,
+        text: str = "",
+        msg_type: str = "text",
+        timestamp: int = 0,
+        direction: str = "inbound",
+    ) -> int:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    RETURNING id
+                    """,
+                    tenant_hash,
+                    message_id,
+                    from_jid,
+                    chat_jid,
+                    is_group,
+                    push_name,
+                    text,
+                    msg_type,
+                    timestamp,
+                    direction,
+                )
+                return row["id"]
+        else:
+            cursor = await self._pool.execute(
+                """
+                INSERT INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tenant_hash,
+                    message_id,
+                    from_jid,
+                    chat_jid,
+                    1 if is_group else 0,
+                    push_name,
+                    text,
+                    msg_type,
+                    timestamp,
+                    direction,
+                ),
+            )
+            await self._pool.commit()
+            return cursor.lastrowid
+
+    async def list_messages(
+        self,
+        tenant_hash: Optional[str] = None,
+        chat_jid: Optional[str] = None,
+        direction: Optional[str] = None,
+        search: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                conditions = []
+                params = []
+                param_idx = 1
+
+                if tenant_hash:
+                    conditions.append(f"tenant_hash = ${param_idx}")
+                    params.append(tenant_hash)
+                    param_idx += 1
+                if chat_jid:
+                    conditions.append(f"chat_jid = ${param_idx}")
+                    params.append(chat_jid)
+                    param_idx += 1
+                if direction:
+                    conditions.append(f"direction = ${param_idx}")
+                    params.append(direction)
+                    param_idx += 1
+                if search:
+                    conditions.append(f"text ILIKE ${param_idx}")
+                    params.append(f"%{search}%")
+                    param_idx += 1
+
+                where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+                count_row = await conn.fetchrow(
+                    f"SELECT COUNT(*) as count FROM messages {where_clause}", *params
+                )
+                total = count_row["count"]
+
+                params.extend([limit, offset])
+                rows = await conn.fetch(
+                    f"""
+                    SELECT id, tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, created_at
+                    FROM messages {where_clause}
+                    ORDER BY created_at DESC
+                    LIMIT ${param_idx} OFFSET ${param_idx + 1}
+                    """,
+                    *params,
+                )
+                messages = [dict(row) for row in rows]
+                return messages, total
+        else:
+            conditions = []
+            params = []
+
+            if tenant_hash:
+                conditions.append("tenant_hash = ?")
+                params.append(tenant_hash)
+            if chat_jid:
+                conditions.append("chat_jid = ?")
+                params.append(chat_jid)
+            if direction:
+                conditions.append("direction = ?")
+                params.append(direction)
+            if search:
+                conditions.append("text LIKE ?")
+                params.append(f"%{search}%")
+
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+            async with self._pool.execute(
+                f"SELECT COUNT(*) FROM messages {where_clause}",
+                params,
+            ) as cursor:
+                count_row = await cursor.fetchone()
+                total = count_row[0] if count_row else 0
+
+            params.extend([limit, offset])
+            async with self._pool.execute(
+                f"""
+                SELECT id, tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, created_at
+                FROM messages {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            ) as cursor:
+                rows = await cursor.fetchall()
+                messages = [
+                    {
+                        "id": row[0],
+                        "tenant_hash": row[1],
+                        "message_id": row[2],
+                        "from_jid": row[3],
+                        "chat_jid": row[4],
+                        "is_group": bool(row[5]),
+                        "push_name": row[6],
+                        "text": row[7],
+                        "msg_type": row[8],
+                        "timestamp": row[9],
+                        "direction": row[10],
+                        "created_at": row[11],
+                    }
+                    for row in rows
+                ]
+                return messages, total
+
+    async def delete_message(self, message_id: int) -> bool:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM messages WHERE id = $1", message_id
+                )
+                return result.split()[-1] != "0"
+        else:
+            cursor = await self._pool.execute(
+                "DELETE FROM messages WHERE id = ?", (message_id,)
+            )
+            await self._pool.commit()
+            return cursor.rowcount > 0
+
+    async def save_webhook_attempt(
+        self,
+        tenant_hash: str,
+        url: str,
+        event_type: str,
+        success: bool,
+        status_code: Optional[int] = None,
+        error_message: Optional[str] = None,
+        attempt_number: int = 1,
+        latency_ms: Optional[int] = None,
+        payload_preview: Optional[str] = None,
+    ) -> int:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO webhook_attempts (tenant_hash, url, event_type, success, status_code, error_message, attempt_number, latency_ms, payload_preview)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    RETURNING id
+                    """,
+                    tenant_hash,
+                    url,
+                    event_type,
+                    success,
+                    status_code,
+                    error_message,
+                    attempt_number,
+                    latency_ms,
+                    payload_preview,
+                )
+                return row["id"]
+        else:
+            cursor = await self._pool.execute(
+                """
+                INSERT INTO webhook_attempts (tenant_hash, url, event_type, success, status_code, error_message, attempt_number, latency_ms, payload_preview)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tenant_hash,
+                    url,
+                    event_type,
+                    1 if success else 0,
+                    status_code,
+                    error_message,
+                    attempt_number,
+                    latency_ms,
+                    payload_preview,
+                ),
+            )
+            await self._pool.commit()
+            return cursor.lastrowid
+
+    async def list_webhook_attempts(
+        self,
+        tenant_hash: Optional[str] = None,
+        url: Optional[str] = None,
+        success: Optional[bool] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                conditions = []
+                params = []
+                param_idx = 1
+
+                if tenant_hash:
+                    conditions.append(f"tenant_hash = ${param_idx}")
+                    params.append(tenant_hash)
+                    param_idx += 1
+                if url:
+                    conditions.append(f"url = ${param_idx}")
+                    params.append(url)
+                    param_idx += 1
+                if success is not None:
+                    conditions.append(f"success = ${param_idx}")
+                    params.append(success)
+                    param_idx += 1
+
+                where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+                count_row = await conn.fetchrow(
+                    f"SELECT COUNT(*) as count FROM webhook_attempts {where_clause}",
+                    *params,
+                )
+                total = count_row["count"]
+
+                params.extend([limit, offset])
+                rows = await conn.fetch(
+                    f"""
+                    SELECT id, tenant_hash, url, event_type, success, status_code, error_message, attempt_number, latency_ms, payload_preview, created_at
+                    FROM webhook_attempts {where_clause}
+                    ORDER BY created_at DESC
+                    LIMIT ${param_idx} OFFSET ${param_idx + 1}
+                    """,
+                    *params,
+                )
+                attempts = [dict(row) for row in rows]
+                return attempts, total
+        else:
+            conditions = []
+            params = []
+
+            if tenant_hash:
+                conditions.append("tenant_hash = ?")
+                params.append(tenant_hash)
+            if url:
+                conditions.append("url = ?")
+                params.append(url)
+            if success is not None:
+                conditions.append("success = ?")
+                params.append(1 if success else 0)
+
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+            async with self._pool.execute(
+                f"SELECT COUNT(*) FROM webhook_attempts {where_clause}",
+                params,
+            ) as cursor:
+                count_row = await cursor.fetchone()
+                total = count_row[0] if count_row else 0
+
+            params.extend([limit, offset])
+            async with self._pool.execute(
+                f"""
+                SELECT id, tenant_hash, url, event_type, success, status_code, error_message, attempt_number, latency_ms, payload_preview, created_at
+                FROM webhook_attempts {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            ) as cursor:
+                rows = await cursor.fetchall()
+                attempts = [
+                    {
+                        "id": row[0],
+                        "tenant_hash": row[1],
+                        "url": row[2],
+                        "event_type": row[3],
+                        "success": bool(row[4]),
+                        "status_code": row[5],
+                        "error_message": row[6],
+                        "attempt_number": row[7],
+                        "latency_ms": row[8],
+                        "payload_preview": row[9],
+                        "created_at": row[10],
+                    }
+                    for row in rows
+                ]
+                return attempts, total
+
+    async def get_webhook_stats(self, url: Optional[str] = None) -> dict:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                if url:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT 
+                            COUNT(*) as total,
+                            COUNT(*) FILTER (WHERE success) as success_count,
+                            COUNT(*) FILTER (WHERE NOT success) as fail_count,
+                            AVG(latency_ms) FILTER (WHERE latency_ms IS NOT NULL) as avg_latency,
+                            MAX(created_at) FILTER (WHERE success) as last_success,
+                            MAX(created_at) FILTER (WHERE NOT success) as last_failure
+                        FROM webhook_attempts WHERE url = $1
+                        """,
+                        url,
+                    )
+                else:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT 
+                            COUNT(*) as total,
+                            COUNT(*) FILTER (WHERE success) as success_count,
+                            COUNT(*) FILTER (WHERE NOT success) as fail_count,
+                            AVG(latency_ms) FILTER (WHERE latency_ms IS NOT NULL) as avg_latency
+                        FROM webhook_attempts
+                        """
+                    )
+                return dict(row) if row else {}
+        else:
+            async with self._pool.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END), AVG(latency_ms) FROM webhook_attempts"
+            ) as cursor:
+                row = await cursor.fetchone()
+                return {
+                    "total": row[0] or 0,
+                    "success_count": row[1] or 0,
+                    "fail_count": (row[0] or 0) - (row[1] or 0),
+                    "avg_latency": row[2],
+                }
+
+    async def create_admin_session(
+        self,
+        session_id: str,
+        expires_at: datetime,
+        user_agent: Optional[str] = None,
+        ip_address: Optional[str] = None,
+    ) -> None:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO admin_sessions (id, expires_at, user_agent, ip_address)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (id) DO UPDATE SET expires_at = $2, user_agent = $3, ip_address = $4
+                    """,
+                    session_id,
+                    expires_at,
+                    user_agent,
+                    ip_address,
+                )
+        else:
+            await self._pool.execute(
+                """
+                INSERT OR REPLACE INTO admin_sessions (id, expires_at, user_agent, ip_address)
+                VALUES (?, ?, ?, ?)
+                """,
+                (session_id, expires_at.isoformat(), user_agent, ip_address),
+            )
+            await self._pool.commit()
+
+    async def get_admin_session(self, session_id: str) -> Optional[dict]:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT id, created_at, expires_at, user_agent, ip_address FROM admin_sessions WHERE id = $1 AND expires_at > NOW()",
+                    session_id,
+                )
+                return dict(row) if row else None
+        else:
+            async with self._pool.execute(
+                "SELECT id, created_at, expires_at, user_agent, ip_address FROM admin_sessions WHERE id = ? AND expires_at > datetime('now')",
+                (session_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return {
+                        "id": row[0],
+                        "created_at": row[1],
+                        "expires_at": row[2],
+                        "user_agent": row[3],
+                        "ip_address": row[4],
+                    }
+                return None
+
+    async def delete_admin_session(self, session_id: str) -> None:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM admin_sessions WHERE id = $1", session_id
+                )
+        else:
+            await self._pool.execute(
+                "DELETE FROM admin_sessions WHERE id = ?", (session_id,)
+            )
+            await self._pool.commit()
+
+    async def cleanup_old_data(self, days: int = 7) -> dict:
+        cleaned = {}
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM webhook_attempts WHERE created_at < NOW() - INTERVAL '%s days'"
+                    % days
+                )
+                cleaned["webhook_attempts"] = int(result.split()[-1])
+                result = await conn.execute(
+                    "DELETE FROM messages WHERE created_at < NOW() - INTERVAL '%s days'"
+                    % days
+                )
+                cleaned["messages"] = int(result.split()[-1])
+                result = await conn.execute(
+                    "DELETE FROM admin_sessions WHERE expires_at < NOW()"
+                )
+                cleaned["admin_sessions"] = int(result.split()[-1])
+        else:
+            cursor = await self._pool.execute(
+                "DELETE FROM webhook_attempts WHERE datetime(created_at) < datetime('now', ?)",
+                (f"-{days} days",),
+            )
+            cleaned["webhook_attempts"] = cursor.rowcount
+            cursor = await self._pool.execute(
+                "DELETE FROM messages WHERE datetime(created_at) < datetime('now', ?)",
+                (f"-{days} days",),
+            )
+            cleaned["messages"] = cursor.rowcount
+            cursor = await self._pool.execute(
+                "DELETE FROM admin_sessions WHERE datetime(expires_at) < datetime('now')"
+            )
+            cleaned["admin_sessions"] = cursor.rowcount
+            await self._pool.commit()
+        logger.info(f"Cleaned up old data: {cleaned}")
+        return cleaned
