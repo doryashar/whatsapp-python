@@ -260,3 +260,46 @@ curl -X DELETE "http://localhost:8080/api/webhooks?url=https://your-server.com/w
 ### Retry Behavior
 
 Failed webhooks are retried up to `WEBHOOK_RETRIES` times with exponential backoff (0.5s, 1s, 2s, ...).
+
+## OpenCode Integration
+
+This project includes a built-in integration with OpenCode AI assistant for automated WhatsApp responses.
+
+### Features
+
+- **Per-Chat Sessions**: Each WhatsApp conversation maintains isolated context
+- **Media Support**: Handles images, videos, audio, and documents
+- **Session Persistence**: SQLite-based session management
+- **Docker Ready**: Fully containerized deployment
+- **Admin API**: Manage sessions via REST endpoints
+
+### Quick Start
+
+```bash
+# Deploy with Docker Compose
+docker-compose -f docker-compose.webhook.yml up -d
+
+# Register webhook with WhatsApp API
+curl -X POST http://localhost:8080/api/webhooks \
+  -H "X-API-Key: $WHATSAPP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "http://opencode-webhook:5556/webhook"}'
+```
+
+### Documentation
+
+See [docs/opencode-integration.md](docs/opencode-integration.md) for:
+- Complete setup instructions
+- Configuration options
+- API endpoint documentation
+- Troubleshooting guide
+
+### Testing
+
+```bash
+# Run integration tests
+pytest tests/test_opencode_webhook_handler.py -v
+
+# Run manual test suite
+python tests/test_opencode_integration.py
+```

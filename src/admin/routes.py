@@ -15,6 +15,7 @@ logger = get_logger("whatsapp.admin")
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 api_router = APIRouter(prefix="/admin/api", tags=["admin-api"])
+fragments_router = APIRouter(prefix="/admin/fragments", tags=["admin-fragments"])
 
 
 class TenantCreate(BaseModel):
@@ -31,6 +32,117 @@ class WebhookAdd(BaseModel):
 
 def templates(request: Request) -> dict:
     return {"request": request}
+
+
+SIDEBAR_HTML = """
+<aside class="w-64 bg-gray-800 border-r border-gray-700 flex flex-col h-full">
+    <div class="p-4 border-b border-gray-700">
+        <div class="flex items-center space-x-3">
+            <div class="w-10 h-10 bg-whatsapp rounded-full flex items-center justify-center">
+                <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+            </div>
+            <span class="text-xl font-bold">WhatsApp Admin</span>
+        </div>
+    </div>
+    <nav class="p-4 space-y-2 flex-1">
+        {nav_items}
+    </nav>
+    <div class="p-4 border-t border-gray-700">
+        <form action="/admin/logout" method="POST">
+            <button type="submit" class="w-full flex items-center justify-center space-x-2 px-4 py-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                <span>Sign Out</span>
+            </button>
+        </form>
+    </div>
+</aside>
+"""
+
+
+def get_sidebar(active_page: str) -> str:
+    nav_items = [
+        (
+            "dashboard",
+            "Dashboard",
+            "/admin/dashboard",
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path>',
+        ),
+        (
+            "tenants",
+            "Tenants",
+            "/admin/tenants",
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path>',
+        ),
+        (
+            "messages",
+            "Messages",
+            "/admin/messages",
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path>',
+        ),
+        (
+            "webhooks",
+            "Webhooks",
+            "/admin/webhooks",
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path>',
+        ),
+        (
+            "security",
+            "Security",
+            "/admin/security",
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>',
+        ),
+    ]
+
+    items_html = ""
+    for key, label, href, icon in nav_items:
+        if key == active_page:
+            items_html += f'''<a href="{href}" class="flex items-center space-x-3 px-4 py-3 bg-whatsapp/10 text-whatsapp rounded-lg">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">{icon}</svg>
+                <span>{label}</span>
+            </a>'''
+        else:
+            items_html += f'''<a href="{href}" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">{icon}</svg>
+                <span>{label}</span>
+            </a>'''
+
+    return SIDEBAR_HTML.format(nav_items=items_html)
+
+
+PAGE_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title} - WhatsApp Admin</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.6"></script>
+    <script>
+        tailwind.config = {{
+            darkMode: 'class',
+            theme: {{
+                extend: {{
+                    colors: {{
+                        whatsapp: '#25D366',
+                        whatsappDark: '#128C7E',
+                    }}
+                }}
+            }}
+        }}
+    </script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <div class="flex h-screen">
+        {sidebar}
+        <main class="flex-1 overflow-y-auto">
+            {content}
+        </main>
+    </div>
+    {modals}
+    <script>{script}</script>
+</body>
+</html>
+"""
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -137,7 +249,164 @@ async def admin_dashboard(
     request: Request,
     session_id: str = Depends(require_admin_session),
 ):
-    return await render_dashboard(request)
+    content = """
+<header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
+    <h1 class="text-2xl font-bold">Dashboard</h1>
+</header>
+<div class="p-6">
+    <div hx-get="/admin/fragments/stats" hx-trigger="load, every 30s" class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+        <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 animate-pulse"><div class="h-16"></div></div>
+        <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 animate-pulse"><div class="h-16"></div></div>
+        <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 animate-pulse"><div class="h-16"></div></div>
+        <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 animate-pulse"><div class="h-16"></div></div>
+    </div>
+    <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 mb-8">
+        <h2 class="text-lg font-semibold mb-4">Quick Actions</h2>
+        <div class="flex flex-wrap gap-4">
+            <button onclick="showCreateTenantModal()" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg transition flex items-center space-x-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                <span>Add Tenant</span>
+            </button>
+            <a href="/admin/security" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition flex items-center space-x-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                <span>Manage Security</span>
+            </a>
+        </div>
+    </div>
+    <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Recent Tenants</h2>
+            <a href="/admin/tenants" class="text-whatsapp hover:underline text-sm">View All</a>
+        </div>
+        <div id="tenants-list" hx-get="/admin/fragments/tenants" hx-trigger="load, every 30s" class="divide-y divide-gray-700">
+            <div class="p-6 text-center text-gray-500">Loading...</div>
+        </div>
+    </div>
+</div>
+"""
+    modals = """
+<div id="create-tenant-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-gray-800 rounded-xl p-6 w-full max-w-md border border-gray-700">
+        <h3 class="text-xl font-bold mb-4">Create New Tenant</h3>
+        <form hx-post="/admin/api/tenants" hx-on="htmx:afterRequest: closeModalAndShowKey(event)">
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-300 mb-2">Tenant Name</label>
+                <input type="text" name="name" required class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp">
+            </div>
+            <div class="flex justify-end space-x-4">
+                <button type="button" onclick="hideCreateTenantModal()" class="px-4 py-2 text-gray-400 hover:text-white">Cancel</button>
+                <button type="submit" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg">Create</button>
+            </div>
+        </form>
+    </div>
+</div>
+<div id="tenant-actions-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-gray-800 rounded-xl p-6 w-full max-w-lg border border-gray-700">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-xl font-bold" id="tenant-actions-name">Tenant Actions</h3>
+            <button onclick="hideTenantActionsModal()" class="text-gray-400 hover:text-white">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+        </div>
+        <div class="space-y-3">
+            <button id="btn-reconnect" hx-post="" hx-on="htmx:afterRequest: handleAction(event, 'Reconnected')" class="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition flex items-center space-x-3">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                <span>Reconnect Session</span>
+            </button>
+            <button id="btn-clear-creds" hx-delete="" hx-on="htmx:afterRequest: handleAction(event, 'Credentials cleared')" class="w-full px-4 py-3 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg transition flex items-center space-x-3">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                <span>Clear Stored Credentials</span>
+            </button>
+            <div class="border-t border-gray-700 pt-3">
+                <label class="block text-sm font-medium text-gray-300 mb-2">Add Webhook URL</label>
+                <div class="flex gap-2">
+                    <input type="url" id="new-webhook-url" placeholder="https://" class="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-whatsapp">
+                    <button id="btn-add-webhook" onclick="addWebhook()" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg text-sm">Add</button>
+                </div>
+            </div>
+            <div class="border-t border-gray-700 pt-3">
+                <button id="btn-delete" hx-delete="" hx-confirm="Are you sure you want to delete this tenant? This cannot be undone." hx-on="htmx:afterRequest: handleDelete(event)" class="w-full px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition flex items-center space-x-3">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    <span>Delete Tenant</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+"""
+    script = """
+function showCreateTenantModal() {
+    document.getElementById('create-tenant-modal').classList.remove('hidden');
+    document.getElementById('create-tenant-modal').classList.add('flex');
+}
+function hideCreateTenantModal() {
+    document.getElementById('create-tenant-modal').classList.add('hidden');
+    document.getElementById('create-tenant-modal').classList.remove('flex');
+}
+function closeModalAndShowKey(event) {
+    if (event.detail.successful) {
+        hideCreateTenantModal();
+        const response = JSON.parse(event.detail.xhr.response);
+        alert('Tenant created!\\n\\nAPI Key: ' + response.tenant.api_key + '\\n\\nSave this key - it won\\'t be shown again!');
+        htmx.trigger('#tenants-list', 'load');
+    }
+}
+function showTenantActions(hash, name) {
+    document.getElementById('tenant-actions-name').textContent = name;
+    document.getElementById('btn-reconnect').setAttribute('hx-post', '/admin/api/tenants/' + hash + '/reconnect');
+    document.getElementById('btn-clear-creds').setAttribute('hx-delete', '/admin/api/tenants/' + hash + '/credentials');
+    document.getElementById('btn-delete').setAttribute('hx-delete', '/admin/api/tenants/' + hash);
+    document.getElementById('tenant-actions-modal').dataset.hash = hash;
+    document.getElementById('new-webhook-url').value = '';
+    document.getElementById('tenant-actions-modal').classList.remove('hidden');
+    document.getElementById('tenant-actions-modal').classList.add('flex');
+    htmx.process(document.getElementById('tenant-actions-modal'));
+}
+function hideTenantActionsModal() {
+    document.getElementById('tenant-actions-modal').classList.add('hidden');
+    document.getElementById('tenant-actions-modal').classList.remove('flex');
+}
+function addWebhook() {
+    const url = document.getElementById('new-webhook-url').value;
+    if (!url) { alert('Please enter a webhook URL'); return; }
+    const hash = document.getElementById('tenant-actions-modal').dataset.hash;
+    fetch('/admin/api/tenants/' + hash + '/webhooks', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: url})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'added') {
+            document.getElementById('new-webhook-url').value = '';
+            alert('Webhook added!');
+            htmx.trigger('#tenants-list', 'load');
+        } else {
+            alert('Failed: ' + (data.detail || JSON.stringify(data)));
+        }
+    }).catch(e => alert('Error: ' + e));
+}
+function handleAction(event, msg) {
+    if (event.detail.successful) {
+        alert(msg);
+        htmx.trigger('#tenants-list', 'load');
+        hideTenantActionsModal();
+    }
+}
+function handleDelete(event) {
+    if (event.detail.successful) {
+        alert('Tenant deleted');
+        htmx.trigger('#tenants-list', 'load');
+        hideTenantActionsModal();
+    }
+}
+"""
+    html = PAGE_TEMPLATE.format(
+        title="Dashboard",
+        sidebar=get_sidebar("dashboard"),
+        content=content,
+        modals=modals,
+        script=script,
+    )
+    return HTMLResponse(content=html)
 
 
 @router.get("/tenants", response_class=HTMLResponse)
@@ -145,7 +414,145 @@ async def admin_tenants_page(
     request: Request,
     session_id: str = Depends(require_admin_session),
 ):
-    return await render_tenants_page(request)
+    content = """
+<header class="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between">
+    <h1 class="text-2xl font-bold">Tenants</h1>
+    <button onclick="showCreateTenantModal()" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg transition flex items-center space-x-2">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+        <span>Add Tenant</span>
+    </button>
+</header>
+<div class="p-6">
+    <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div id="tenants-list" hx-get="/admin/fragments/tenants" hx-trigger="load" class="divide-y divide-gray-700">
+            <div class="p-6 text-center text-gray-500">Loading...</div>
+        </div>
+    </div>
+</div>
+"""
+    modals = """
+<div id="create-tenant-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-gray-800 rounded-xl p-6 w-full max-w-md border border-gray-700">
+        <h3 class="text-xl font-bold mb-4">Create New Tenant</h3>
+        <form hx-post="/admin/api/tenants" hx-on="htmx:afterRequest: closeModalAndShowKey(event)">
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-300 mb-2">Tenant Name</label>
+                <input type="text" name="name" required class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp">
+            </div>
+            <div class="flex justify-end space-x-4">
+                <button type="button" onclick="hideCreateTenantModal()" class="px-4 py-2 text-gray-400 hover:text-white">Cancel</button>
+                <button type="submit" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg">Create</button>
+            </div>
+        </form>
+    </div>
+</div>
+<div id="tenant-actions-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-gray-800 rounded-xl p-6 w-full max-w-lg border border-gray-700">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-xl font-bold" id="tenant-actions-name">Tenant Actions</h3>
+            <button onclick="hideTenantActionsModal()" class="text-gray-400 hover:text-white">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+        </div>
+        <div class="space-y-3">
+            <button id="btn-reconnect" hx-post="" hx-on="htmx:afterRequest: handleAction(event, 'Reconnected')" class="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition flex items-center space-x-3">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                <span>Reconnect Session</span>
+            </button>
+            <button id="btn-clear-creds" hx-delete="" hx-on="htmx:afterRequest: handleAction(event, 'Credentials cleared')" class="w-full px-4 py-3 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg transition flex items-center space-x-3">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                <span>Clear Stored Credentials</span>
+            </button>
+            <div class="border-t border-gray-700 pt-3">
+                <label class="block text-sm font-medium text-gray-300 mb-2">Add Webhook URL</label>
+                <div class="flex gap-2">
+                    <input type="url" id="new-webhook-url" placeholder="https://" class="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-whatsapp">
+                    <button id="btn-add-webhook" onclick="addWebhook()" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg text-sm">Add</button>
+                </div>
+            </div>
+            <div class="border-t border-gray-700 pt-3">
+                <button id="btn-delete" hx-delete="" hx-confirm="Are you sure you want to delete this tenant? This cannot be undone." hx-on="htmx:afterRequest: handleDelete(event)" class="w-full px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition flex items-center space-x-3">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    <span>Delete Tenant</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+"""
+    script = """
+function showCreateTenantModal() {
+    document.getElementById('create-tenant-modal').classList.remove('hidden');
+    document.getElementById('create-tenant-modal').classList.add('flex');
+}
+function hideCreateTenantModal() {
+    document.getElementById('create-tenant-modal').classList.add('hidden');
+    document.getElementById('create-tenant-modal').classList.remove('flex');
+}
+function closeModalAndShowKey(event) {
+    if (event.detail.successful) {
+        hideCreateTenantModal();
+        const response = JSON.parse(event.detail.xhr.response);
+        alert('Tenant created!\\n\\nAPI Key: ' + response.tenant.api_key + '\\n\\nSave this key - it won\\'t be shown again!');
+        htmx.trigger('#tenants-list', 'load');
+    }
+}
+function showTenantActions(hash, name) {
+    document.getElementById('tenant-actions-name').textContent = name;
+    document.getElementById('btn-reconnect').setAttribute('hx-post', '/admin/api/tenants/' + hash + '/reconnect');
+    document.getElementById('btn-clear-creds').setAttribute('hx-delete', '/admin/api/tenants/' + hash + '/credentials');
+    document.getElementById('btn-delete').setAttribute('hx-delete', '/admin/api/tenants/' + hash);
+    document.getElementById('tenant-actions-modal').dataset.hash = hash;
+    document.getElementById('new-webhook-url').value = '';
+    document.getElementById('tenant-actions-modal').classList.remove('hidden');
+    document.getElementById('tenant-actions-modal').classList.add('flex');
+    htmx.process(document.getElementById('tenant-actions-modal'));
+}
+function hideTenantActionsModal() {
+    document.getElementById('tenant-actions-modal').classList.add('hidden');
+    document.getElementById('tenant-actions-modal').classList.remove('flex');
+}
+function addWebhook() {
+    const url = document.getElementById('new-webhook-url').value;
+    if (!url) { alert('Please enter a webhook URL'); return; }
+    const hash = document.getElementById('tenant-actions-modal').dataset.hash;
+    fetch('/admin/api/tenants/' + hash + '/webhooks', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: url})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'added') {
+            document.getElementById('new-webhook-url').value = '';
+            alert('Webhook added!');
+            htmx.trigger('#tenants-list', 'load');
+        } else {
+            alert('Failed: ' + (data.detail || JSON.stringify(data)));
+        }
+    }).catch(e => alert('Error: ' + e));
+}
+function handleAction(event, msg) {
+    if (event.detail.successful) {
+        alert(msg);
+        htmx.trigger('#tenants-list', 'load');
+        hideTenantActionsModal();
+    }
+}
+function handleDelete(event) {
+    if (event.detail.successful) {
+        alert('Tenant deleted');
+        htmx.trigger('#tenants-list', 'load');
+        hideTenantActionsModal();
+    }
+}
+"""
+    html = PAGE_TEMPLATE.format(
+        title="Tenants",
+        sidebar=get_sidebar("tenants"),
+        content=content,
+        modals=modals,
+        script=script,
+    )
+    return HTMLResponse(content=html)
 
 
 @router.get("/messages", response_class=HTMLResponse)
@@ -153,7 +560,26 @@ async def admin_messages_page(
     request: Request,
     session_id: str = Depends(require_admin_session),
 ):
-    return await render_messages_page(request)
+    content = """
+<header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
+    <h1 class="text-2xl font-bold">Messages</h1>
+</header>
+<div class="p-6">
+    <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+        <div id="messages-list" hx-get="/admin/fragments/messages?limit=50" hx-trigger="load" class="divide-y divide-gray-700">
+            <div class="p-6 text-center text-gray-500">Loading...</div>
+        </div>
+    </div>
+</div>
+"""
+    html = PAGE_TEMPLATE.format(
+        title="Messages",
+        sidebar=get_sidebar("messages"),
+        content=content,
+        modals="",
+        script="",
+    )
+    return HTMLResponse(content=html)
 
 
 @router.get("/webhooks", response_class=HTMLResponse)
@@ -161,7 +587,37 @@ async def admin_webhooks_page(
     request: Request,
     session_id: str = Depends(require_admin_session),
 ):
-    return await render_webhooks_page(request)
+    content = """
+<header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
+    <h1 class="text-2xl font-bold">Webhooks</h1>
+</header>
+<div class="p-6 space-y-6">
+    <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Registered Webhooks</h2>
+        </div>
+        <div id="webhooks-list" hx-get="/admin/fragments/webhooks" hx-trigger="load" class="divide-y divide-gray-700">
+            <div class="p-6 text-center text-gray-500">Loading...</div>
+        </div>
+    </div>
+    <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Recent Webhook Attempts</h2>
+        </div>
+        <div id="webhook-history" hx-get="/admin/fragments/webhook-history?limit=50" hx-trigger="load" class="divide-y divide-gray-700">
+            <div class="p-6 text-center text-gray-500">Loading...</div>
+        </div>
+    </div>
+</div>
+"""
+    html = PAGE_TEMPLATE.format(
+        title="Webhooks",
+        sidebar=get_sidebar("webhooks"),
+        content=content,
+        modals="",
+        script="",
+    )
+    return HTMLResponse(content=html)
 
 
 @router.get("/security", response_class=HTMLResponse)
@@ -169,10 +625,436 @@ async def admin_security_page(
     request: Request,
     session_id: str = Depends(require_admin_session),
 ):
-    return await render_security_page(request)
+    content = """
+<header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
+    <h1 class="text-2xl font-bold">Security & Rate Limiting</h1>
+</header>
+<div class="p-6 space-y-6">
+    <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Blocked IPs</h2>
+            <span class="text-sm text-gray-400">Auto-blocked after 5 failed auth attempts</span>
+        </div>
+        <div id="blocked-ips" hx-get="/admin/fragments/blocked-ips" hx-trigger="load, every 30s" class="divide-y divide-gray-700">
+            <div class="p-6 text-center text-gray-500">Loading...</div>
+        </div>
+    </div>
+    <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Failed Auth Attempts</h2>
+            <button hx-delete="/admin/api/rate-limit/failed-auth" hx-swap="none" hx-on="htmx:afterRequest: htmx.trigger('#failed-auth', 'load')" class="text-sm text-gray-400 hover:text-white px-3 py-1 rounded border border-gray-600 hover:border-gray-500">Clear All</button>
+        </div>
+        <div id="failed-auth" hx-get="/admin/fragments/failed-auth" hx-trigger="load, every 30s" class="divide-y divide-gray-700">
+            <div class="p-6 text-center text-gray-500">Loading...</div>
+        </div>
+    </div>
+</div>
+"""
+    html = PAGE_TEMPLATE.format(
+        title="Security",
+        sidebar=get_sidebar("security"),
+        content=content,
+        modals="",
+        script="",
+    )
+    return HTMLResponse(content=html)
 
 
-# API Routes
+# HTML Fragment Routes
+
+
+@fragments_router.get("/stats", response_class=HTMLResponse)
+async def get_stats_fragment(session_id: str = Depends(require_admin_session)):
+    db = tenant_manager._db
+    tenants = tenant_manager.list_tenants()
+
+    connected = sum(1 for t in tenants if t.connection_state == "connected")
+    pending = sum(1 for t in tenants if t.connection_state == "pending_qr")
+    disconnected = sum(1 for t in tenants if t.connection_state == "disconnected")
+
+    total_messages = 0
+    total_webhook_attempts = 0
+    webhook_success = 0
+
+    if db:
+        for tenant in tenants:
+            _, msg_count = await db.list_messages(
+                tenant_hash=tenant.api_key_hash, limit=1
+            )
+            total_messages += msg_count
+
+        stats = await db.get_webhook_stats()
+        total_webhook_attempts = stats.get("total", 0)
+        webhook_success = stats.get("success_count", 0)
+
+    success_rate = (
+        round(webhook_success / total_webhook_attempts * 100, 1)
+        if total_webhook_attempts > 0
+        else 0
+    )
+
+    html = f"""
+<div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
+    <div class="flex items-center justify-between">
+        <div>
+            <p class="text-gray-400 text-sm">Total Tenants</p>
+            <p class="text-3xl font-bold mt-1">{len(tenants)}</p>
+            <p class="text-xs text-gray-500 mt-1">{connected} connected, {pending} pending QR</p>
+        </div>
+        <div class="w-12 h-12 bg-blue-500/20 rounded-lg flex items-center justify-center">
+            <svg class="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+        </div>
+    </div>
+</div>
+<div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
+    <div class="flex items-center justify-between">
+        <div>
+            <p class="text-gray-400 text-sm">Connected</p>
+            <p class="text-3xl font-bold mt-1 text-green-500">{connected}</p>
+            <p class="text-xs text-gray-500 mt-1">{disconnected} disconnected</p>
+        </div>
+        <div class="w-12 h-12 bg-green-500/20 rounded-lg flex items-center justify-center">
+            <svg class="w-6 h-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+        </div>
+    </div>
+</div>
+<div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
+    <div class="flex items-center justify-between">
+        <div>
+            <p class="text-gray-400 text-sm">Messages</p>
+            <p class="text-3xl font-bold mt-1">{total_messages:,}</p>
+        </div>
+        <div class="w-12 h-12 bg-purple-500/20 rounded-lg flex items-center justify-center">
+            <svg class="w-6 h-6 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
+        </div>
+    </div>
+</div>
+<div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
+    <div class="flex items-center justify-between">
+        <div>
+            <p class="text-gray-400 text-sm">Webhook Success</p>
+            <p class="text-3xl font-bold mt-1 text-whatsapp">{success_rate}%</p>
+            <p class="text-xs text-gray-500 mt-1">{total_webhook_attempts} total attempts</p>
+        </div>
+        <div class="w-12 h-12 bg-whatsapp/20 rounded-lg flex items-center justify-center">
+            <svg class="w-6 h-6 text-whatsapp" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
+        </div>
+    </div>
+</div>
+"""
+    return HTMLResponse(content=html)
+
+
+@fragments_router.get("/tenants", response_class=HTMLResponse)
+async def get_tenants_fragment(session_id: str = Depends(require_admin_session)):
+    tenants = tenant_manager.list_tenants()
+
+    if not tenants:
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">No tenants yet. Click "Add Tenant" to create one.</div>'
+        )
+
+    html_parts = []
+    for t in tenants:
+        state_badge = ""
+        if t.connection_state == "connected":
+            state_badge = '<span class="px-2 py-1 text-xs bg-green-500/20 text-green-400 rounded">Connected</span>'
+        elif t.connection_state == "pending_qr":
+            state_badge = '<span class="px-2 py-1 text-xs bg-yellow-500/20 text-yellow-400 rounded">Pending QR</span>'
+        else:
+            state_badge = '<span class="px-2 py-1 text-xs bg-gray-500/20 text-gray-400 rounded">Disconnected</span>'
+
+        phone_info = (
+            f"<span class='text-gray-400'>{t.self_phone}</span>"
+            if t.self_phone
+            else "<span class='text-gray-500'>No phone</span>"
+        )
+        webhook_count = len(t.webhook_urls)
+
+        html_parts.append(f"""
+<div class="p-4 hover:bg-gray-700/50 transition" data-tenant-hash="{t.api_key_hash}">
+    <div class="flex items-center justify-between">
+        <div class="flex-1">
+            <div class="flex items-center gap-3">
+                <h3 class="font-medium text-lg">{t.name}</h3>
+                {state_badge}
+                {"<span class='px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded'>Has Auth</span>" if t.has_auth else ""}
+            </div>
+            <div class="text-sm text-gray-400 mt-1">
+                {phone_info} | {webhook_count} webhook{"s" if webhook_count != 1 else ""} | Created {t.created_at.strftime("%Y-%m-%d")}
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <button onclick="showTenantActions('{t.api_key_hash}', '{t.name}')" class="px-3 py-1 text-sm text-gray-400 hover:text-white hover:bg-gray-600 rounded transition">
+                Actions
+            </button>
+        </div>
+    </div>
+</div>
+""")
+
+    return HTMLResponse(content="".join(html_parts))
+
+
+@fragments_router.get("/messages", response_class=HTMLResponse)
+async def get_messages_fragment(
+    tenant_hash: Optional[str] = Query(None),
+    chat_jid: Optional[str] = Query(None),
+    direction: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    session_id: str = Depends(require_admin_session),
+):
+    db = tenant_manager._db
+    if not db:
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">Database not available</div>'
+        )
+
+    messages, total = await db.list_messages(
+        tenant_hash=tenant_hash,
+        chat_jid=chat_jid,
+        direction=direction,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+
+    tenants = {t.api_key_hash: t.name for t in tenant_manager.list_tenants()}
+
+    if not messages:
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">No messages found</div>'
+        )
+
+    html_parts = []
+    for msg in messages:
+        tenant_name = tenants.get(msg.get("tenant_hash") or "", "Unknown")
+        direction_badge = (
+            '<span class="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded">In</span>'
+            if msg.get("direction") == "in"
+            else '<span class="px-2 py-1 text-xs bg-purple-500/20 text-purple-400 rounded">Out</span>'
+        )
+        msg_type = msg.get("msg_type") or "text"
+        raw_text = msg.get("text") or ""
+        text = raw_text[:100] + "..." if len(raw_text) > 100 else raw_text
+        ts = msg.get("timestamp")
+        timestamp = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "-"
+        is_group = msg.get("is_group") or False
+
+        html_parts.append(f"""
+<div class="p-4 hover:bg-gray-700/50 transition">
+    <div class="flex items-start justify-between gap-4">
+        <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+                <span class="font-medium">{tenant_name}</span>
+                {direction_badge}
+                {"<span class='px-2 py-1 text-xs bg-orange-500/20 text-orange-400 rounded'>Group</span>" if is_group else ""}
+                <span class="text-xs text-gray-500">{msg_type}</span>
+            </div>
+            <div class="text-sm text-gray-400 mt-1">
+                From: <span class="text-gray-300">{msg.get("from_jid", "-")[:30]}</span>
+                {"| Chat: <span class='text-gray-300'>" + msg.get("chat_jid", "-")[:30] + "</span>" if msg.get("chat_jid") else ""}
+            </div>
+            {"<div class='mt-2 text-sm text-gray-300 truncate'>" + (text or "<i class='text-gray-500'>No text content</i>") + "</div>" if text else ""}
+        </div>
+        <div class="text-xs text-gray-500 whitespace-nowrap">{timestamp}</div>
+    </div>
+</div>
+""")
+
+    return HTMLResponse(content="".join(html_parts))
+
+
+@fragments_router.get("/webhooks", response_class=HTMLResponse)
+async def get_webhooks_fragment(session_id: str = Depends(require_admin_session)):
+    webhooks = []
+    for tenant in tenant_manager.list_tenants():
+        for url in tenant.webhook_urls:
+            webhooks.append(
+                {
+                    "tenant_hash": tenant.api_key_hash,
+                    "tenant_name": tenant.name,
+                    "url": url,
+                }
+            )
+
+    if not webhooks:
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">No webhooks registered. Add webhooks to tenants to receive event notifications.</div>'
+        )
+
+    html_parts = []
+    for wh in webhooks:
+        html_parts.append(f"""
+<div class="p-4 hover:bg-gray-700/50 transition">
+    <div class="flex items-center justify-between">
+        <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+                <span class="font-medium">{wh["tenant_name"]}</span>
+            </div>
+            <div class="text-sm text-whatsapp truncate mt-1">{wh["url"]}</div>
+        </div>
+        <div class="flex items-center gap-2">
+            <button hx-delete="/admin/api/tenants/{wh["tenant_hash"]}/webhooks?url={wh["url"]}" 
+                    hx-on="htmx:afterRequest: htmx.trigger('#webhooks-list', 'load')"
+                    hx-confirm="Remove this webhook?"
+                    class="px-3 py-1 text-sm text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded transition">
+                Remove
+            </button>
+        </div>
+    </div>
+</div>
+""")
+
+    return HTMLResponse(content="".join(html_parts))
+
+
+@fragments_router.get("/webhook-history", response_class=HTMLResponse)
+async def get_webhook_history_fragment(
+    tenant_hash: Optional[str] = Query(None),
+    url: Optional[str] = Query(None),
+    success: Optional[bool] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    session_id: str = Depends(require_admin_session),
+):
+    db = tenant_manager._db
+    if not db:
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">Database not available</div>'
+        )
+
+    attempts, total = await db.list_webhook_attempts(
+        tenant_hash=tenant_hash,
+        url=url,
+        success=success,
+        limit=limit,
+        offset=offset,
+    )
+
+    tenants = {t.api_key_hash: t.name for t in tenant_manager.list_tenants()}
+
+    if not attempts:
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">No webhook attempts recorded yet.</div>'
+        )
+
+    html_parts = []
+    for a in attempts:
+        tenant_name = tenants.get(a.get("tenant_hash") or "", "Unknown")
+        success_badge = (
+            '<span class="px-2 py-1 text-xs bg-green-500/20 text-green-400 rounded">Success</span>'
+            if a.get("success")
+            else '<span class="px-2 py-1 text-xs bg-red-500/20 text-red-400 rounded">Failed</span>'
+        )
+        created_at = a.get("created_at")
+        timestamp = (
+            datetime.fromisoformat(created_at).strftime("%Y-%m-%d %H:%M:%S")
+            if created_at
+            else "-"
+        )
+        latency = f"{a.get('latency_ms')}ms" if a.get("latency_ms") else "-"
+        status_code = a.get("status_code", "-")
+
+        html_parts.append(f"""
+<div class="p-4 hover:bg-gray-700/50 transition">
+    <div class="flex items-start justify-between gap-4">
+        <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+                <span class="font-medium">{tenant_name}</span>
+                {success_badge}
+                <span class="text-xs text-gray-500">HTTP {status_code}</span>
+                <span class="text-xs text-gray-500">{latency}</span>
+            </div>
+            <div class="text-sm text-gray-400 truncate mt-1">{a.get("url", "-")}</div>
+            <div class="text-xs text-gray-500 mt-1">Event: {a.get("event_type", "-")}</div>
+            {"<div class='text-xs text-red-400 mt-1'>" + a.get("error_message", "") + "</div>" if a.get("error_message") else ""}
+        </div>
+        <div class="text-xs text-gray-500 whitespace-nowrap">{timestamp}</div>
+    </div>
+</div>
+""")
+
+    return HTMLResponse(content="".join(html_parts))
+
+
+@fragments_router.get("/blocked-ips", response_class=HTMLResponse)
+async def get_blocked_ips_fragment(session_id: str = Depends(require_admin_session)):
+    blocked_ips = rate_limiter.get_blocked_ips()
+
+    if not blocked_ips:
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">No blocked IPs</div>'
+        )
+
+    html_parts = []
+    for ip_data in blocked_ips:
+        html_parts.append(f"""
+<div class="p-4 hover:bg-gray-700/50 transition">
+    <div class="flex items-center justify-between">
+        <div>
+            <span class="font-mono text-lg">{ip_data.get("ip", "-")}</span>
+            <div class="text-sm text-gray-400 mt-1">Reason: {ip_data.get("reason", "-")}</div>
+        </div>
+        <button hx-delete="/admin/api/rate-limit/block?ip={ip_data.get("ip")}" 
+                hx-on="htmx:afterRequest: htmx.trigger('#blocked-ips', 'load')"
+                class="px-3 py-1 text-sm text-gray-400 hover:text-white hover:bg-gray-600 rounded transition">
+            Unblock
+        </button>
+    </div>
+</div>
+""")
+
+    return HTMLResponse(content="".join(html_parts))
+
+
+@fragments_router.get("/failed-auth", response_class=HTMLResponse)
+async def get_failed_auth_fragment(session_id: str = Depends(require_admin_session)):
+    failed = rate_limiter.get_failed_auth_attempts()
+
+    if not failed:
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">No failed auth attempts recorded</div>'
+        )
+
+    html_parts = []
+    for ip, count in failed.items():
+        bar_width = min(count / 5 * 100, 100)
+        bar_color = (
+            "bg-red-500"
+            if count >= 5
+            else "bg-yellow-500"
+            if count >= 3
+            else "bg-gray-500"
+        )
+        html_parts.append(f"""
+<div class="p-4 hover:bg-gray-700/50 transition">
+    <div class="flex items-center justify-between">
+        <div class="flex-1">
+            <div class="flex items-center gap-3">
+                <span class="font-mono">{ip}</span>
+                <span class="text-sm text-gray-400">{count} attempt{"s" if count != 1 else ""}</span>
+                {"<span class='px-2 py-1 text-xs bg-red-500/20 text-red-400 rounded'>BLOCKED</span>" if count >= 5 else ""}
+            </div>
+            <div class="mt-2 h-2 bg-gray-700 rounded-full overflow-hidden">
+                <div class="h-full {bar_color} rounded-full transition-all" style="width: {bar_width}%"></div>
+            </div>
+        </div>
+        <button hx-delete="/admin/api/rate-limit/failed-auth?ip={ip}" 
+                hx-on="htmx:afterRequest: htmx.trigger('#failed-auth', 'load')"
+                class="ml-4 px-3 py-1 text-sm text-gray-400 hover:text-white hover:bg-gray-600 rounded transition">
+            Clear
+        </button>
+    </div>
+</div>
+""")
+
+    return HTMLResponse(content="".join(html_parts))
+
+
+# JSON API Routes
 
 
 @api_router.get("/stats")
@@ -377,7 +1259,7 @@ async def list_messages_api(
         "messages": [
             {
                 **msg,
-                "tenant_name": tenants.get(msg.get("tenant_hash"), "Unknown"),
+                "tenant_name": tenants.get(msg.get("tenant_hash") or "", "Unknown"),
             }
             for msg in messages
         ],
@@ -431,7 +1313,7 @@ async def webhook_history_api(
         "attempts": [
             {
                 **a,
-                "tenant_name": tenants.get(a.get("tenant_hash"), "Unknown"),
+                "tenant_name": tenants.get(a.get("tenant_hash") or "", "Unknown"),
             }
             for a in attempts
         ],
@@ -517,587 +1399,5 @@ async def clear_failed_auth_api(
     ip: Optional[str] = Query(None),
     session_id: str = Depends(require_admin_session),
 ):
-    rate_limiter.clear_failed_auth(ip) if ip else rate_limiter.clear_failed_auth(None)
+    rate_limiter.clear_failed_auth(ip)
     return {"status": "cleared"}
-
-
-# Template rendering functions
-
-
-async def render_dashboard(request: Request) -> HTMLResponse:
-    html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - WhatsApp Admin</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.6"></script>
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        whatsapp: '#25D366',
-                        whatsappDark: '#128C7E',
-                    }
-                }
-            }
-        }
-    </script>
-</head>
-<body class="bg-gray-900 text-white min-h-screen">
-    <div class="flex h-screen">
-        <!-- Sidebar -->
-        <aside class="w-64 bg-gray-800 border-r border-gray-700">
-            <div class="p-4 border-b border-gray-700">
-                <div class="flex items-center space-x-3">
-                    <div class="w-10 h-10 bg-whatsapp rounded-full flex items-center justify-center">
-                        <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
-                            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
-                        </svg>
-                    </div>
-                    <span class="text-xl font-bold">WhatsApp Admin</span>
-                </div>
-            </div>
-            <nav class="p-4 space-y-2">
-                <a href="/admin/dashboard" class="flex items-center space-x-3 px-4 py-3 bg-whatsapp/10 text-whatsapp rounded-lg">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg>
-                    <span>Dashboard</span>
-                </a>
-                <a href="/admin/tenants" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
-                    <span>Tenants</span>
-                </a>
-                <a href="/admin/messages" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
-                    <span>Messages</span>
-                </a>
-                <a href="/admin/webhooks" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
-                    <span>Webhooks</span>
-                </a>
-                <a href="/admin/security" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                    <span>Security</span>
-                </a>
-            </nav>
-            <div class="absolute bottom-0 w-64 p-4 border-t border-gray-700">
-                <form action="/admin/logout" method="POST">
-                    <button type="submit" class="w-full flex items-center justify-center space-x-2 px-4 py-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
-                        <span>Sign Out</span>
-                    </button>
-                </form>
-            </div>
-        </aside>
-
-        <!-- Main Content -->
-        <main class="flex-1 overflow-y-auto">
-            <header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
-                <h1 class="text-2xl font-bold">Dashboard</h1>
-            </header>
-
-            <div class="p-6">
-                <!-- Stats Cards -->
-                <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8" hx-get="/admin/api/stats" hx-trigger="load, every 30s">
-                    <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <p class="text-gray-400 text-sm">Total Tenants</p>
-                                <p class="text-3xl font-bold mt-1" id="stat-tenants">-</p>
-                            </div>
-                            <div class="w-12 h-12 bg-blue-500/20 rounded-lg flex items-center justify-center">
-                                <svg class="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <p class="text-gray-400 text-sm">Connected</p>
-                                <p class="text-3xl font-bold mt-1 text-green-500" id="stat-connected">-</p>
-                            </div>
-                            <div class="w-12 h-12 bg-green-500/20 rounded-lg flex items-center justify-center">
-                                <svg class="w-6 h-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <p class="text-gray-400 text-sm">Messages</p>
-                                <p class="text-3xl font-bold mt-1" id="stat-messages">-</p>
-                            </div>
-                            <div class="w-12 h-12 bg-purple-500/20 rounded-lg flex items-center justify-center">
-                                <svg class="w-6 h-6 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <p class="text-gray-400 text-sm">Webhook Success</p>
-                                <p class="text-3xl font-bold mt-1 text-whatsapp" id="stat-webhook-rate">-</p>
-                            </div>
-                            <div class="w-12 h-12 bg-whatsapp/20 rounded-lg flex items-center justify-center">
-                                <svg class="w-6 h-6 text-whatsapp" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Quick Actions -->
-                <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 mb-8">
-                    <h2 class="text-lg font-semibold mb-4">Quick Actions</h2>
-                    <div class="flex flex-wrap gap-4">
-                        <button onclick="showCreateTenantModal()" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg transition flex items-center space-x-2">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
-                            <span>Add Tenant</span>
-                        </button>
-                        <a href="/admin/security" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition flex items-center space-x-2">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                            <span>Manage Security</span>
-                        </a>
-                    </div>
-                </div>
-
-                <!-- Recent Activity -->
-                <div class="bg-gray-800 rounded-xl border border-gray-700">
-                    <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
-                        <h2 class="text-lg font-semibold">Recent Tenants</h2>
-                        <a href="/admin/tenants" class="text-whatsapp hover:underline text-sm">View All</a>
-                    </div>
-                    <div id="tenants-list" hx-get="/admin/api/tenants" hx-trigger="load, every 30s" class="divide-y divide-gray-700">
-                        <div class="p-6 text-center text-gray-500">Loading...</div>
-                    </div>
-                </div>
-            </div>
-        </main>
-    </div>
-
-    <!-- Create Tenant Modal -->
-    <div id="create-tenant-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 w-full max-w-md border border-gray-700">
-            <h3 class="text-xl font-bold mb-4">Create New Tenant</h3>
-            <form hx-post="/admin/api/tenants" hx-on="htmx:afterRequest: closeModalAndShowKey(event)">
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-300 mb-2">Tenant Name</label>
-                    <input type="text" name="name" required class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp">
-                </div>
-                <div class="flex justify-end space-x-4">
-                    <button type="button" onclick="hideCreateTenantModal()" class="px-4 py-2 text-gray-400 hover:text-white">Cancel</button>
-                    <button type="submit" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg">Create</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <script>
-        function showCreateTenantModal() {
-            document.getElementById('create-tenant-modal').classList.remove('hidden');
-            document.getElementById('create-tenant-modal').classList.add('flex');
-        }
-        
-        function hideCreateTenantModal() {
-            document.getElementById('create-tenant-modal').classList.add('hidden');
-            document.getElementById('create-tenant-modal').classList.remove('flex');
-        }
-        
-        function closeModalAndShowKey(event) {
-            if (event.detail.successful) {
-                hideCreateTenantModal();
-                const response = JSON.parse(event.detail.xhr.response);
-                alert('Tenant created!\\n\\nAPI Key: ' + response.tenant.api_key + '\\n\\nSave this key - it won\\'t be shown again!');
-                location.reload();
-            }
-        }
-        
-        document.body.addEventListener('htmx:beforeSwap', function(evt) {
-            if (evt.detail.target.id === 'stat-tenants') {
-                const stats = JSON.parse(evt.detail.xhr.response);
-                document.getElementById('stat-tenants').textContent = stats.tenants.total;
-                document.getElementById('stat-connected').textContent = stats.tenants.connected;
-                document.getElementById('stat-messages').textContent = stats.messages.total;
-                document.getElementById('stat-webhook-rate').textContent = stats.webhooks.success_rate + '%';
-                evt.preventDefault();
-            }
-        });
-    </script>
-</body>
-</html>"""
-    return HTMLResponse(content=html)
-
-
-async def render_tenants_page(request: Request) -> HTMLResponse:
-    html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tenants - WhatsApp Admin</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.6"></script>
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        whatsapp: '#25D366',
-                        whatsappDark: '#128C7E',
-                    }
-                }
-            }
-        }
-    </script>
-</head>
-<body class="bg-gray-900 text-white min-h-screen">
-    <div class="flex h-screen">
-        <!-- Sidebar (same as dashboard) -->
-        <aside class="w-64 bg-gray-800 border-r border-gray-700">
-            <div class="p-4 border-b border-gray-700">
-                <div class="flex items-center space-x-3">
-                    <div class="w-10 h-10 bg-whatsapp rounded-full flex items-center justify-center">
-                        <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
-                    </div>
-                    <span class="text-xl font-bold">WhatsApp Admin</span>
-                </div>
-            </div>
-            <nav class="p-4 space-y-2">
-                <a href="/admin/dashboard" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg>
-                    <span>Dashboard</span>
-                </a>
-                <a href="/admin/tenants" class="flex items-center space-x-3 px-4 py-3 bg-whatsapp/10 text-whatsapp rounded-lg">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
-                    <span>Tenants</span>
-                </a>
-                <a href="/admin/messages" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
-                    <span>Messages</span>
-                </a>
-                <a href="/admin/webhooks" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
-                    <span>Webhooks</span>
-                </a>
-                <a href="/admin/security" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                    <span>Security</span>
-                </a>
-            </nav>
-        </aside>
-
-        <!-- Main Content -->
-        <main class="flex-1 overflow-y-auto">
-            <header class="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between">
-                <h1 class="text-2xl font-bold">Tenants</h1>
-                <button onclick="showCreateTenantModal()" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg transition flex items-center space-x-2">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
-                    <span>Add Tenant</span>
-                </button>
-            </header>
-
-            <div class="p-6">
-                <div class="bg-gray-800 rounded-xl border border-gray-700">
-                    <div id="tenants-list" hx-get="/admin/api/tenants" hx-trigger="load" class="divide-y divide-gray-700">
-                        <div class="p-6 text-center text-gray-500">Loading...</div>
-                    </div>
-                </div>
-            </div>
-        </main>
-    </div>
-
-    <!-- Create Tenant Modal (same as dashboard) -->
-    <div id="create-tenant-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-xl p-6 w-full max-w-md border border-gray-700">
-            <h3 class="text-xl font-bold mb-4">Create New Tenant</h3>
-            <form hx-post="/admin/api/tenants" hx-on="htmx:afterRequest: closeModalAndShowKey(event)">
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-300 mb-2">Tenant Name</label>
-                    <input type="text" name="name" required class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp">
-                </div>
-                <div class="flex justify-end space-x-4">
-                    <button type="button" onclick="hideCreateTenantModal()" class="px-4 py-2 text-gray-400 hover:text-white">Cancel</button>
-                    <button type="submit" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg">Create</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <script>
-        function showCreateTenantModal() {
-            document.getElementById('create-tenant-modal').classList.remove('hidden');
-            document.getElementById('create-tenant-modal').classList.add('flex');
-        }
-        
-        function hideCreateTenantModal() {
-            document.getElementById('create-tenant-modal').classList.add('hidden');
-            document.getElementById('create-tenant-modal').classList.remove('flex');
-        }
-        
-        function closeModalAndShowKey(event) {
-            if (event.detail.successful) {
-                hideCreateTenantModal();
-                const response = JSON.parse(event.detail.xhr.response);
-                alert('Tenant created!\\n\\nAPI Key: ' + response.tenant.api_key + '\\n\\nSave this key - it won\\'t be shown again!');
-                location.reload();
-            }
-        }
-    </script>
-</body>
-</html>"""
-    return HTMLResponse(content=html)
-
-
-async def render_messages_page(request: Request) -> HTMLResponse:
-    html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Messages - WhatsApp Admin</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.6"></script>
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        whatsapp: '#25D366',
-                        whatsappDark: '#128C7E',
-                    }
-                }
-            }
-        }
-    </script>
-</head>
-<body class="bg-gray-900 text-white min-h-screen">
-    <div class="flex h-screen">
-        <!-- Sidebar -->
-        <aside class="w-64 bg-gray-800 border-r border-gray-700">
-            <div class="p-4 border-b border-gray-700">
-                <div class="flex items-center space-x-3">
-                    <div class="w-10 h-10 bg-whatsapp rounded-full flex items-center justify-center">
-                        <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
-                    </div>
-                    <span class="text-xl font-bold">WhatsApp Admin</span>
-                </div>
-            </div>
-            <nav class="p-4 space-y-2">
-                <a href="/admin/dashboard" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg>
-                    <span>Dashboard</span>
-                </a>
-                <a href="/admin/tenants" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
-                    <span>Tenants</span>
-                </a>
-                <a href="/admin/messages" class="flex items-center space-x-3 px-4 py-3 bg-whatsapp/10 text-whatsapp rounded-lg">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
-                    <span>Messages</span>
-                </a>
-                <a href="/admin/webhooks" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
-                    <span>Webhooks</span>
-                </a>
-                <a href="/admin/security" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                    <span>Security</span>
-                </a>
-            </nav>
-        </aside>
-
-        <!-- Main Content -->
-        <main class="flex-1 overflow-y-auto">
-            <header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
-                <h1 class="text-2xl font-bold">Messages</h1>
-            </header>
-
-            <div class="p-6">
-                <div class="bg-gray-800 rounded-xl border border-gray-700">
-                    <div id="messages-list" hx-get="/admin/api/messages?limit=50" hx-trigger="load" class="divide-y divide-gray-700">
-                        <div class="p-6 text-center text-gray-500">Loading...</div>
-                    </div>
-                </div>
-            </div>
-        </main>
-    </div>
-</body>
-</html>"""
-    return HTMLResponse(content=html)
-
-
-async def render_webhooks_page(request: Request) -> HTMLResponse:
-    html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Webhooks - WhatsApp Admin</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.6"></script>
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        whatsapp: '#25D366',
-                        whatsappDark: '#128C7E',
-                    }
-                }
-            }
-        }
-    </script>
-</head>
-<body class="bg-gray-900 text-white min-h-screen">
-    <div class="flex h-screen">
-        <!-- Sidebar -->
-        <aside class="w-64 bg-gray-800 border-r border-gray-700">
-            <div class="p-4 border-b border-gray-700">
-                <div class="flex items-center space-x-3">
-                    <div class="w-10 h-10 bg-whatsapp rounded-full flex items-center justify-center">
-                        <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
-                    </div>
-                    <span class="text-xl font-bold">WhatsApp Admin</span>
-                </div>
-            </div>
-            <nav class="p-4 space-y-2">
-                <a href="/admin/dashboard" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg>
-                    <span>Dashboard</span>
-                </a>
-                <a href="/admin/tenants" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
-                    <span>Tenants</span>
-                </a>
-                <a href="/admin/messages" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
-                    <span>Messages</span>
-                </a>
-                <a href="/admin/webhooks" class="flex items-center space-x-3 px-4 py-3 bg-whatsapp/10 text-whatsapp rounded-lg">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
-                    <span>Webhooks</span>
-                </a>
-                <a href="/admin/security" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                    <span>Security</span>
-                </a>
-            </nav>
-        </aside>
-
-        <!-- Main Content -->
-        <main class="flex-1 overflow-y-auto">
-            <header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
-                <h1 class="text-2xl font-bold">Webhooks</h1>
-            </header>
-
-            <div class="p-6">
-                <div class="bg-gray-800 rounded-xl border border-gray-700">
-                    <div id="webhooks-list" hx-get="/admin/api/webhooks" hx-trigger="load" class="divide-y divide-gray-700">
-                        <div class="p-6 text-center text-gray-500">Loading...</div>
-                    </div>
-                </div>
-            </div>
-        </main>
-    </div>
-</body>
-</html>"""
-    return HTMLResponse(content=html)
-
-
-async def render_security_page(request: Request) -> HTMLResponse:
-    html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Security - WhatsApp Admin</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.6"></script>
-    <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        whatsapp: '#25D366',
-                        whatsappDark: '#128C7E',
-                    }
-                }
-            }
-        }
-    </script>
-</head>
-<body class="bg-gray-900 text-white min-h-screen">
-    <div class="flex h-screen">
-        <!-- Sidebar -->
-        <aside class="w-64 bg-gray-800 border-r border-gray-700">
-            <div class="p-4 border-b border-gray-700">
-                <div class="flex items-center space-x-3">
-                    <div class="w-10 h-10 bg-whatsapp rounded-full flex items-center justify-center">
-                        <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
-                    </div>
-                    <span class="text-xl font-bold">WhatsApp Admin</span>
-                </div>
-            </div>
-            <nav class="p-4 space-y-2">
-                <a href="/admin/dashboard" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg>
-                    <span>Dashboard</span>
-                </a>
-                <a href="/admin/tenants" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
-                    <span>Tenants</span>
-                </a>
-                <a href="/admin/messages" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path></svg>
-                    <span>Messages</span>
-                </a>
-                <a href="/admin/webhooks" class="flex items-center space-x-3 px-4 py-3 text-gray-300 hover:bg-gray-700 rounded-lg transition">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path></svg>
-                    <span>Webhooks</span>
-                </a>
-                <a href="/admin/security" class="flex items-center space-x-3 px-4 py-3 bg-whatsapp/10 text-whatsapp rounded-lg">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                    <span>Security</span>
-                </a>
-            </nav>
-        </aside>
-
-        <!-- Main Content -->
-        <main class="flex-1 overflow-y-auto">
-            <header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
-                <h1 class="text-2xl font-bold">Security & Rate Limiting</h1>
-            </header>
-
-            <div class="p-6 space-y-6">
-                <!-- Blocked IPs -->
-                <div class="bg-gray-800 rounded-xl border border-gray-700">
-                    <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
-                        <h2 class="text-lg font-semibold">Blocked IPs</h2>
-                    </div>
-                    <div id="blocked-ips" hx-get="/admin/api/rate-limit/blocked" hx-trigger="load, every 30s" class="divide-y divide-gray-700">
-                        <div class="p-6 text-center text-gray-500">Loading...</div>
-                    </div>
-                </div>
-
-                <!-- Failed Auth Attempts -->
-                <div class="bg-gray-800 rounded-xl border border-gray-700">
-                    <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
-                        <h2 class="text-lg font-semibold">Failed Auth Attempts</h2>
-                        <button hx-delete="/admin/api/rate-limit/failed-auth" hx-swap="none" hx-on="htmx:afterRequest: location.reload()" class="text-sm text-gray-400 hover:text-white">Clear All</button>
-                    </div>
-                    <div id="failed-auth" hx-get="/admin/api/rate-limit/failed-auth" hx-trigger="load, every 30s" class="p-6">
-                        <div class="text-center text-gray-500">Loading...</div>
-                    </div>
-                </div>
-            </div>
-        </main>
-    </div>
-</body>
-</html>"""
-    return HTMLResponse(content=html)

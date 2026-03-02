@@ -102,8 +102,11 @@ class RateLimiter:
 
         return attempt_count, blocked
 
-    def clear_failed_auth(self, ip: str) -> None:
-        if ip in self._failed_auth_attempts:
+    def clear_failed_auth(self, ip: Optional[str] = None) -> None:
+        if ip is None:
+            self._failed_auth_attempts.clear()
+            logger.debug("All failed auth attempts cleared")
+        elif ip in self._failed_auth_attempts:
             del self._failed_auth_attempts[ip]
             logger.debug(f"Failed auth attempts cleared for IP", extra={"ip": ip})
 

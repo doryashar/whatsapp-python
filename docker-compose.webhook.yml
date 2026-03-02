@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  whatsapp-api:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - whatsapp-data:/app/data
+    environment:
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-admin_secret_key}
+      - DATABASE_URL=${DATABASE_URL:-}
+      - DEBUG=${DEBUG:-false}
+    networks:
+      - whatsapp-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  opencode-webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile.webhook
+    ports:
+      - "5556:5556"
+    volumes:
+      - session-data:/app/data
+    environment:
+      - WHATSAPP_API_URL=http://whatsapp-api:8080
+      - WHATSAPP_API_KEY=${WHATSAPP_API_KEY}
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-admin_secret_key}
+      - WEBHOOK_HOST=0.0.0.0
+      - WEBHOOK_PORT=5556
+      - WEBHOOK_EXTERNAL_URL=${WEBHOOK_EXTERNAL_URL:-http://localhost:5556}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - OPENCODE_TIMEOUT=${OPENCODE_TIMEOUT:-120}
+      - SESSION_DB_PATH=/app/data/sessions.db
+    depends_on:
+      whatsapp-api:
+        condition: service_healthy
+    networks:
+      - whatsapp-net
+    restart: unless-stopped
+
+volumes:
+  whatsapp-data:
+  session-data:
+
+networks:
+  whatsapp-net:
+    driver: bridge

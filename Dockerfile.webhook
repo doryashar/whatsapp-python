@@ -1,0 +1,34 @@
+FROM python:3.11-slim
+
+LABEL maintainer="WhatsApp Python API"
+LABEL description="OpenCode WhatsApp Webhook Handler"
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://get.opencode.ai/install.sh | sh
+
+COPY requirements-webhook.txt .
+RUN pip install --no-cache-dir -r requirements-webhook.txt
+
+COPY scripts/opencode_webhook_handler.py .
+COPY scripts/session_manager.py .
+COPY PROMPT.md .
+
+RUN mkdir -p /app/data
+
+EXPOSE 5556
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:5556/health || exit 1
+
+ENV WHATSAPP_API_URL=http://localhost:8080
+ENV WEBHOOK_HOST=0.0.0.0
+ENV WEBHOOK_PORT=5556
+ENV LOG_LEVEL=INFO
+ENV SESSION_DB_PATH=/app/data/sessions.db
+
+CMD ["python", "opencode_webhook_handler.py"]

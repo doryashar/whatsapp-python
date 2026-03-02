@@ -8,7 +8,11 @@ from contextlib import asynccontextmanager
 from .config import settings
 from .telemetry import setup_telemetry, instrument_app, get_logger
 from .api import router, admin_router
-from .admin import router as admin_ui_router, api_router as admin_api_router
+from .admin import (
+    router as admin_ui_router,
+    api_router as admin_api_router,
+    fragments_router as admin_fragments_router,
+)
 from .middleware import RateLimitMiddleware, rate_limiter
 from .tenant import tenant_manager
 from .store.database import Database
@@ -206,6 +210,7 @@ app.include_router(router)
 app.include_router(admin_router)
 app.include_router(admin_ui_router)
 app.include_router(admin_api_router)
+app.include_router(admin_fragments_router)
 
 
 @app.get("/health")
