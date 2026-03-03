@@ -10,7 +10,7 @@ class ChatwootConfig(BaseModel):
     url: str = ""
     token: str = ""
     account_id: str = ""
-    inbox_id: Optional[str] = None
+    inbox_id: Optional[int] = None
     inbox_name: str = "WhatsApp"
     webhook_url: Optional[str] = None
     hmac_token: Optional[str] = None
@@ -78,7 +78,7 @@ class ChatwootInbox(BaseModel):
     id: int
     name: str
     channel_type: str
-    account_id: int
+    account_id: Optional[int] = None
     webhook_url: Optional[str] = None
 
 

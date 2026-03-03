@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -24,6 +24,9 @@ from .store.database import Database
 from .webhooks import WebhookSender
 from .store.messages import StoredMessage
 from .chatwoot import ChatwootConfig, ChatwootIntegration
+
+if TYPE_CHECKING:
+    from .tenant import Tenant
 
 setup_telemetry(
     service_name=settings.service_name,
@@ -108,6 +111,40 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+async def handle_chatwoot_event(
+    tenant: "Tenant", event_type: str, params: dict[str, Any]
+):
+    """Handle Chatwoot integration for events."""
+    chatwoot_config = getattr(tenant, "chatwoot_config", None)
+    if not chatwoot_config or not chatwoot_config.get("enabled"):
+        return
+
+    try:
+        if tenant_manager._db:
+            global_config = await tenant_manager._db.get_global_config("chatwoot")
+        else:
+            global_config = None
+
+        if global_config:
+            merged_config = {
+                **global_config,
+                **chatwoot_config,
+            }
+        else:
+            merged_config = chatwoot_config
+
+        config = ChatwootConfig(**merged_config)
+        integration = ChatwootIntegration(config, tenant)
+        if event_type == "message":
+            await integration.handle_message(params)
+        elif event_type == "connected":
+            await integration.handle_connected(params)
+        elif event_type == "disconnected":
+            await integration.handle_disconnected(params)
+    except Exception as e:
+        logger.error(f"Chatwoot integration error for tenant {tenant.name}: {e}")
 
 
 def handle_bridge_event(
@@ -216,7 +253,7 @@ def handle_bridge_event(
                     "tenant_name": tenant.name,
                     "event": event_type,
                     "params": params,
-                }
+                },
             )
         )
     elif event_type == "message":
@@ -227,7 +264,7 @@ def handle_bridge_event(
                     "tenant_hash": tenant_id,
                     "tenant_name": tenant.name,
                     "message": params,
-                }
+                },
             )
         )
 
@@ -247,17 +284,7 @@ def handle_bridge_event(
 
     chatwoot_config = getattr(tenant, "chatwoot_config", None)
     if chatwoot_config and chatwoot_config.get("enabled"):
-        try:
-            config = ChatwootConfig(**chatwoot_config)
-            integration = ChatwootIntegration(config, tenant)
-            if event_type == "message":
-                asyncio.create_task(integration.handle_message(params))
-            elif event_type == "connected":
-                asyncio.create_task(integration.handle_connected(params))
-            elif event_type == "disconnected":
-                asyncio.create_task(integration.handle_disconnected(params))
-        except Exception as e:
-            logger.error(f"Chatwoot integration error for tenant {tenant.name}: {e}")
+        asyncio.create_task(handle_chatwoot_event(tenant, event_type, params))
 
 
 tenant_manager.on_event(handle_bridge_event)
@@ -334,40 +361,41 @@ async def ws_events(
         manager.disconnect(tenant.api_key_hash, websocket)
 
 
-
-
 @app.websocket("/admin/ws")
 async def admin_ws_events(
     websocket: WebSocket,
     session_id: Optional[str] = Query(None),
 ):
     """WebSocket endpoint for admin dashboard real-time updates"""
-    logger.debug(f"Admin WebSocket connection attempt: session={session_id[:16] if session_id else 'none'}...")
-    
+    logger.debug(
+        f"Admin WebSocket connection attempt: session={session_id[:16] if session_id else 'none'}..."
+    )
+
     if not session_id:
         logger.warning("Admin WebSocket rejected: no session ID")
         await websocket.close(code=1008, reason="Session ID required")
         return
-    
+
     # Validate session
     db = tenant_manager._db
     if not db:
         logger.warning("Admin WebSocket rejected: database not available")
         await websocket.close(code=1011, reason="Database not available")
         return
-    
+
     from .admin.auth import AdminSession
+
     admin_session = AdminSession(db)
     session_data = await admin_session.get_session(session_id)
-    
+
     if not session_data:
         logger.warning("Admin WebSocket rejected: invalid session")
         await websocket.close(code=1008, reason="Invalid session")
         return
-    
+
     logger.info(f"Admin WebSocket connected: session={session_id[:16]}...")
     await admin_ws_manager.connect(websocket, session_id)
-    
+
     try:
         while True:
             data = await websocket.receive_text()

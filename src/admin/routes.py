@@ -383,6 +383,12 @@ async def admin_dashboard(
 </div>
 """
     script = """
+function selectContact(jid, name) {
+    document.getElementById('send-to').value = jid;
+    switchTab('messages');
+    document.getElementById('send-text').focus();
+}
+
 let selectedTenants = new Set();
 
 function toggleSelectAll() {
@@ -783,6 +789,12 @@ async def admin_tenants_page(
 </div>
 """
     script = """
+function selectContact(jid, name) {
+    document.getElementById('send-to').value = jid;
+    switchTab('messages');
+    document.getElementById('send-text').focus();
+}
+
 let selectedTenants = new Set();
 
 function toggleSelectAll() {
@@ -1298,7 +1310,7 @@ async function toggleChatwootForTenant(tenantHash, currentEnabled) {
         });
         
         if (response.ok) {
-            htmx.trigger('#chatwoot-tenants', 'load');
+            htmx.ajax('GET', '/admin/fragments/chatwoot/tenants', {target: '#chatwoot-tenants', swap: 'innerHTML'});
         } else {
             const data = await response.json();
             alert(data.detail || 'Failed to update');
@@ -1343,22 +1355,43 @@ async function saveChatwootTenantConfig() {
         
         const data = await response.json();
         
-        if (response.ok) {
+        if (response.ok) {{
             status.textContent = 'Saved!';
             status.className = 'text-sm text-green-400';
-            setTimeout(() => {
+            setTimeout(() => {{
                 closeChatwootTenantModal();
-                htmx.trigger('#chatwoot-tenants', 'load');
-            }, 500);
-        } else {
+                htmx.ajax('GET', '/admin/fragments/chatwoot/tenants', {{target: '#chatwoot-tenants', swap: 'innerHTML'}});
+            }}, 500);
+        }} else {{
             status.textContent = data.detail || 'Failed to save';
             status.className = 'text-sm text-red-400';
-        }
-    } catch (e) {
+        }}
+    }} catch (e) {{
         status.textContent = 'Error: ' + e.message;
         status.className = 'text-sm text-red-400';
-    }
-}
+    }}
+}}
+
+async function syncChatwootContacts(tenantHash) {{
+    if (!confirm('Sync all WhatsApp contacts to Chatwoot?')) return;
+    
+    try {{
+        const response = await fetch(`/admin/api/tenants/${{tenantHash}}/chatwoot/sync-contacts`, {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}}
+        }});
+        
+        const data = await response.json();
+        
+        if (response.ok) {{
+            alert(`Contacts synced!\\nCreated: ${{data.created}}\\nUpdated: ${{data.updated}}\\nSkipped: ${{data.skipped}}`);
+        }} else {{
+            alert(data.detail || 'Failed to sync contacts');
+        }}
+    }} catch (e) {{
+        alert('Error: ' + e.message);
+    }}
+}}
 """
     html = PAGE_TEMPLATE.format(
         title="Chatwoot",
@@ -1469,6 +1502,9 @@ async def admin_tenant_details_page(
                 <button onclick="switchTab('messages')" id="tab-messages" class="px-6 py-3 text-whatsapp border-b-2 border-whatsapp font-medium">
                     Messages
                 </button>
+                <button onclick="switchTab('contacts')" id="tab-contacts" class="px-6 py-3 text-gray-400 hover:text-white border-b-2 border-transparent font-medium">
+                    Contacts
+                </button>
                 <button onclick="switchTab('webhooks')" id="tab-webhooks" class="px-6 py-3 text-gray-400 hover:text-white border-b-2 border-transparent font-medium">
                     Webhooks
                 </button>
@@ -1493,6 +1529,12 @@ async def admin_tenant_details_page(
             </div>
             <div id="tenant-messages" hx-get="/admin/fragments/tenant-messages/{tenant_hash}" hx-trigger="load" class="max-h-[600px] overflow-y-auto">
                 <div class="p-6 text-center text-gray-500">Loading messages...</div>
+            </div>
+        </div>
+        
+        <div id="tab-content-contacts" class="tab-content hidden">
+            <div id="tenant-contacts" hx-get="/admin/fragments/tenant-contacts/{tenant_hash}" hx-trigger="load" class="divide-y divide-gray-700">
+                <div class="p-6 text-center text-gray-500">Loading contacts...</div>
             </div>
         </div>
         
@@ -2138,24 +2180,35 @@ async def get_blocked_ips_fragment(session_id: str = Depends(require_admin_sessi
 async def get_chatwoot_config_fragment(
     session_id: str = Depends(require_admin_session),
 ):
+    saved_config = None
+    if tenant_manager._db:
+        saved_config = await tenant_manager._db.get_global_config("chatwoot")
+
+    url_value = saved_config.get("url", "") if saved_config else ""
+    token_value = saved_config.get("token", "") if saved_config else ""
+    account_id_value = saved_config.get("account_id", "") if saved_config else ""
+
     return HTMLResponse(
-        content="""
+        content=f"""
 <div class="space-y-4">
     <div class="grid grid-cols-2 gap-4">
         <div>
             <label class="block text-sm font-medium text-gray-300 mb-2">Chatwoot URL</label>
             <input type="url" id="chatwoot-url" placeholder="https://chatwoot.example.com" 
+                   value="{url_value}"
                    class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp">
         </div>
         <div>
             <label class="block text-sm font-medium text-gray-300 mb-2">Account ID</label>
             <input type="text" id="chatwoot-account-id" placeholder="1" 
+                   value="{account_id_value}"
                    class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp">
         </div>
     </div>
     <div>
         <label class="block text-sm font-medium text-gray-300 mb-2">API Token</label>
         <input type="password" id="chatwoot-token" placeholder="Your Chatwoot API token" 
+               value="{token_value}"
                class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp">
     </div>
     <div class="flex items-center gap-4 pt-2">
@@ -2166,48 +2219,48 @@ async def get_chatwoot_config_fragment(
     </div>
 </div>
 <script>
-async function saveChatwootConfig() {
+async function saveChatwootConfig() {{
     const url = document.getElementById('chatwoot-url').value;
     const token = document.getElementById('chatwoot-token').value;
     const accountId = document.getElementById('chatwoot-account-id').value;
     const status = document.getElementById('chatwoot-config-status');
     
-    if (!url || !token || !accountId) {
+    if (!url || !token || !accountId) {{
         status.textContent = 'Please fill all fields';
         status.className = 'text-sm text-red-400';
         return;
-    }
+    }}
     
     status.textContent = 'Saving...';
     status.className = 'text-sm text-gray-400';
     
-    try {
-        const response = await fetch('/admin/api/chatwoot/config', {
+    try {{
+        const response = await fetch('/admin/api/chatwoot/config', {{
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{
                 url: url,
                 token: token,
                 account_id: accountId,
                 enabled: true
-            })
-        });
+            }})
+        }});
         
         const data = await response.json();
         
-        if (response.ok) {
+        if (response.ok) {{
             status.textContent = 'Configuration saved!';
             status.className = 'text-sm text-green-400';
             htmx.trigger('#chatwoot-tenants', 'load');
-        } else {
+        }} else {{
             status.textContent = data.detail || 'Failed to save';
             status.className = 'text-sm text-red-400';
-        }
-    } catch (e) {
+        }}
+    }} catch (e) {{
         status.textContent = 'Error: ' + e.message;
         status.className = 'text-sm text-red-400';
-    }
-}
+    }}
+}}
 </script>
 """
     )
@@ -2260,6 +2313,7 @@ async def get_chatwoot_tenants_fragment(
                     class="px-3 py-1 text-sm text-gray-400 hover:text-white hover:bg-gray-600 rounded transition">
                 Configure
             </button>
+            {"<button onclick=\"syncChatwootContacts('" + tenant.api_key_hash[:16] + '\')" class="px-3 py-1 text-sm text-blue-400 hover:bg-blue-500/20 rounded transition">Sync Contacts</button>' if enabled else ""}
         </div>
     </div>
 </div>
@@ -2482,6 +2536,89 @@ async def get_tenant_messages_fragment(
     </div>
 </div>""")
 
+    return HTMLResponse(content="".join(html_parts))
+
+
+
+@fragments_router.get("/tenant-contacts/{tenant_hash}", response_class=HTMLResponse)
+async def get_tenant_contacts_fragment(
+    tenant_hash: str,
+    limit: int = Query(100, ge=1, le=500),
+    session_id: str = Depends(require_admin_session),
+):
+    tenant = tenant_manager._tenants.get(tenant_hash)
+    if not tenant:
+        return HTMLResponse(content='<div class="p-6 text-center text-red-400">Tenant not found</div>')
+    
+    db = tenant_manager._db
+    if not db:
+        return HTMLResponse(content='<div class="p-6 text-center text-gray-500">Database not available</div>')
+    
+    contacts = await db.get_recent_chats(tenant_hash, limit=limit)
+    
+    if not contacts:
+        return HTMLResponse(content='<div class="p-6 text-center text-gray-500">No contacts yet</div>')
+    
+    html_parts = []
+    for contact in contacts:
+        chat_jid = contact.get("chat_jid", "")
+        push_name = contact.get("push_name") or ""
+        is_group = contact.get("is_group", False)
+        message_count = contact.get("message_count", 0)
+        last_message_at = contact.get("last_message_at")
+        
+        phone = chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
+        
+        if push_name:
+            display_name = push_name
+            subtitle = phone
+        else:
+            display_name = phone
+            subtitle = ""
+        
+        if last_message_at:
+            if isinstance(last_message_at, datetime):
+                last_time = last_message_at.strftime("%Y-%m-%d %H:%M")
+            else:
+                last_time = str(last_message_at)
+        else:
+            last_time = ""
+        
+        if is_group:
+            icon_svg = '<svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>'
+            badge = '<span class="ml-2 px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded">Group</span>'
+        else:
+            icon_svg = '<svg class="w-6 h-6 text-whatsapp" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>'
+            badge = ""
+        
+        display_name_escaped = display_name.replace("'", "\'")
+        
+        contact_html = f"""
+<div class="p-4 hover:bg-gray-700/50 transition cursor-pointer" onclick="selectContact('{chat_jid}', '{display_name_escaped}')">
+    <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3 flex-1">
+            <div class="w-10 h-10 bg-gray-700 rounded-full flex items-center justify-center flex-shrink-0">
+                {icon_svg}
+            </div>
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                    <span class="font-medium truncate">{display_name}</span>
+                    {badge}
+                </div>
+                <div class="text-sm text-gray-400 truncate">{subtitle}</div>
+            </div>
+        </div>
+        <div class="text-right flex-shrink-0 ml-4">
+            <div class="text-sm text-gray-400">{message_count} messages</div>
+            <div class="text-xs text-gray-500 mt-1">{last_time}</div>
+        </div>
+    </div>
+</div>"""
+        html_parts.append(contact_html)
+    
+    header = f'<div class="px-6 py-3 bg-gray-700/50 border-b border-gray-700"><span class="text-sm text-gray-400">{len(contacts)} contacts</span></div>'
+    html_parts.insert(0, header)
+    
     return HTMLResponse(content="".join(html_parts))
 
 
@@ -3117,6 +3254,8 @@ async def set_tenant_chatwoot_config(
     data: ChatwootTenantConfigRequest,
     session_id: str = Depends(require_admin_session),
 ):
+    from ..chatwoot import ChatwootConfig, ChatwootClient, ChatwootAPIError
+
     tenant = None
     for t in tenant_manager.list_tenants():
         if t.api_key_hash.startswith(tenant_hash):
@@ -3128,12 +3267,70 @@ async def set_tenant_chatwoot_config(
 
     existing_config = getattr(tenant, "chatwoot_config", None) or {}
 
-    new_config = {
-        **existing_config,
-        "enabled": data.enabled,
-        "sign_messages": data.sign_messages,
-        "reopen_conversation": data.reopen_conversation,
-    }
+    if data.enabled:
+        global_config = None
+        if tenant_manager._db:
+            global_config = await tenant_manager._db.get_global_config("chatwoot")
+
+        if not global_config:
+            raise HTTPException(
+                status_code=400,
+                detail="Chatwoot global configuration not found. Please configure Chatwoot first.",
+            )
+
+        cw_config = ChatwootConfig(
+            enabled=True,
+            url=global_config["url"],
+            token=global_config["token"],
+            account_id=global_config["account_id"],
+        )
+
+        client = ChatwootClient(cw_config)
+        try:
+            inbox_name = f"WhatsApp - {tenant.name}"
+            webhook_url = f"{settings.base_url.rstrip('/')}/chatwoot/webhook/{tenant.api_key_hash[:16]}"
+
+            existing_inbox_id = existing_config.get("inbox_id")
+            if not existing_inbox_id:
+                inboxes = await client.list_inboxes()
+                existing_inbox = None
+                for inbox in inboxes:
+                    if inbox.name == inbox_name:
+                        existing_inbox = inbox
+                        break
+
+                if existing_inbox:
+                    inbox_id = existing_inbox.id
+                else:
+                    inbox = await client.create_inbox(inbox_name, webhook_url)
+                    inbox_id = inbox.id
+            else:
+                inbox_id = existing_inbox_id
+
+            new_config = {
+                **existing_config,
+                "enabled": True,
+                "sign_messages": data.sign_messages,
+                "reopen_conversation": data.reopen_conversation,
+                "inbox_id": inbox_id,
+                "url": global_config["url"],
+                "account_id": global_config["account_id"],
+            }
+
+        except ChatwootAPIError as e:
+            logger.error(f"Failed to create Chatwoot inbox: {e.message}")
+            raise HTTPException(
+                status_code=400, detail=f"Failed to create Chatwoot inbox: {e.message}"
+            )
+        finally:
+            await client.close()
+    else:
+        new_config = {
+            **existing_config,
+            "enabled": False,
+            "sign_messages": data.sign_messages,
+            "reopen_conversation": data.reopen_conversation,
+        }
 
     tenant.chatwoot_config = new_config
 
@@ -3141,6 +3338,85 @@ async def set_tenant_chatwoot_config(
         await tenant_manager._db.save_chatwoot_config(tenant.api_key_hash, new_config)
 
     return {"status": "updated", "config": new_config}
+
+
+@api_router.post("/tenants/{tenant_hash}/chatwoot/sync-contacts")
+async def sync_tenant_chatwoot_contacts(
+    tenant_hash: str,
+    session_id: str = Depends(require_admin_session),
+):
+    from ..chatwoot import ChatwootConfig, ChatwootClient
+
+    tenant = None
+    for t in tenant_manager.list_tenants():
+        if t.api_key_hash.startswith(tenant_hash):
+            tenant = t
+            break
+
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    config = getattr(tenant, "chatwoot_config", None)
+    if not config or not config.get("enabled"):
+        raise HTTPException(
+            status_code=400, detail="Chatwoot not enabled for this tenant"
+        )
+
+    if not tenant_manager._db:
+        raise HTTPException(status_code=400, detail="Database not available")
+
+    global_config = await tenant_manager._db.get_global_config("chatwoot")
+    if not global_config:
+        raise HTTPException(status_code=400, detail="Chatwoot global config not found")
+
+    chats = await tenant_manager._db.get_recent_chats(tenant.api_key_hash, limit=1000)
+
+    cw_config = ChatwootConfig(
+        enabled=True,
+        url=config.get("url", global_config["url"]),
+        token=global_config["token"],
+        account_id=config.get("account_id", global_config["account_id"]),
+        inbox_id=config.get("inbox_id"),
+    )
+
+    client = ChatwootClient(cw_config)
+    created = 0
+    updated = 0
+    skipped = 0
+
+    try:
+        for chat in chats:
+            if chat.get("is_group"):
+                skipped += 1
+                continue
+
+            chat_jid = chat.get("chat_jid", "")
+            if not chat_jid:
+                skipped += 1
+                continue
+
+            phone = chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
+            name = chat.get("push_name") or phone
+
+            try:
+                existing = await client.find_contact_by_phone(phone)
+                if existing:
+                    if name and name != existing.name:
+                        await client.update_contact(existing.id, name=name)
+                        updated += 1
+                    else:
+                        skipped += 1
+                else:
+                    await client.create_contact(phone_number=phone, name=name)
+                    created += 1
+            except Exception as e:
+                logger.warning(f"Failed to sync contact {phone}: {e}")
+                skipped += 1
+
+    finally:
+        await client.close()
+
+    return {"created": created, "updated": updated, "skipped": skipped}
 
 
 @api_router.delete("/tenants/{tenant_hash}/chatwoot")

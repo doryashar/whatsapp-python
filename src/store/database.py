@@ -612,7 +612,10 @@ class Database:
                     "SELECT value FROM global_config WHERE key = $1", key
                 )
                 if row:
-                    return row["value"]
+                    value = row["value"]
+                    if isinstance(value, str):
+                        return json.loads(value)
+                    return value
         else:
             cursor = await self._pool.execute(
                 "SELECT value FROM global_config WHERE key = ?", (key,)

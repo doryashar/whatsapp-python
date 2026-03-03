@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     host: str = Field(default="0.0.0.0", alias="HOST")
     port: int = Field(default=8080, alias="PORT")
     debug: bool = Field(default=False, alias="DEBUG")
+    base_url: str = Field(default="http://localhost:8080", alias="BASE_URL")
 
     bridge_path: Path = Field(
         default=Path(__file__).parent.parent.parent / "bridge" / "index.mjs",
