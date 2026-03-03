@@ -116,6 +116,13 @@ class Database:
                 )
             """)
             await conn.execute("""
+                CREATE TABLE IF NOT EXISTS global_config (
+                    key TEXT PRIMARY KEY,
+                    value JSONB NOT NULL,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            await conn.execute("""
                 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS connection_state TEXT DEFAULT 'disconnected'
             """)
             await conn.execute("""
@@ -139,6 +146,9 @@ class Database:
             await conn.execute("""
                 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS creds_json JSONB
             """)
+            await conn.execute("""
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS chatwoot_config JSONB
+            """)
 
     async def _create_tables_sqlite(self) -> None:
         logger.debug("Creating SQLite tables if not exist")
@@ -155,7 +165,8 @@ class Database:
                 last_connected_at TEXT,
                 last_disconnected_at TEXT,
                 has_auth INTEGER DEFAULT 0,
-                creds_json TEXT
+                creds_json TEXT,
+                chatwoot_config TEXT
             )
         """)
         await self._pool.execute("""
@@ -208,6 +219,13 @@ class Database:
                 expires_at TEXT NOT NULL,
                 user_agent TEXT,
                 ip_address TEXT
+            )
+        """)
+        await self._pool.execute("""
+            CREATE TABLE IF NOT EXISTS global_config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
         await self._pool.commit()
@@ -273,7 +291,8 @@ class Database:
                 rows = await conn.fetch(
                     """SELECT api_key_hash, name, created_at, webhook_urls, 
                               connection_state, self_jid, self_phone, self_name,
-                              last_connected_at, last_disconnected_at, has_auth, creds_json
+                              last_connected_at, last_disconnected_at, has_auth, creds_json,
+                              chatwoot_config
                        FROM tenants"""
                 )
                 tenants = [
@@ -294,6 +313,10 @@ class Database:
                         "creds_json": json.loads(row["creds_json"])
                         if isinstance(row["creds_json"], str)
                         else row["creds_json"],
+                        "chatwoot_config": json.loads(row["chatwoot_config"])
+                        if row["chatwoot_config"]
+                        and isinstance(row["chatwoot_config"], str)
+                        else row["chatwoot_config"],
                     }
                     for row in rows
                 ]
@@ -301,7 +324,8 @@ class Database:
             async with self._pool.execute(
                 """SELECT api_key_hash, name, created_at, webhook_urls,
                           connection_state, self_jid, self_phone, self_name,
-                          last_connected_at, last_disconnected_at, has_auth, creds_json
+                          last_connected_at, last_disconnected_at, has_auth, creds_json,
+                          chatwoot_config
                    FROM tenants"""
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -323,6 +347,7 @@ class Database:
                         else None,
                         "has_auth": bool(row[10]),
                         "creds_json": json.loads(row[11]) if row[11] else None,
+                        "chatwoot_config": json.loads(row[12]) if row[12] else None,
                     }
                     for row in rows
                 ]
@@ -536,6 +561,67 @@ class Database:
             await self._pool.commit()
         logger.debug("Credentials cleared")
 
+    async def save_chatwoot_config(
+        self, api_key_hash: str, config: Optional[dict]
+    ) -> None:
+        logger.debug(f"Saving Chatwoot config for tenant: hash={api_key_hash[:16]}...")
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE tenants SET chatwoot_config = $1 WHERE api_key_hash = $2",
+                    json.dumps(config) if config else None,
+                    api_key_hash,
+                )
+        else:
+            await self._pool.execute(
+                "UPDATE tenants SET chatwoot_config = ? WHERE api_key_hash = ?",
+                (json.dumps(config) if config else None, api_key_hash),
+            )
+            await self._pool.commit()
+        logger.debug("Chatwoot config saved")
+
+    async def save_global_config(self, key: str, value: dict) -> None:
+        logger.debug(f"Saving global config: key={key}")
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO global_config (key, value, updated_at)
+                    VALUES ($1, $2, NOW())
+                    ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()
+                    """,
+                    key,
+                    json.dumps(value),
+                )
+        else:
+            await self._pool.execute(
+                """
+                INSERT OR REPLACE INTO global_config (key, value, updated_at)
+                VALUES (?, ?, datetime('now'))
+                """,
+                (key, json.dumps(value)),
+            )
+            await self._pool.commit()
+        logger.debug(f"Global config saved: key={key}")
+
+    async def get_global_config(self, key: str) -> Optional[dict]:
+        logger.debug(f"Getting global config: key={key}")
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT value FROM global_config WHERE key = $1", key
+                )
+                if row:
+                    return row["value"]
+        else:
+            cursor = await self._pool.execute(
+                "SELECT value FROM global_config WHERE key = ?", (key,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                return json.loads(row[0])
+        return None
+
     async def save_message(
         self,
         tenant_hash: str,
@@ -711,6 +797,69 @@ class Database:
             )
             await self._pool.commit()
             return cursor.rowcount > 0
+
+    async def get_recent_chats(
+        self,
+        tenant_hash: str,
+        limit: int = 50,
+    ) -> list[dict]:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT 
+                        chat_jid,
+                        push_name,
+                        is_group,
+                        MAX(created_at) as last_message_at,
+                        COUNT(*) as message_count
+                    FROM messages
+                    WHERE tenant_hash = $1 AND chat_jid IS NOT NULL AND chat_jid != ''
+                    GROUP BY chat_jid, push_name, is_group
+                    ORDER BY MAX(created_at) DESC
+                    LIMIT $2
+                    """,
+                    tenant_hash,
+                    limit,
+                )
+                return [
+                    {
+                        "chat_jid": row["chat_jid"],
+                        "push_name": row["push_name"],
+                        "is_group": row["is_group"],
+                        "last_message_at": row["last_message_at"],
+                        "message_count": row["message_count"],
+                    }
+                    for row in rows
+                ]
+        else:
+            async with self._pool.execute(
+                """
+                SELECT 
+                    chat_jid,
+                    push_name,
+                    is_group,
+                    MAX(created_at) as last_message_at,
+                    COUNT(*) as message_count
+                FROM messages
+                WHERE tenant_hash = ? AND chat_jid IS NOT NULL AND chat_jid != ''
+                GROUP BY chat_jid, push_name, is_group
+                ORDER BY MAX(created_at) DESC
+                LIMIT ?
+                """,
+                (tenant_hash, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [
+                    {
+                        "chat_jid": row[0],
+                        "push_name": row[1],
+                        "is_group": bool(row[2]),
+                        "last_message_at": row[3],
+                        "message_count": row[4],
+                    }
+                    for row in rows
+                ]
 
     async def save_webhook_attempt(
         self,

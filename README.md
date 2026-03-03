@@ -288,11 +288,19 @@ curl -X POST http://localhost:8080/api/webhooks \
 
 ### Documentation
 
-See [docs/opencode-integration.md](docs/opencode-integration.md) for:
-- Complete setup instructions
-- Configuration options
-- API endpoint documentation
-- Troubleshooting guide
+- **[OpenCode Integration Guide](docs/opencode-integration.md)** - Setup, configuration, troubleshooting
+- **[Plugin System Plan](docs/PLUGIN_SYSTEM_PLAN.md)** - Architecture for converting OpenCode into a plugin system
+
+### Plugin System (Planned)
+
+The OpenCode integration is being converted into a **per-tenant plugin system** with:
+
+- Per-tenant plugin enable/disable
+- Admin dashboard management
+- Plugin installation from UI
+- API versioning for compatibility
+
+See [docs/PLUGIN_SYSTEM_PLAN.md](docs/PLUGIN_SYSTEM_PLAN.md) for the complete architecture and implementation plan.
 
 ### Testing
 

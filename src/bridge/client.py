@@ -232,3 +232,8 @@ class BaileysBridge:
 
     async def get_status(self) -> dict:
         return await self.call("get_status")
+
+    def is_alive(self) -> bool:
+        if not self._process or not self._running:
+            return False
+        return self._process.returncode is None

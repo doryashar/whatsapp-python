@@ -33,6 +33,7 @@ class Tenant:
     last_disconnected_at: Optional[datetime] = None
     has_auth: bool = False
     creds_json: Optional[dict] = None
+    chatwoot_config: Optional[dict] = None
 
     def __post_init__(self):
         if self.message_store is None:
@@ -97,6 +98,7 @@ class TenantManager:
                 last_disconnected_at=data.get("last_disconnected_at"),
                 has_auth=data.get("has_auth", False),
                 creds_json=data.get("creds_json"),
+                chatwoot_config=data.get("chatwoot_config"),
             )
             self._tenants[tenant.api_key_hash] = tenant
             logger.debug(

@@ -209,6 +209,27 @@ class WebhookSender:
                 else:
                     results[url] = outcome
 
+
+            # Broadcast webhook results to admin dashboard
+            try:
+                from ..admin import admin_ws_manager
+                for url, result in results.items():
+                    asyncio.create_task(
+                        admin_ws_manager.broadcast(
+                            "webhook_attempt",
+                            {
+                                "tenant_hash": self._tenant_hash,
+                                "url": url,
+                                "event_type": event_type,
+                                "success": result.success,
+                                "status_code": result.status_code,
+                                "error_message": result.error_message,
+                            }
+                        )
+                    )
+            except Exception as e:
+                logger.debug(f"Failed to broadcast webhook result: {e}")
+
             return results
 
     async def send_simple(

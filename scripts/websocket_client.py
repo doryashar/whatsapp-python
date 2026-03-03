@@ -18,7 +18,9 @@ except ImportError:
     sys.exit(1)
 
 
-async def websocket_client(api_url: str, api_key: str):
+async def websocket_client(
+    api_url: str, api_key: str, max_retries: int = 10, retry_delay: float = 5.0
+):
     ws_url = api_url.replace("http://", "ws://").replace("https://", "wss://")
     ws_url = f"{ws_url}/ws/events?api_key={api_key}"
 
@@ -35,51 +37,89 @@ async def websocket_client(api_url: str, api_key: str):
     loop.add_signal_handler(signal.SIGINT, signal_handler)
     loop.add_signal_handler(signal.SIGTERM, signal_handler)
 
+    retry_count = 0
     try:
-        async with websockets.connect(ws_url) as websocket:
-            print(f"Connected at {datetime.now().isoformat()}\n")
+        while retry_count < max_retries and not shutdown_event.is_set():
+            try:
+                async with websockets.connect(ws_url) as websocket:
+                    print(f"Connected at {datetime.now().isoformat()}\n")
+                    retry_count = 0
 
-            async def receive_events():
-                async for message in websocket:
-                    try:
-                        event = json.loads(message)
-                        event_type = event.get("type", "unknown")
-                        data = event.get("data", {})
-                        timestamp = datetime.now().isoformat()
+                    async def receive_events():
+                        async for message in websocket:
+                            try:
+                                event = json.loads(message)
+                                event_type = event.get("type", "unknown")
+                                data = event.get("data", {})
+                                timestamp = datetime.now().isoformat()
 
-                        print(f"{'=' * 60}")
-                        print(f"[{timestamp}] Event: {event_type}")
-                        print(f"Data:")
-                        print(json.dumps(data, indent=2, default=str)[:1000])
-                        if len(json.dumps(data)) > 1000:
-                            print("... (truncated)")
-                        print(f"{'=' * 60}\n")
-                        sys.stdout.flush()
-                    except json.JSONDecodeError as e:
-                        print(f"Invalid JSON received: {e}")
+                                print(f"{'=' * 60}")
+                                print(f"[{timestamp}] Event: {event_type}")
+                                print(f"Data:")
+                                print(json.dumps(data, indent=2, default=str)[:1000])
+                                if len(json.dumps(data)) > 1000:
+                                    print("... (truncated)")
+                                print(f"{'=' * 60}\n")
+                                sys.stdout.flush()
+                            except json.JSONDecodeError as e:
+                                print(f"Invalid JSON received: {e}")
 
-            async def send_ping():
-                while not shutdown_event.is_set():
-                    try:
-                        await asyncio.wait_for(shutdown_event.wait(), timeout=30)
-                    except asyncio.TimeoutError:
-                        await websocket.send(json.dumps({"type": "ping"}))
+                    async def send_ping():
+                        while not shutdown_event.is_set():
+                            try:
+                                await asyncio.wait_for(
+                                    shutdown_event.wait(), timeout=30
+                                )
+                            except asyncio.TimeoutError:
+                                await websocket.send(json.dumps({"type": "ping"}))
 
-            await asyncio.gather(
-                receive_events(),
-                send_ping(),
-                return_exceptions=True,
-            )
+                    await asyncio.gather(
+                        receive_events(),
+                        send_ping(),
+                        return_exceptions=True,
+                    )
 
-    except websockets.exceptions.InvalidStatusCode as e:
-        if e.status_code == 401:
-            print("Error: Invalid API key")
-        else:
-            print(f"Error: HTTP {e.status_code}")
-    except websockets.exceptions.ConnectionClosed as e:
-        print(f"Connection closed: {e.reason}")
-    except Exception as e:
-        print(f"Error: {e}")
+            except websockets.exceptions.InvalidHandshake as e:
+                if hasattr(e, "status_code"):
+                    if e.status_code == 401:
+                        print("Error: Invalid API key")
+                        break
+                    else:
+                        print(f"Error: HTTP {e.status_code}")
+                else:
+                    print(f"Error: Handshake failed - {e}")
+                break
+
+            except websockets.exceptions.ConnectionClosed as e:
+                print(
+                    f"Connection closed: {e.reason}. Reconnecting in {retry_delay}s..."
+                )
+                retry_count += 1
+                if retry_count < max_retries:
+                    await asyncio.sleep(retry_delay)
+                else:
+                    print("Max retries reached. Exiting.")
+                    break
+
+            except OSError as e:
+                if e.errno == 111:
+                    print(
+                        f"Connection refused. Retrying in {retry_delay}s... (attempt {retry_count + 1}/{max_retries})"
+                    )
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        print("Max retries reached. Exiting.")
+                        break
+                else:
+                    print(f"Error: {e}")
+                    break
+
+            except Exception as e:
+                print(f"Error: {e}")
+                break
+
     finally:
         loop.remove_signal_handler(signal.SIGINT)
         loop.remove_signal_handler(signal.SIGTERM)
@@ -129,6 +169,18 @@ def main():
         default="972548826569",
         help="Phone number to send test message to (default: 972548826569)",
     )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=10,
+        help="Maximum number of connection retries (default: 10)",
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=5.0,
+        help="Delay between retries in seconds (default: 5.0)",
+    )
 
     args = parser.parse_args()
 
@@ -141,7 +193,9 @@ def main():
         )
         print()
 
-    asyncio.run(websocket_client(args.api_url, args.api_key))
+    asyncio.run(
+        websocket_client(args.api_url, args.api_key, args.max_retries, args.retry_delay)
+    )
 
 
 if __name__ == "__main__":

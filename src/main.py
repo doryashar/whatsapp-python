@@ -8,16 +8,22 @@ from contextlib import asynccontextmanager
 from .config import settings
 from .telemetry import setup_telemetry, instrument_app, get_logger
 from .api import router, admin_router
+from .api.chatwoot_routes import (
+    router as chatwoot_router,
+    webhook_router as chatwoot_webhook_router,
+)
 from .admin import (
     router as admin_ui_router,
     api_router as admin_api_router,
     fragments_router as admin_fragments_router,
+    admin_ws_manager,
 )
 from .middleware import RateLimitMiddleware, rate_limiter
 from .tenant import tenant_manager
 from .store.database import Database
 from .webhooks import WebhookSender
 from .store.messages import StoredMessage
+from .chatwoot import ChatwootConfig, ChatwootIntegration
 
 setup_telemetry(
     service_name=settings.service_name,
@@ -26,6 +32,26 @@ setup_telemetry(
     debug=settings.debug,
 )
 logger = get_logger()
+
+
+async def connection_health_check():
+    while True:
+        try:
+            await asyncio.sleep(30)
+
+            for tenant in tenant_manager.list_tenants():
+                if tenant.bridge and tenant.connection_state == "connected":
+                    if not tenant.bridge.is_alive():
+                        logger.warning(
+                            f"Bridge process died for tenant {tenant.name}, marking as disconnected"
+                        )
+                        await tenant_manager.update_session_state(
+                            tenant, "disconnected"
+                        )
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Health check error: {e}")
 
 
 @asynccontextmanager
@@ -38,8 +64,18 @@ async def lifespan(app: FastAPI):
     tenant_manager.set_database(db)
     await tenant_manager.initialize()
     await tenant_manager.restore_sessions()
+
+    health_task = asyncio.create_task(connection_health_check())
+
     logger.info("WhatsApp API ready")
     yield
+
+    health_task.cancel()
+    try:
+        await health_task
+    except asyncio.CancelledError:
+        pass
+
     logger.info("Shutting down WhatsApp API...")
     await tenant_manager.close()
     logger.info("Shutdown complete")
@@ -170,6 +206,31 @@ def handle_bridge_event(
 
     asyncio.create_task(manager.broadcast(tenant_id, event_type, params))
 
+    # Broadcast to admin dashboard
+    if event_type in ["connected", "disconnected", "connecting", "reconnecting"]:
+        asyncio.create_task(
+            admin_ws_manager.broadcast(
+                "tenant_state_changed",
+                {
+                    "tenant_hash": tenant_id,
+                    "tenant_name": tenant.name,
+                    "event": event_type,
+                    "params": params,
+                }
+            )
+        )
+    elif event_type == "message":
+        asyncio.create_task(
+            admin_ws_manager.broadcast(
+                "new_message",
+                {
+                    "tenant_hash": tenant_id,
+                    "tenant_name": tenant.name,
+                    "message": params,
+                }
+            )
+        )
+
     if tenant.webhook_urls:
         logger.debug(
             f"Sending webhook for event {event_type} to {len(tenant.webhook_urls)} URLs"
@@ -183,6 +244,20 @@ def handle_bridge_event(
             db=tenant_manager._db,
         )
         asyncio.create_task(sender.send(event_type, params))
+
+    chatwoot_config = getattr(tenant, "chatwoot_config", None)
+    if chatwoot_config and chatwoot_config.get("enabled"):
+        try:
+            config = ChatwootConfig(**chatwoot_config)
+            integration = ChatwootIntegration(config, tenant)
+            if event_type == "message":
+                asyncio.create_task(integration.handle_message(params))
+            elif event_type == "connected":
+                asyncio.create_task(integration.handle_connected(params))
+            elif event_type == "disconnected":
+                asyncio.create_task(integration.handle_disconnected(params))
+        except Exception as e:
+            logger.error(f"Chatwoot integration error for tenant {tenant.name}: {e}")
 
 
 tenant_manager.on_event(handle_bridge_event)
@@ -211,6 +286,8 @@ app.include_router(admin_router)
 app.include_router(admin_ui_router)
 app.include_router(admin_api_router)
 app.include_router(admin_fragments_router)
+app.include_router(chatwoot_router)
+app.include_router(chatwoot_webhook_router)
 
 
 @app.get("/health")
@@ -255,6 +332,57 @@ async def ws_events(
     except Exception as e:
         logger.debug(f"WebSocket error for tenant {tenant.name}: {e}")
         manager.disconnect(tenant.api_key_hash, websocket)
+
+
+
+
+@app.websocket("/admin/ws")
+async def admin_ws_events(
+    websocket: WebSocket,
+    session_id: Optional[str] = Query(None),
+):
+    """WebSocket endpoint for admin dashboard real-time updates"""
+    logger.debug(f"Admin WebSocket connection attempt: session={session_id[:16] if session_id else 'none'}...")
+    
+    if not session_id:
+        logger.warning("Admin WebSocket rejected: no session ID")
+        await websocket.close(code=1008, reason="Session ID required")
+        return
+    
+    # Validate session
+    db = tenant_manager._db
+    if not db:
+        logger.warning("Admin WebSocket rejected: database not available")
+        await websocket.close(code=1011, reason="Database not available")
+        return
+    
+    from .admin.auth import AdminSession
+    admin_session = AdminSession(db)
+    session_data = await admin_session.get_session(session_id)
+    
+    if not session_data:
+        logger.warning("Admin WebSocket rejected: invalid session")
+        await websocket.close(code=1008, reason="Invalid session")
+        return
+    
+    logger.info(f"Admin WebSocket connected: session={session_id[:16]}...")
+    await admin_ws_manager.connect(websocket, session_id)
+    
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                msg = json.loads(data)
+                if msg.get("type") == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+            except json.JSONDecodeError:
+                pass
+    except WebSocketDisconnect:
+        logger.info(f"Admin WebSocket disconnected: session={session_id[:16]}...")
+        await admin_ws_manager.disconnect(websocket)
+    except Exception as e:
+        logger.debug(f"Admin WebSocket error: {e}")
+        await admin_ws_manager.disconnect(websocket)
 
 
 def main():

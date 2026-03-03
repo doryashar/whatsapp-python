@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request, Depends, HTTPException, Query, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 import json
@@ -13,9 +13,19 @@ from .auth import AdminSession, require_admin_session, get_session_id
 
 logger = get_logger("whatsapp.admin")
 
+
 router = APIRouter(prefix="/admin", tags=["admin"])
 api_router = APIRouter(prefix="/admin/api", tags=["admin-api"])
 fragments_router = APIRouter(prefix="/admin/fragments", tags=["admin-fragments"])
+
+
+@router.get("/static/websocket.js")
+async def get_websocket_js():
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+
+    js_path = Path(__file__).parent / "static" / "websocket.js"
+    return FileResponse(js_path, media_type="application/javascript")
 
 
 class TenantCreate(BaseModel):
@@ -91,6 +101,12 @@ def get_sidebar(active_page: str) -> str:
             "/admin/security",
             '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>',
         ),
+        (
+            "chatwoot",
+            "Chatwoot",
+            "/admin/chatwoot",
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>',
+        ),
     ]
 
     items_html = ""
@@ -130,6 +146,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
             }}
         }}
     </script>
+    <script src="/admin/static/websocket.js"></script>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
     <div class="flex h-screen">
@@ -285,6 +302,37 @@ async def admin_dashboard(
 </div>
 """
     modals = """
+<div class="fixed top-20 right-4 z-40">
+    <button id="bulk-action-btn" onclick="showBulkActions()" class="hidden px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-lg">
+        Bulk Actions (<span id="selected-count">0</span>)
+    </button>
+</div>
+
+<div id="bulk-actions-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-gray-800 rounded-xl p-6 w-full max-w-md border border-gray-700">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-xl font-bold">Bulk Actions</h3>
+            <button onclick="hideBulkActions()" class="text-gray-400 hover:text-white">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+        </div>
+        <div class="space-y-3">
+            <button onclick="bulkReconnect()" class="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition flex items-center justify-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                Reconnect Selected
+            </button>
+            <button onclick="bulkDelete()" class="w-full px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition flex items-center justify-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                Delete Selected
+            </button>
+            <button onclick="hideBulkActions()" class="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition">
+                Cancel
+            </button>
+        </div>
+        <p class="text-sm text-gray-400 mt-4 text-center" id="bulk-selected-text">0 tenants selected</p>
+    </div>
+</div>
+
 <div id="create-tenant-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
     <div class="bg-gray-800 rounded-xl p-6 w-full max-w-md border border-gray-700">
         <h3 class="text-xl font-bold mb-4">Create New Tenant</h3>
@@ -335,6 +383,146 @@ async def admin_dashboard(
 </div>
 """
     script = """
+let selectedTenants = new Set();
+
+function toggleSelectAll() {
+    const selectAll = document.getElementById('select-all-tenants');
+    const checkboxes = document.querySelectorAll('.tenant-checkbox');
+    
+    checkboxes.forEach(cb => {
+        cb.checked = selectAll.checked;
+        const hash = cb.dataset.hash;
+        if (selectAll.checked) {
+            selectedTenants.add(hash);
+        } else {
+            selectedTenants.delete(hash);
+        }
+    });
+    
+    updateBulkUI();
+}
+
+function updateBulkSelection() {
+    selectedTenants.clear();
+    const checkboxes = document.querySelectorAll('.tenant-checkbox:checked');
+    checkboxes.forEach(cb => selectedTenants.add(cb.dataset.hash));
+    
+    const selectAll = document.getElementById('select-all-tenants');
+    const allCheckboxes = document.querySelectorAll('.tenant-checkbox');
+    selectAll.checked = checkboxes.length === allCheckboxes.length;
+    
+    updateBulkUI();
+}
+
+function updateBulkUI() {
+    const count = selectedTenants.size;
+    const bulkBtn = document.getElementById('bulk-action-btn');
+    const countSpan = document.getElementById('selected-count');
+    const modalText = document.getElementById('bulk-selected-text');
+    
+    if (count > 0) {
+        if (bulkBtn) {
+            bulkBtn.classList.remove('hidden');
+        }
+        if (countSpan) {
+            countSpan.textContent = count;
+        }
+        if (modalText) {
+            modalText.textContent = count + ' tenant' + (count !== 1 ? 's' : '') + ' selected';
+        }
+    } else {
+        if (bulkBtn) {
+            bulkBtn.classList.add('hidden');
+        }
+    }
+}
+
+function showBulkActions() {
+    const modal = document.getElementById('bulk-actions-modal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+    }
+}
+
+function hideBulkActions() {
+    const modal = document.getElementById('bulk-actions-modal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+    }
+}
+
+function showBulkActions() {
+    if (selectedTenants.size === 0) {
+        alert('No tenants selected');
+        return;
+    }
+    document.getElementById('bulk-actions-modal').classList.remove('hidden');
+    document.getElementById('bulk-actions-modal').classList.add('flex');
+}
+
+function hideBulkActions() {
+    document.getElementById('bulk-actions-modal').classList.add('hidden');
+    document.getElementById('bulk-actions-modal').classList.remove('flex');
+}
+
+async function bulkReconnect() {
+    if (selectedTenants.size === 0) return;
+    
+    if (!confirm(`Reconnect ${selectedTenants.size} tenant(s)?`)) return;
+    
+    hideBulkActions();
+    
+    const hashes = Array.from(selectedTenants);
+    const response = await fetch('/admin/api/tenants/bulk/reconnect', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tenant_hashes: hashes})
+    });
+    
+    const data = await response.json();
+    
+    alert(`Reconnect complete:\n✅ Successful: ${data.successful}\n❌ Failed: ${data.failed}`);
+    
+    // Clear selection and refresh
+    selectedTenants.clear();
+    updateBulkUI();
+    htmx.trigger('#tenants-list', 'load');
+}
+
+async function bulkDelete() {
+    if (selectedTenants.size === 0) return;
+    
+    const count = selectedTenants.size;
+    const confirmed = confirm(`Delete ${count} tenant(s)?\n\nThis CANNOT be undone!`);
+    if (!confirmed) return;
+    
+    const typed = prompt(`Type "DELETE ${count} TENANTS" to confirm:`);
+    if (typed !== `DELETE ${count} TENANTS`) {
+        alert('Confirmation text did not match');
+        return;
+    }
+    
+    hideBulkActions();
+    
+    const hashes = Array.from(selectedTenants);
+    const response = await fetch('/admin/api/tenants/bulk', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tenant_hashes: hashes})
+    });
+    
+    const data = await response.json();
+    
+    alert(`Delete complete:\n✅ Deleted: ${data.deleted}\n❌ Failed: ${data.failed}`);
+    
+    // Clear selection and refresh
+    selectedTenants.clear();
+    updateBulkUI();
+    htmx.trigger('#tenants-list', 'load');
+}
+
 function showCreateTenantModal() {
     document.getElementById('create-tenant-modal').classList.remove('hidden');
     document.getElementById('create-tenant-modal').classList.add('flex');
@@ -397,6 +585,57 @@ function handleDelete(event) {
         htmx.trigger('#tenants-list', 'load');
         hideTenantActionsModal();
     }
+}
+let expandedTenant = null;
+function toggleTenantPanel(hash) {
+    const panel = document.getElementById('tenant-panel-' + hash);
+    const chevron = document.getElementById('chevron-' + hash);
+    
+    if (expandedTenant && expandedTenant !== hash) {
+        const prevPanel = document.getElementById('tenant-panel-' + expandedTenant);
+        const prevChevron = document.getElementById('chevron-' + expandedTenant);
+        if (prevPanel) { prevPanel.classList.add('hidden'); prevPanel.innerHTML = ''; }
+        if (prevChevron) { prevChevron.classList.remove('rotate-90'); }
+    }
+    
+    if (panel.classList.contains('hidden')) {
+        panel.classList.remove('hidden');
+        chevron.classList.add('rotate-90');
+        expandedTenant = hash;
+        htmx.ajax('GET', '/admin/fragments/tenant-panel/' + hash, {target: panel, swap: 'innerHTML'});
+    } else {
+        panel.classList.add('hidden');
+        chevron.classList.remove('rotate-90');
+        panel.innerHTML = '';
+        expandedTenant = null;
+    }
+}
+function sendMsgAsTenant(hash) {
+    const chatSelect = document.getElementById('chat-select-' + hash);
+    const manualJid = document.getElementById('manual-jid-' + hash);
+    const textInput = document.getElementById('msg-text-' + hash);
+    
+    const to = manualJid.value || chatSelect.value;
+    const text = textInput.value;
+    
+    if (!to) { alert('Please select or enter a recipient'); return; }
+    if (!text) { alert('Please enter a message'); return; }
+    
+    fetch('/admin/api/tenants/' + hash + '/send', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({to: to, text: text})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'sent') {
+            textInput.value = '';
+            htmx.ajax('GET', '/admin/fragments/tenant-panel/' + hash, {
+                target: document.getElementById('tenant-panel-' + hash),
+                swap: 'innerHTML'
+            });
+        } else {
+            alert('Failed: ' + (data.detail || JSON.stringify(data)));
+        }
+    }).catch(e => alert('Error: ' + e));
 }
 """
     html = PAGE_TEMPLATE.format(
@@ -417,20 +656,83 @@ async def admin_tenants_page(
     content = """
 <header class="bg-gray-800 border-b border-gray-700 px-6 py-4 flex items-center justify-between">
     <h1 class="text-2xl font-bold">Tenants</h1>
-    <button onclick="showCreateTenantModal()" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg transition flex items-center space-x-2">
-        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
-        <span>Add Tenant</span>
-    </button>
+    <div class="flex items-center gap-3">
+        <button onclick="showBulkActions()" id="bulk-action-btn" class="hidden px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition">
+            Bulk Actions
+        </button>
+        <button onclick="showCreateTenantModal()" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg transition flex items-center space-x-2">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+            <span>Add Tenant</span>
+        </button>
+    </div>
 </header>
 <div class="p-6">
     <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="px-6 py-3 border-b border-gray-700 flex items-center gap-3">
+            <input type="checkbox" id="select-all-tenants" onchange="toggleSelectAll()" class="w-4 h-4">
+            <label for="select-all-tenants" class="text-sm text-gray-400">Select All</label>
+            <span id="selected-count" class="text-sm text-gray-400 ml-4 hidden">0 selected</span>
+        </div>
         <div id="tenants-list" hx-get="/admin/fragments/tenants" hx-trigger="load" class="divide-y divide-gray-700">
             <div class="p-6 text-center text-gray-500">Loading...</div>
         </div>
     </div>
 </div>
+
+<div id="bulk-actions-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-gray-800 rounded-xl p-6 w-full max-w-md border border-gray-700">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-xl font-bold">Bulk Actions</h3>
+            <button onclick="hideBulkActions()" class="text-gray-400 hover:text-white">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+        </div>
+        <div class="space-y-3">
+            <button onclick="bulkReconnect()" class="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition">
+                Reconnect Selected
+            </button>
+            <button onclick="bulkDelete()" class="w-full px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition">
+                Delete Selected
+            </button>
+            <button onclick="hideBulkActions()" class="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition">
+                Cancel
+            </button>
+        </div>
+    </div>
+</div>
 """
     modals = """
+<div class="fixed top-20 right-4 z-40">
+    <button id="bulk-action-btn" onclick="showBulkActions()" class="hidden px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-lg">
+        Bulk Actions (<span id="selected-count">0</span>)
+    </button>
+</div>
+
+<div id="bulk-actions-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+    <div class="bg-gray-800 rounded-xl p-6 w-full max-w-md border border-gray-700">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="text-xl font-bold">Bulk Actions</h3>
+            <button onclick="hideBulkActions()" class="text-gray-400 hover:text-white">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+        </div>
+        <div class="space-y-3">
+            <button onclick="bulkReconnect()" class="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition flex items-center justify-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                Reconnect Selected
+            </button>
+            <button onclick="bulkDelete()" class="w-full px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition flex items-center justify-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                Delete Selected
+            </button>
+            <button onclick="hideBulkActions()" class="w-full px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition">
+                Cancel
+            </button>
+        </div>
+        <p class="text-sm text-gray-400 mt-4 text-center" id="bulk-selected-text">0 tenants selected</p>
+    </div>
+</div>
+
 <div id="create-tenant-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
     <div class="bg-gray-800 rounded-xl p-6 w-full max-w-md border border-gray-700">
         <h3 class="text-xl font-bold mb-4">Create New Tenant</h3>
@@ -481,6 +783,146 @@ async def admin_tenants_page(
 </div>
 """
     script = """
+let selectedTenants = new Set();
+
+function toggleSelectAll() {
+    const selectAll = document.getElementById('select-all-tenants');
+    const checkboxes = document.querySelectorAll('.tenant-checkbox');
+    
+    checkboxes.forEach(cb => {
+        cb.checked = selectAll.checked;
+        const hash = cb.dataset.hash;
+        if (selectAll.checked) {
+            selectedTenants.add(hash);
+        } else {
+            selectedTenants.delete(hash);
+        }
+    });
+    
+    updateBulkUI();
+}
+
+function updateBulkSelection() {
+    selectedTenants.clear();
+    const checkboxes = document.querySelectorAll('.tenant-checkbox:checked');
+    checkboxes.forEach(cb => selectedTenants.add(cb.dataset.hash));
+    
+    const selectAll = document.getElementById('select-all-tenants');
+    const allCheckboxes = document.querySelectorAll('.tenant-checkbox');
+    selectAll.checked = checkboxes.length === allCheckboxes.length;
+    
+    updateBulkUI();
+}
+
+function updateBulkUI() {
+    const count = selectedTenants.size;
+    const bulkBtn = document.getElementById('bulk-action-btn');
+    const countSpan = document.getElementById('selected-count');
+    const modalText = document.getElementById('bulk-selected-text');
+    
+    if (count > 0) {
+        if (bulkBtn) {
+            bulkBtn.classList.remove('hidden');
+        }
+        if (countSpan) {
+            countSpan.textContent = count;
+        }
+        if (modalText) {
+            modalText.textContent = count + ' tenant' + (count !== 1 ? 's' : '') + ' selected';
+        }
+    } else {
+        if (bulkBtn) {
+            bulkBtn.classList.add('hidden');
+        }
+    }
+}
+
+function showBulkActions() {
+    const modal = document.getElementById('bulk-actions-modal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+    }
+}
+
+function hideBulkActions() {
+    const modal = document.getElementById('bulk-actions-modal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+    }
+}
+
+function showBulkActions() {
+    if (selectedTenants.size === 0) {
+        alert('No tenants selected');
+        return;
+    }
+    document.getElementById('bulk-actions-modal').classList.remove('hidden');
+    document.getElementById('bulk-actions-modal').classList.add('flex');
+}
+
+function hideBulkActions() {
+    document.getElementById('bulk-actions-modal').classList.add('hidden');
+    document.getElementById('bulk-actions-modal').classList.remove('flex');
+}
+
+async function bulkReconnect() {
+    if (selectedTenants.size === 0) return;
+    
+    if (!confirm(`Reconnect ${selectedTenants.size} tenant(s)?`)) return;
+    
+    hideBulkActions();
+    
+    const hashes = Array.from(selectedTenants);
+    const response = await fetch('/admin/api/tenants/bulk/reconnect', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tenant_hashes: hashes})
+    });
+    
+    const data = await response.json();
+    
+    alert(`Reconnect complete:\n✅ Successful: ${data.successful}\n❌ Failed: ${data.failed}`);
+    
+    // Clear selection and refresh
+    selectedTenants.clear();
+    updateBulkUI();
+    htmx.trigger('#tenants-list', 'load');
+}
+
+async function bulkDelete() {
+    if (selectedTenants.size === 0) return;
+    
+    const count = selectedTenants.size;
+    const confirmed = confirm(`Delete ${count} tenant(s)?\n\nThis CANNOT be undone!`);
+    if (!confirmed) return;
+    
+    const typed = prompt(`Type "DELETE ${count} TENANTS" to confirm:`);
+    if (typed !== `DELETE ${count} TENANTS`) {
+        alert('Confirmation text did not match');
+        return;
+    }
+    
+    hideBulkActions();
+    
+    const hashes = Array.from(selectedTenants);
+    const response = await fetch('/admin/api/tenants/bulk', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tenant_hashes: hashes})
+    });
+    
+    const data = await response.json();
+    
+    alert(`Delete complete:\n✅ Deleted: ${data.deleted}\n❌ Failed: ${data.failed}`);
+    
+    // Clear selection and refresh
+    selectedTenants.clear();
+    updateBulkUI();
+    htmx.trigger('#tenants-list', 'load');
+}
+
 function showCreateTenantModal() {
     document.getElementById('create-tenant-modal').classList.remove('hidden');
     document.getElementById('create-tenant-modal').classList.add('flex');
@@ -544,6 +986,57 @@ function handleDelete(event) {
         hideTenantActionsModal();
     }
 }
+let expandedTenant = null;
+function toggleTenantPanel(hash) {
+    const panel = document.getElementById('tenant-panel-' + hash);
+    const chevron = document.getElementById('chevron-' + hash);
+    
+    if (expandedTenant && expandedTenant !== hash) {
+        const prevPanel = document.getElementById('tenant-panel-' + expandedTenant);
+        const prevChevron = document.getElementById('chevron-' + expandedTenant);
+        if (prevPanel) { prevPanel.classList.add('hidden'); prevPanel.innerHTML = ''; }
+        if (prevChevron) { prevChevron.classList.remove('rotate-90'); }
+    }
+    
+    if (panel.classList.contains('hidden')) {
+        panel.classList.remove('hidden');
+        chevron.classList.add('rotate-90');
+        expandedTenant = hash;
+        htmx.ajax('GET', '/admin/fragments/tenant-panel/' + hash, {target: panel, swap: 'innerHTML'});
+    } else {
+        panel.classList.add('hidden');
+        chevron.classList.remove('rotate-90');
+        panel.innerHTML = '';
+        expandedTenant = null;
+    }
+}
+function sendMsgAsTenant(hash) {
+    const chatSelect = document.getElementById('chat-select-' + hash);
+    const manualJid = document.getElementById('manual-jid-' + hash);
+    const textInput = document.getElementById('msg-text-' + hash);
+    
+    const to = manualJid.value || chatSelect.value;
+    const text = textInput.value;
+    
+    if (!to) { alert('Please select or enter a recipient'); return; }
+    if (!text) { alert('Please enter a message'); return; }
+    
+    fetch('/admin/api/tenants/' + hash + '/send', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({to: to, text: text})
+    }).then(r => r.json()).then(data => {
+        if (data.status === 'sent') {
+            textInput.value = '';
+            htmx.ajax('GET', '/admin/fragments/tenant-panel/' + hash, {
+                target: document.getElementById('tenant-panel-' + hash),
+                swap: 'innerHTML'
+            });
+        } else {
+            alert('Failed: ' + (data.detail || JSON.stringify(data)));
+        }
+    }).catch(e => alert('Error: ' + e));
+}
 """
     html = PAGE_TEMPLATE.format(
         title="Tenants",
@@ -560,11 +1053,46 @@ async def admin_messages_page(
     request: Request,
     session_id: str = Depends(require_admin_session),
 ):
-    content = """
+    # Get tenant list for filter dropdown
+    tenants = tenant_manager.list_tenants()
+    tenant_options = "".join(
+        [f'<option value="{t.api_key_hash}">{t.name}</option>' for t in tenants]
+    )
+
+    content = f"""
 <header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
     <h1 class="text-2xl font-bold">Messages</h1>
 </header>
 <div class="p-6">
+    <div class="bg-gray-800 rounded-lg p-4 mb-4 border border-gray-700">
+        <div class="flex gap-4 items-center flex-wrap">
+            <input type="text" 
+                   id="message-search" 
+                   placeholder="Search messages..."
+                   class="flex-1 min-w-64 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp"
+                   onkeyup="debounceSearch()">
+            
+            <select id="tenant-filter" class="px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp" onchange="searchMessages()">
+                <option value="">All Tenants</option>
+                {tenant_options}
+            </select>
+            
+            <select id="direction-filter" class="px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp" onchange="searchMessages()">
+                <option value="">All Directions</option>
+                <option value="in">Inbound</option>
+                <option value="out">Outbound</option>
+            </select>
+            
+            <button onclick="searchMessages()" class="px-6 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg font-medium transition">
+                Search
+            </button>
+            
+            <button onclick="clearSearch()" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition">
+                Clear
+            </button>
+        </div>
+    </div>
+    
     <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
         <div id="messages-list" hx-get="/admin/fragments/messages?limit=50" hx-trigger="load" class="divide-y divide-gray-700">
             <div class="p-6 text-center text-gray-500">Loading...</div>
@@ -572,12 +1100,46 @@ async def admin_messages_page(
     </div>
 </div>
 """
+    script = """
+let searchTimeout = null;
+
+function debounceSearch() {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+        searchMessages();
+    }, 300);
+}
+
+function searchMessages() {
+    const search = document.getElementById('message-search').value;
+    const tenant = document.getElementById('tenant-filter').value;
+    const direction = document.getElementById('direction-filter').value;
+    
+    let url = '/admin/fragments/messages?limit=50';
+    if (search) url += '&search=' + encodeURIComponent(search);
+    if (tenant) url += '&tenant_hash=' + encodeURIComponent(tenant);
+    if (direction) url += '&direction=' + encodeURIComponent(direction);
+    
+    htmx.ajax('GET', url, {
+        target: '#messages-list',
+        swap: 'innerHTML'
+    });
+}
+
+function clearSearch() {
+    document.getElementById('message-search').value = '';
+    document.getElementById('tenant-filter').value = '';
+    document.getElementById('direction-filter').value = '';
+    searchMessages();
+}
+"""
+
     html = PAGE_TEMPLATE.format(
         title="Messages",
         sidebar=get_sidebar("messages"),
         content=content,
         modals="",
-        script="",
+        script=script,
     )
     return HTMLResponse(content=html)
 
@@ -660,6 +1222,491 @@ async def admin_security_page(
     return HTMLResponse(content=html)
 
 
+@router.get("/chatwoot", response_class=HTMLResponse)
+async def admin_chatwoot_page(
+    request: Request,
+    session_id: str = Depends(require_admin_session),
+):
+    content = """
+<header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
+    <h1 class="text-2xl font-bold">Chatwoot Integration</h1>
+</header>
+<div class="p-6 space-y-6">
+    <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Configuration</h2>
+        </div>
+        <div id="chatwoot-config" hx-get="/admin/fragments/chatwoot/config" hx-trigger="load" class="p-6">
+            <div class="text-center text-gray-500">Loading...</div>
+        </div>
+    </div>
+    <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Tenant Chatwoot Settings</h2>
+        </div>
+        <div id="chatwoot-tenants" hx-get="/admin/fragments/chatwoot/tenants" hx-trigger="load" class="divide-y divide-gray-700">
+            <div class="p-6 text-center text-gray-500">Loading...</div>
+        </div>
+    </div>
+</div>
+
+<div id="chatwoot-tenant-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+    <div class="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-md mx-4">
+        <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+            <h3 class="text-lg font-semibold">Tenant Chatwoot Settings</h3>
+            <button onclick="closeChatwootTenantModal()" class="text-gray-400 hover:text-white">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                </svg>
+            </button>
+        </div>
+        <div class="p-6 space-y-4">
+            <input type="hidden" id="chatwoot-tenant-hash">
+            <div class="flex items-center gap-3">
+                <input type="checkbox" id="chatwoot-tenant-enabled" class="w-4 h-4 rounded bg-gray-700 border-gray-600">
+                <label for="chatwoot-tenant-enabled" class="text-sm">Enable Chatwoot</label>
+            </div>
+            <div class="flex items-center gap-3">
+                <input type="checkbox" id="chatwoot-tenant-sign" class="w-4 h-4 rounded bg-gray-700 border-gray-600">
+                <label for="chatwoot-tenant-sign" class="text-sm">Sign Messages</label>
+            </div>
+            <div class="flex items-center gap-3">
+                <input type="checkbox" id="chatwoot-tenant-reopen" class="w-4 h-4 rounded bg-gray-700 border-gray-600">
+                <label for="chatwoot-tenant-reopen" class="text-sm">Reopen Conversation</label>
+            </div>
+            <div id="chatwoot-tenant-status" class="text-sm"></div>
+        </div>
+        <div class="px-6 py-4 border-t border-gray-700 flex justify-end gap-3">
+            <button onclick="closeChatwootTenantModal()" class="px-4 py-2 text-sm text-gray-400 hover:text-white">Cancel</button>
+            <button onclick="saveChatwootTenantConfig()" class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 rounded-lg">Save</button>
+        </div>
+    </div>
+</div>
+"""
+    script = """
+async function toggleChatwootForTenant(tenantHash, currentEnabled) {
+    const newEnabled = !currentEnabled;
+    try {
+        const response = await fetch(`/admin/api/tenants/${tenantHash}/chatwoot`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                enabled: newEnabled,
+                sign_messages: true,
+                reopen_conversation: true
+            })
+        });
+        
+        if (response.ok) {
+            htmx.trigger('#chatwoot-tenants', 'load');
+        } else {
+            const data = await response.json();
+            alert(data.detail || 'Failed to update');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+function showChatwootTenantConfig(tenantHash) {
+    document.getElementById('chatwoot-tenant-hash').value = tenantHash;
+    document.getElementById('chatwoot-tenant-enabled').checked = false;
+    document.getElementById('chatwoot-tenant-sign').checked = true;
+    document.getElementById('chatwoot-tenant-reopen').checked = true;
+    document.getElementById('chatwoot-tenant-modal').classList.remove('hidden');
+}
+
+function closeChatwootTenantModal() {
+    document.getElementById('chatwoot-tenant-modal').classList.add('hidden');
+}
+
+async function saveChatwootTenantConfig() {
+    const tenantHash = document.getElementById('chatwoot-tenant-hash').value;
+    const enabled = document.getElementById('chatwoot-tenant-enabled').checked;
+    const signMessages = document.getElementById('chatwoot-tenant-sign').checked;
+    const reopenConversation = document.getElementById('chatwoot-tenant-reopen').checked;
+    const status = document.getElementById('chatwoot-tenant-status');
+    
+    status.textContent = 'Saving...';
+    status.className = 'text-sm text-gray-400';
+    
+    try {
+        const response = await fetch(`/admin/api/tenants/${tenantHash}/chatwoot`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                enabled: enabled,
+                sign_messages: signMessages,
+                reopen_conversation: reopenConversation
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            status.textContent = 'Saved!';
+            status.className = 'text-sm text-green-400';
+            setTimeout(() => {
+                closeChatwootTenantModal();
+                htmx.trigger('#chatwoot-tenants', 'load');
+            }, 500);
+        } else {
+            status.textContent = data.detail || 'Failed to save';
+            status.className = 'text-sm text-red-400';
+        }
+    } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+        status.className = 'text-sm text-red-400';
+    }
+}
+"""
+    html = PAGE_TEMPLATE.format(
+        title="Chatwoot",
+        sidebar=get_sidebar("chatwoot"),
+        content=content,
+        modals="",
+        script=script,
+    )
+    return HTMLResponse(content=html)
+
+
+@router.get("/tenants/{tenant_hash}", response_class=HTMLResponse)
+async def admin_tenant_details_page(
+    tenant_hash: str,
+    request: Request,
+    session_id: str = Depends(require_admin_session),
+):
+    tenant = tenant_manager._tenants.get(tenant_hash)
+    if not tenant:
+        return HTMLResponse(
+            content='<h1 class="text-2xl text-red-400 p-6">Tenant not found</h1>',
+            status_code=404,
+        )
+
+    db = tenant_manager._db
+    messages_count = 0
+
+    if db:
+        _, messages_count = await db.list_messages(tenant_hash=tenant_hash, limit=1)
+
+    # Build tenant info
+    tenant_name = tenant.name
+    tenant_phone = tenant.self_phone or "No phone"
+    tenant_created = tenant.created_at.strftime("%Y-%m-%d")
+    tenant_jid = tenant.self_jid or "N/A"
+    tenant_last_conn = (
+        tenant.last_connected_at.strftime("%Y-%m-%d %H:%M")
+        if tenant.last_connected_at
+        else "Never"
+    )
+
+    if tenant.connection_state == "connected":
+        status_badge = '<span class="px-3 py-1 text-sm bg-green-500/20 text-green-400 rounded-full">Connected</span>'
+    else:
+        status_badge = '<span class="px-3 py-1 text-sm bg-gray-500/20 text-gray-400 rounded-full">Disconnected</span>'
+
+    auth_badge = (
+        '<span class="px-3 py-1 text-sm bg-blue-500/20 text-blue-400 rounded-full">Has Auth</span>'
+        if tenant.has_auth
+        else ""
+    )
+
+    # Build webhooks list
+    if tenant.webhook_urls:
+        webhooks_html = "".join(
+            [
+                f'<div class="flex items-center justify-between p-3 bg-gray-700/50 rounded-lg"><span class="text-whatsapp">{url}</span><button onclick="removeWebhook(\'{url}\')" class="text-red-400 hover:text-red-300">Remove</button></div>'
+                for url in tenant.webhook_urls
+            ]
+        )
+    else:
+        webhooks_html = '<div class="text-gray-500">No webhooks configured</div>'
+
+    content = f"""
+<header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
+    <div class="flex items-center justify-between">
+        <div class="flex items-center gap-4">
+            <a href="/admin/tenants" class="text-gray-400 hover:text-white">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                </svg>
+            </a>
+            <div>
+                <h1 class="text-2xl font-bold">{tenant_name}</h1>
+                <p class="text-sm text-gray-400">{tenant_phone} | Created {tenant_created}</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-3">
+            {status_badge}
+            {auth_badge}
+        </div>
+    </div>
+</header>
+
+<div class="p-6">
+    <div class="grid grid-cols-4 gap-4 mb-6">
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <p class="text-gray-400 text-sm">Messages</p>
+            <p class="text-2xl font-bold mt-1">{messages_count:,}</p>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <p class="text-gray-400 text-sm">Webhooks</p>
+            <p class="text-2xl font-bold mt-1">{len(tenant.webhook_urls)}</p>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <p class="text-gray-400 text-sm">JID</p>
+            <p class="text-sm font-mono mt-1 truncate" title="{tenant_jid}">{tenant_jid}</p>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <p class="text-gray-400 text-sm">Last Connected</p>
+            <p class="text-sm mt-1">{tenant_last_conn}</p>
+        </div>
+    </div>
+
+    <div class="bg-gray-800 rounded-xl border border-gray-700">
+        <div class="border-b border-gray-700">
+            <nav class="flex -mb-px">
+                <button onclick="switchTab('messages')" id="tab-messages" class="px-6 py-3 text-whatsapp border-b-2 border-whatsapp font-medium">
+                    Messages
+                </button>
+                <button onclick="switchTab('webhooks')" id="tab-webhooks" class="px-6 py-3 text-gray-400 hover:text-white border-b-2 border-transparent font-medium">
+                    Webhooks
+                </button>
+                <button onclick="switchTab('settings')" id="tab-settings" class="px-6 py-3 text-gray-400 hover:text-white border-b-2 border-transparent font-medium">
+                    Settings
+                </button>
+            </nav>
+        </div>
+        
+        <div id="tab-content-messages" class="tab-content">
+            <div class="p-4 border-b border-gray-700 bg-gray-900/50">
+                <div class="flex gap-4">
+                    <input type="text" id="send-to" placeholder="Recipient phone or JID" 
+                           class="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white">
+                    <input type="text" id="send-text" placeholder="Message..." 
+                           class="flex-2 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white"
+                           onkeypress="if(event.key==='Enter')sendMessage()">
+                    <button onclick="sendMessage()" class="px-6 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg font-medium">
+                        Send
+                    </button>
+                </div>
+            </div>
+            <div id="tenant-messages" hx-get="/admin/fragments/tenant-messages/{tenant_hash}" hx-trigger="load" class="max-h-[600px] overflow-y-auto">
+                <div class="p-6 text-center text-gray-500">Loading messages...</div>
+            </div>
+        </div>
+        
+        <div id="tab-content-webhooks" class="tab-content hidden">
+            <div class="p-6">
+                <div class="mb-6">
+                    <h3 class="text-lg font-semibold mb-3">Configured Webhooks</h3>
+                    <div id="tenant-webhooks" class="space-y-2">
+                        {webhooks_html}
+                    </div>
+                </div>
+                
+                <div class="border-t border-gray-700 pt-6">
+                    <h3 class="text-lg font-semibold mb-3">Add Webhook</h3>
+                    <div class="flex gap-2">
+                        <input type="url" id="new-webhook-url" placeholder="https://example.com/webhook" 
+                               class="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white">
+                        <button onclick="addWebhook()" class="px-6 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg">
+                            Add
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="border-t border-gray-700 pt-6 mt-6">
+                    <h3 class="text-lg font-semibold mb-3">Recent Delivery Attempts</h3>
+                    <div id="webhook-history" hx-get="/admin/fragments/webhook-history?tenant_hash={tenant_hash}&limit=20" hx-trigger="load" class="divide-y divide-gray-700">
+                        <div class="p-4 text-center text-gray-500">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="tab-content-settings" class="tab-content hidden">
+            <div class="p-6 space-y-6">
+                <div>
+                    <h3 class="text-lg font-semibold mb-3">Tenant Information</h3>
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between p-3 bg-gray-700/50 rounded-lg">
+                            <span class="text-gray-400">Name</span>
+                            <span class="font-medium">{tenant_name}</span>
+                        </div>
+                        <div class="flex items-center justify-between p-3 bg-gray-700/50 rounded-lg">
+                            <span class="text-gray-400">API Key Hash</span>
+                            <span class="font-mono text-sm">{tenant_hash[:32]}...</span>
+                        </div>
+                        <div class="flex items-center justify-between p-3 bg-gray-700/50 rounded-lg">
+                            <span class="text-gray-400">Has Authentication</span>
+                            <span class="font-medium">{"Yes" if tenant.has_auth else "No"}</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="border-t border-gray-700 pt-6">
+                    <h3 class="text-lg font-semibold mb-3">Actions</h3>
+                    <div class="space-y-3">
+                        <button onclick="reconnectTenant()" class="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition">
+                            Reconnect Session
+                        </button>
+                        <button onclick="clearCredentials()" class="w-full px-4 py-3 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg transition">
+                            Clear Stored Credentials
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="border-t border-red-700 pt-6">
+                    <h3 class="text-lg font-semibold mb-3 text-red-400">Danger Zone</h3>
+                    <button onclick="deleteTenant()" class="w-full px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition">
+                        Delete Tenant
+                    </button>
+                    <p class="text-sm text-gray-500 mt-2">This action cannot be undone.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+"""
+
+    script = (
+        """
+function switchTab(tabName) {
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+    document.querySelectorAll('nav button').forEach(el => {
+        el.classList.remove('text-whatsapp', 'border-whatsapp');
+        el.classList.add('text-gray-400', 'border-transparent');
+    });
+    document.getElementById('tab-content-' + tabName).classList.remove('hidden');
+    const activeTab = document.getElementById('tab-' + tabName);
+    activeTab.classList.remove('text-gray-400', 'border-transparent');
+    activeTab.classList.add('text-whatsapp', 'border-whatsapp');
+}
+
+async function sendMessage() {
+    const to = document.getElementById('send-to').value;
+    const text = document.getElementById('send-text').value;
+    if (!to || !text) {
+        alert('Please enter recipient and message');
+        return;
+    }
+    const response = await fetch('/admin/api/tenants/"""
+        + tenant_hash
+        + """/send', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({to: to, text: text})
+    });
+    const data = await response.json();
+    if (response.ok) {
+        document.getElementById('send-text').value = '';
+        htmx.trigger('#tenant-messages', 'load');
+    } else {
+        alert('Failed: ' + (data.detail || JSON.stringify(data)));
+    }
+}
+
+async function addWebhook() {
+    const url = document.getElementById('new-webhook-url').value;
+    if (!url) return;
+    const response = await fetch('/admin/api/tenants/"""
+        + tenant_hash
+        + """/webhooks', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: url})
+    });
+    if (response.ok) {
+        location.reload();
+    } else {
+        const data = await response.json();
+        alert('Failed: ' + (data.detail || JSON.stringify(data)));
+    }
+}
+
+async function removeWebhook(url) {
+    if (!confirm('Remove this webhook?')) return;
+    const response = await fetch('/admin/api/tenants/"""
+        + tenant_hash
+        + """/webhooks?url=' + encodeURIComponent(url), {
+        method: 'DELETE'
+    });
+    if (response.ok) {
+        location.reload();
+    }
+}
+
+async function reconnectTenant() {
+    if (!confirm('Reconnect this tenant session?')) return;
+    const response = await fetch('/admin/api/tenants/"""
+        + tenant_hash
+        + """/reconnect', {
+        method: 'POST'
+    });
+    if (response.ok) {
+        alert('Reconnecting...');
+        setTimeout(() => location.reload(), 2000);
+    } else {
+        const data = await response.json();
+        alert('Failed: ' + (data.detail || JSON.stringify(data)));
+    }
+}
+
+async function clearCredentials() {
+    if (!confirm('Clear stored credentials?')) return;
+    const response = await fetch('/admin/api/tenants/"""
+        + tenant_hash
+        + """/credentials', {
+        method: 'DELETE'
+    });
+    if (response.ok) {
+        alert('Credentials cleared');
+        location.reload();
+    } else {
+        const data = await response.json();
+        alert('Failed: ' + (data.detail || JSON.stringify(data)));
+    }
+}
+
+async function deleteTenant() {
+    const confirmed = confirm('Delete this tenant? CANNOT BE UNDONE!');
+    if (!confirmed) return;
+    const typed = prompt('Type "DELETE """
+        + tenant_name
+        + """" to confirm:');
+    if (typed !== 'DELETE """
+        + tenant_name
+        + """') {
+        alert('Confirmation text did not match');
+        return;
+    }
+    const response = await fetch('/admin/api/tenants/"""
+        + tenant_hash
+        + """', {
+        method: 'DELETE'
+    });
+    if (response.ok) {
+        alert('Tenant deleted');
+        window.location.href = '/admin/tenants';
+    } else {
+        const data = await response.json();
+        alert('Failed: ' + (data.detail || JSON.stringify(data)));
+    }
+}
+"""
+    )
+
+    html = PAGE_TEMPLATE.format(
+        title=f"{tenant_name} - Tenant Details",
+        sidebar=get_sidebar("tenants"),
+        content=content,
+        modals="",
+        script=script,
+    )
+    return HTMLResponse(content=html)
+
+
 # HTML Fragment Routes
 
 
@@ -692,6 +1739,27 @@ async def get_stats_fragment(session_id: str = Depends(require_admin_session)):
         if total_webhook_attempts > 0
         else 0
     )
+
+    # Database status
+    db_type = (
+        "PostgreSQL"
+        if getattr(db, "_is_postgres", False)
+        else "SQLite"
+        if db
+        else "None"
+    )
+    db_connected = getattr(db, "_pool", None) is not None
+    db_status_color = "green" if db_connected else "red"
+    db_status_text = "Connected" if db_connected else "Disconnected"
+
+    # Get pool info for PostgreSQL
+    pool_info = ""
+    if db and getattr(db, "_is_postgres", False) and getattr(db, "_pool", None):
+        try:
+            pool = db._pool
+            pool_info = f"Pool: {pool._queue.qsize()}/{pool._maxsize}"
+        except:
+            pool_info = ""
 
     html = f"""
 <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
@@ -741,6 +1809,18 @@ async def get_stats_fragment(session_id: str = Depends(require_admin_session)):
         </div>
     </div>
 </div>
+<div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
+    <div class="flex items-center justify-between">
+        <div>
+            <p class="text-gray-400 text-sm">Database</p>
+            <p class="text-3xl font-bold mt-1 text-{db_status_color}-500">{db_type}</p>
+            <p class="text-xs text-gray-500 mt-1">{db_status_text}{f" · {pool_info}" if pool_info else ""}</p>
+        </div>
+        <div class="w-12 h-12 bg-{db_status_color}-500/20 rounded-lg flex items-center justify-center">
+            <svg class="w-6 h-6 text-{db_status_color}-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg>
+        </div>
+    </div>
+</div>
 """
     return HTMLResponse(content=html)
 
@@ -772,24 +1852,36 @@ async def get_tenants_fragment(session_id: str = Depends(require_admin_session))
         webhook_count = len(t.webhook_urls)
 
         html_parts.append(f"""
-<div class="p-4 hover:bg-gray-700/50 transition" data-tenant-hash="{t.api_key_hash}">
-    <div class="flex items-center justify-between">
-        <div class="flex-1">
-            <div class="flex items-center gap-3">
-                <h3 class="font-medium text-lg">{t.name}</h3>
-                {state_badge}
-                {"<span class='px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded'>Has Auth</span>" if t.has_auth else ""}
+<div class="tenant-row" data-tenant-hash="{t.api_key_hash}">
+    <div class="p-4 hover:bg-gray-700/50 transition">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3 flex-1">
+                <input type="checkbox" class="tenant-checkbox" data-hash="{t.api_key_hash}" onchange="updateBulkSelection()" onclick="event.stopPropagation()" ondblclick="event.stopPropagation()">
+                <div onclick="toggleTenantPanel('{t.api_key_hash}')" class="cursor-pointer flex items-center gap-3 flex-1">
+                    <svg id="chevron-{t.api_key_hash}" class="w-5 h-5 text-gray-400 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                <div class="flex-1">
+                    <div class="flex items-center gap-3">
+                        <h3 class="font-medium text-lg">{t.name}</h3>
+                        {state_badge}
+                        {"<span class='px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded'>Has Auth</span>" if t.has_auth else ""}
+                    </div>
+                    <div class="text-sm text-gray-400 mt-1">
+                        {phone_info} | {webhook_count} webhook{"s" if webhook_count != 1 else ""} | Created {t.created_at.strftime("%Y-%m-%d")}
+                    </div>
+                </div>
+                </div>
             </div>
-            <div class="text-sm text-gray-400 mt-1">
-                {phone_info} | {webhook_count} webhook{"s" if webhook_count != 1 else ""} | Created {t.created_at.strftime("%Y-%m-%d")}
+            <div class="flex items-center gap-2" onclick="event.stopPropagation()">
+                <a href="/admin/tenants/{t.api_key_hash}" class="px-3 py-1 text-sm text-whatsapp hover:bg-whatsapp/10 rounded transition">
+                    View
+                </a>
+                <button onclick="showTenantActions('{t.api_key_hash}', '{t.name}')" class="px-3 py-1 text-sm text-gray-400 hover:text-white hover:bg-gray-600 rounded transition">
+                    Actions
+                </button>
             </div>
-        </div>
-        <div class="flex items-center gap-2">
-            <button onclick="showTenantActions('{t.api_key_hash}', '{t.name}')" class="px-3 py-1 text-sm text-gray-400 hover:text-white hover:bg-gray-600 rounded transition">
-                Actions
-            </button>
         </div>
     </div>
+    <div id="tenant-panel-{t.api_key_hash}" class="hidden"></div>
 </div>
 """)
 
@@ -824,11 +1916,22 @@ async def get_messages_fragment(
     tenants = {t.api_key_hash: t.name for t in tenant_manager.list_tenants()}
 
     if not messages:
+        if search or tenant_hash or direction:
+            return HTMLResponse(
+                content='<div class="p-6 text-center text-gray-500">No messages match your search criteria</div>'
+            )
         return HTMLResponse(
             content='<div class="p-6 text-center text-gray-500">No messages found</div>'
         )
 
-    html_parts = []
+    # Add count header
+    count_header = ""
+    if total > len(messages):
+        count_header = f'<div class="px-6 py-3 bg-gray-700/50 text-sm text-gray-400 border-b border-gray-700">Showing {len(messages)} of {total} messages</div>'
+    elif messages:
+        count_header = f'<div class="px-6 py-3 bg-gray-700/50 text-sm text-gray-400 border-b border-gray-700">{total} message{"s" if total != 1 else ""}</div>'
+
+    html_parts = [count_header]
     for msg in messages:
         tenant_name = tenants.get(msg.get("tenant_hash") or "", "Unknown")
         direction_badge = (
@@ -839,8 +1942,23 @@ async def get_messages_fragment(
         msg_type = msg.get("msg_type") or "text"
         raw_text = msg.get("text") or ""
         text = raw_text[:100] + "..." if len(raw_text) > 100 else raw_text
+
+        # Highlight search terms
+        if search:
+            import re
+
+            pattern = re.compile(re.escape(search), re.IGNORECASE)
+            text = pattern.sub(
+                lambda m: f'<mark class="bg-yellow-500/30 text-yellow-200">{m.group(0)}</mark>',
+                text,
+            )
         ts = msg.get("timestamp")
-        timestamp = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "-"
+        if ts:
+            if ts > 1e12:
+                ts = ts / 1000
+            timestamp = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+        else:
+            timestamp = "-"
         is_group = msg.get("is_group") or False
 
         html_parts.append(f"""
@@ -950,11 +2068,17 @@ async def get_webhook_history_fragment(
             else '<span class="px-2 py-1 text-xs bg-red-500/20 text-red-400 rounded">Failed</span>'
         )
         created_at = a.get("created_at")
-        timestamp = (
-            datetime.fromisoformat(created_at).strftime("%Y-%m-%d %H:%M:%S")
-            if created_at
-            else "-"
-        )
+        if created_at:
+            if isinstance(created_at, datetime):
+                timestamp = created_at.strftime("%Y-%m-%d %H:%M:%S")
+            elif isinstance(created_at, str):
+                timestamp = datetime.fromisoformat(created_at).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+            else:
+                timestamp = str(created_at)
+        else:
+            timestamp = "-"
         latency = f"{a.get('latency_ms')}ms" if a.get("latency_ms") else "-"
         status_code = a.get("status_code", "-")
 
@@ -1010,9 +2134,144 @@ async def get_blocked_ips_fragment(session_id: str = Depends(require_admin_sessi
     return HTMLResponse(content="".join(html_parts))
 
 
+@fragments_router.get("/chatwoot/config", response_class=HTMLResponse)
+async def get_chatwoot_config_fragment(
+    session_id: str = Depends(require_admin_session),
+):
+    return HTMLResponse(
+        content="""
+<div class="space-y-4">
+    <div class="grid grid-cols-2 gap-4">
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">Chatwoot URL</label>
+            <input type="url" id="chatwoot-url" placeholder="https://chatwoot.example.com" 
+                   class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp">
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-2">Account ID</label>
+            <input type="text" id="chatwoot-account-id" placeholder="1" 
+                   class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp">
+        </div>
+    </div>
+    <div>
+        <label class="block text-sm font-medium text-gray-300 mb-2">API Token</label>
+        <input type="password" id="chatwoot-token" placeholder="Your Chatwoot API token" 
+               class="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp">
+    </div>
+    <div class="flex items-center gap-4 pt-2">
+        <button onclick="saveChatwootConfig()" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg transition">
+            Save Configuration
+        </button>
+        <span id="chatwoot-config-status" class="text-sm text-gray-400"></span>
+    </div>
+</div>
+<script>
+async function saveChatwootConfig() {
+    const url = document.getElementById('chatwoot-url').value;
+    const token = document.getElementById('chatwoot-token').value;
+    const accountId = document.getElementById('chatwoot-account-id').value;
+    const status = document.getElementById('chatwoot-config-status');
+    
+    if (!url || !token || !accountId) {
+        status.textContent = 'Please fill all fields';
+        status.className = 'text-sm text-red-400';
+        return;
+    }
+    
+    status.textContent = 'Saving...';
+    status.className = 'text-sm text-gray-400';
+    
+    try {
+        const response = await fetch('/admin/api/chatwoot/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                url: url,
+                token: token,
+                account_id: accountId,
+                enabled: true
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            status.textContent = 'Configuration saved!';
+            status.className = 'text-sm text-green-400';
+            htmx.trigger('#chatwoot-tenants', 'load');
+        } else {
+            status.textContent = data.detail || 'Failed to save';
+            status.className = 'text-sm text-red-400';
+        }
+    } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+        status.className = 'text-sm text-red-400';
+    }
+}
+</script>
+"""
+    )
+
+
+@fragments_router.get("/chatwoot/tenants", response_class=HTMLResponse)
+async def get_chatwoot_tenants_fragment(
+    session_id: str = Depends(require_admin_session),
+):
+    tenants = tenant_manager.list_tenants()
+
+    if not tenants:
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">No tenants configured</div>'
+        )
+
+    html_parts = []
+    for tenant in tenants:
+        config = getattr(tenant, "chatwoot_config", None) or {}
+        enabled = config.get("enabled", False)
+        status_badge = (
+            '<span class="px-2 py-1 text-xs bg-green-500/20 text-green-400 rounded">Enabled</span>'
+            if enabled
+            else '<span class="px-2 py-1 text-xs bg-gray-500/20 text-gray-400 rounded">Disabled</span>'
+        )
+
+        html_parts.append(f"""
+<div class="p-4 hover:bg-gray-700/50 transition">
+    <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 bg-gray-600 rounded-full flex items-center justify-center">
+                <span class="text-lg font-semibold">{tenant.name[0].upper()}</span>
+            </div>
+            <div>
+                <div class="flex items-center gap-2">
+                    <span class="font-medium">{tenant.name}</span>
+                    {status_badge}
+                </div>
+                <div class="text-sm text-gray-400">
+                    {config.get("url", "Not configured") if config.get("url") else "Not configured"}
+                </div>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <button onclick="toggleChatwootForTenant('{tenant.api_key_hash[:16]}', {str(enabled).lower()})"
+                    class="px-3 py-1 text-sm {"text-yellow-400 hover:bg-yellow-500/20" if enabled else "text-green-400 hover:bg-green-500/20"} rounded transition">
+                {"Disable" if enabled else "Enable"}
+            </button>
+            <button onclick="showChatwootTenantConfig('{tenant.api_key_hash[:16]}')"
+                    class="px-3 py-1 text-sm text-gray-400 hover:text-white hover:bg-gray-600 rounded transition">
+                Configure
+            </button>
+        </div>
+    </div>
+</div>
+""")
+
+    return HTMLResponse(content="".join(html_parts))
+
+
 @fragments_router.get("/failed-auth", response_class=HTMLResponse)
 async def get_failed_auth_fragment(session_id: str = Depends(require_admin_session)):
-    failed = rate_limiter.get_failed_auth_attempts()
+    result = rate_limiter.get_failed_auth_attempts()
+    failed = result.get("ips_with_failures", {})
 
     if not failed:
         return HTMLResponse(
@@ -1052,6 +2311,191 @@ async def get_failed_auth_fragment(session_id: str = Depends(require_admin_sessi
 """)
 
     return HTMLResponse(content="".join(html_parts))
+
+
+@fragments_router.get("/tenant-panel/{tenant_hash}", response_class=HTMLResponse)
+async def get_tenant_panel_fragment(
+    tenant_hash: str,
+    session_id: str = Depends(require_admin_session),
+):
+    tenant = tenant_manager._tenants.get(tenant_hash)
+    if not tenant:
+        return HTMLResponse(
+            content='<div class="p-4 text-red-400">Tenant not found</div>'
+        )
+
+    db = tenant_manager._db
+    messages = []
+    recent_chats = []
+
+    if db:
+        messages, _ = await db.list_messages(tenant_hash=tenant_hash, limit=50)
+        recent_chats = await db.get_recent_chats(tenant_hash, limit=20)
+
+    messages_html = ""
+    if messages:
+        for msg in reversed(messages):
+            is_inbound = msg.get("direction") == "in"
+            text = msg.get("text") or ""
+            ts = msg.get("timestamp")
+            if ts:
+                if ts > 1e12:
+                    ts = ts / 1000
+                timestamp = datetime.fromtimestamp(ts).strftime("%H:%M")
+            else:
+                timestamp = ""
+
+            push_name = msg.get("push_name") or ""
+            if not push_name:
+                from_jid = msg.get("from_jid") or ""
+                phone = from_jid.split("@")[0] if "@" in from_jid else from_jid
+                push_name = phone if phone else "Unknown"
+
+            if is_inbound:
+                messages_html += f"""
+<div class="flex gap-2 mb-3">
+    <div class="max-w-[80%] bg-gray-700 rounded-2xl rounded-tl-sm px-4 py-2">
+        <div class='text-xs text-whatsapp mb-1'>{push_name}</div>
+        <div class="text-sm text-gray-100">{text}</div>
+        <div class="text-xs text-gray-400 mt-1 text-right">{timestamp}</div>
+    </div>
+</div>"""
+            else:
+                messages_html += f"""
+<div class="flex gap-2 mb-3 justify-end">
+    <div class="max-w-[80%] bg-whatsapp/20 rounded-2xl rounded-tr-sm px-4 py-2">
+        <div class="text-sm text-gray-100">{text}</div>
+        <div class="text-xs text-gray-400 mt-1 text-right">{timestamp}</div>
+    </div>
+</div>"""
+
+    chats_options = ""
+    for chat in recent_chats:
+        push_name = chat.get("push_name") or ""
+        chat_jid = chat.get("chat_jid", "")
+        phone = chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
+        is_group = chat.get("is_group")
+
+        if push_name:
+            label = f"{push_name} ({phone})"
+        else:
+            label = phone
+        if is_group:
+            label += " [Group]"
+
+        chats_options += f'<option value="{chat_jid}">{label}</option>'
+
+    html = f"""
+<div class="border-t border-gray-700 bg-gray-900/50">
+    <div class="p-4">
+        <div class="flex items-center justify-between mb-3">
+            <h4 class="font-medium text-whatsapp">Messages</h4>
+            <span class="text-xs text-gray-400">{len(messages)} messages</span>
+        </div>
+        <div class="max-h-64 overflow-y-auto mb-4 bg-gray-800/50 rounded-lg p-3">
+            {messages_html}
+        </div>
+        <div class="space-y-3">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">To:</label>
+                <div class="flex gap-2">
+                    <select id="chat-select-{tenant_hash}" class="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-whatsapp">
+                        <option value="">Select chat...</option>
+                        {chats_options}
+                    </select>
+                    <input type="text" id="manual-jid-{tenant_hash}" placeholder="or enter phone" class="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-whatsapp">
+                </div>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Message:</label>
+                <div class="flex gap-2">
+                    <input type="text" id="msg-text-{tenant_hash}" placeholder="Type your message..." class="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-whatsapp" onkeypress="if(event.key==='Enter')sendMsgAsTenant('{tenant_hash}')">
+                    <button onclick="sendMsgAsTenant('{tenant_hash}')" class="px-4 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg text-sm font-medium">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+"""
+    return HTMLResponse(content=html)
+
+
+@fragments_router.get("/tenant-messages/{tenant_hash}", response_class=HTMLResponse)
+async def get_tenant_messages_fragment(
+    tenant_hash: str,
+    limit: int = Query(100, ge=1, le=500),
+    session_id: str = Depends(require_admin_session),
+):
+    tenant = tenant_manager._tenants.get(tenant_hash)
+    if not tenant:
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-red-400">Tenant not found</div>'
+        )
+
+    db = tenant_manager._db
+    if not db:
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">Database not available</div>'
+        )
+
+    messages, total = await db.list_messages(tenant_hash=tenant_hash, limit=limit)
+
+    if not messages:
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">No messages yet</div>'
+        )
+
+    html_parts = []
+    for msg in reversed(messages):  # Show oldest to newest
+        is_inbound = msg.get("direction") == "in"
+        text = msg.get("text") or "<i class='text-gray-500'>No text</i>"
+        ts = msg.get("timestamp")
+
+        if ts:
+            if ts > 1e12:
+                ts = ts / 1000
+            timestamp = datetime.fromtimestamp(ts).strftime("%H:%M")
+        else:
+            timestamp = ""
+
+        push_name = msg.get("push_name") or ""
+        if not push_name:
+            from_jid = msg.get("from_jid") or ""
+            phone = from_jid.split("@")[0] if "@" in from_jid else from_jid
+            push_name = phone if phone else "Unknown"
+
+        if is_inbound:
+            html_parts.append(f"""
+<div class="flex gap-2 mb-3 px-4">
+    <div class="max-w-[80%] bg-gray-700 rounded-2xl rounded-tl-sm px-4 py-2">
+        <div class='text-xs text-whatsapp mb-1'>{push_name}</div>
+        <div class="text-sm text-gray-100">{text}</div>
+        <div class="text-xs text-gray-400 mt-1 text-right">{timestamp}</div>
+    </div>
+</div>""")
+        else:
+            html_parts.append(f"""
+<div class="flex gap-2 mb-3 justify-end px-4">
+    <div class="max-w-[80%] bg-whatsapp/20 rounded-2xl rounded-tr-sm px-4 py-2">
+        <div class="text-sm text-gray-100">{text}</div>
+        <div class="text-xs text-gray-400 mt-1 text-right">{timestamp}</div>
+    </div>
+</div>""")
+
+    return HTMLResponse(content="".join(html_parts))
+
+
+@fragments_router.get("/recent-chats/{tenant_hash}")
+async def get_recent_chats_fragment(
+    tenant_hash: str,
+    session_id: str = Depends(require_admin_session),
+):
+    db = tenant_manager._db
+    if not db:
+        return {"chats": []}
+
+    chats = await db.get_recent_chats(tenant_hash, limit=50)
+    return {"chats": chats}
 
 
 # JSON API Routes
@@ -1365,6 +2809,43 @@ async def remove_tenant_webhook_api(
     return {"status": "removed" if removed else "not_found"}
 
 
+class AdminSendMessage(BaseModel):
+    to: str
+    text: str
+
+
+@api_router.post("/tenants/{tenant_hash}/send")
+async def admin_send_message(
+    tenant_hash: str,
+    data: AdminSendMessage,
+    session_id: str = Depends(require_admin_session),
+):
+    tenant = tenant_manager._tenants.get(tenant_hash)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    if not tenant.has_auth:
+        raise HTTPException(status_code=400, detail="Tenant is not connected")
+
+    if not data.to:
+        raise HTTPException(status_code=400, detail="Recipient is required")
+
+    if not data.text:
+        raise HTTPException(status_code=400, detail="Message text is required")
+
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.send_message(to=data.to, text=data.text)
+        return {
+            "status": "sent",
+            "message_id": result.get("message_id"),
+            "to": result.get("to", data.to),
+        }
+    except Exception as e:
+        logger.error(f"Admin send message failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @api_router.get("/rate-limit/blocked")
 async def list_blocked_ips_api(session_id: str = Depends(require_admin_session)):
     return {"blocked_ips": rate_limiter.get_blocked_ips()}
@@ -1401,3 +2882,293 @@ async def clear_failed_auth_api(
 ):
     rate_limiter.clear_failed_auth(ip)
     return {"status": "cleared"}
+
+
+# Bulk Operations
+
+
+class BulkOperationRequest(BaseModel):
+    items: list[str] = Field(..., max_items=50)
+
+
+class BulkTenantReconnectRequest(BaseModel):
+    tenant_hashes: list[str] = Field(..., max_items=50)
+
+
+class BulkMessageDeleteRequest(BaseModel):
+    message_ids: list[int] = Field(..., max_items=50)
+
+
+@api_router.post("/tenants/bulk/reconnect")
+async def bulk_reconnect_tenants(
+    data: BulkTenantReconnectRequest,
+    session_id: str = Depends(require_admin_session),
+):
+    """Bulk reconnect multiple tenants (max 50)"""
+    results = []
+
+    for hash in data.tenant_hashes:
+        try:
+            tenant = tenant_manager._tenants.get(hash)
+            if not tenant:
+                results.append({"hash": hash, "status": "not_found"})
+                continue
+
+            if tenant.bridge:
+                await tenant.bridge.stop()
+
+            bridge = await tenant_manager.get_or_create_bridge(tenant)
+            await bridge.login()
+            results.append({"hash": hash, "status": "success"})
+        except Exception as e:
+            results.append({"hash": hash, "status": "error", "error": str(e)})
+
+    return {
+        "processed": len(results),
+        "successful": sum(1 for r in results if r["status"] == "success"),
+        "failed": sum(1 for r in results if r["status"] != "success"),
+        "results": results,
+    }
+
+
+@api_router.delete("/tenants/bulk")
+async def bulk_delete_tenants(
+    data: BulkTenantReconnectRequest,
+    session_id: str = Depends(require_admin_session),
+):
+    """Bulk delete multiple tenants (max 50)"""
+    results = []
+
+    for hash in data.tenant_hashes:
+        try:
+            tenant = tenant_manager._tenants.get(hash)
+            if not tenant:
+                results.append({"hash": hash, "status": "not_found"})
+                continue
+
+            # Need raw API key for deletion
+            if tenant._raw_api_key:
+                deleted = await tenant_manager.delete_tenant(tenant._raw_api_key)
+                results.append(
+                    {"hash": hash, "status": "deleted" if deleted else "failed"}
+                )
+            else:
+                results.append(
+                    {"hash": hash, "status": "error", "error": "No raw API key"}
+                )
+        except Exception as e:
+            results.append({"hash": hash, "status": "error", "error": str(e)})
+
+    return {
+        "processed": len(results),
+        "deleted": sum(1 for r in results if r["status"] == "deleted"),
+        "failed": sum(1 for r in results if r["status"] != "deleted"),
+        "results": results,
+    }
+
+
+@api_router.delete("/messages/bulk")
+async def bulk_delete_messages(
+    data: BulkMessageDeleteRequest,
+    session_id: str = Depends(require_admin_session),
+):
+    """Bulk delete multiple messages (max 50)"""
+    db = tenant_manager._db
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    deleted = []
+    failed = []
+
+    for msg_id in data.message_ids:
+        try:
+            if await db.delete_message(msg_id):
+                deleted.append(msg_id)
+            else:
+                failed.append(msg_id)
+        except Exception as e:
+            failed.append(msg_id)
+
+    return {
+        "requested": len(data.message_ids),
+        "deleted": len(deleted),
+        "failed": len(failed),
+        "deleted_ids": deleted,
+        "failed_ids": failed,
+    }
+
+
+@api_router.post("/webhooks/bulk/test")
+async def bulk_test_webhooks(
+    data: BulkOperationRequest,
+    session_id: str = Depends(require_admin_session),
+):
+    """Bulk test webhook URLs (max 50)"""
+    import httpx
+    import asyncio
+
+    results = []
+
+    async def test_webhook(url: str):
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(
+                    url,
+                    json={"test": True, "timestamp": datetime.utcnow().isoformat()},
+                    headers={"Content-Type": "application/json"},
+                )
+                return {
+                    "url": url,
+                    "success": response.status_code in [200, 201, 202, 204],
+                    "status_code": response.status_code,
+                }
+        except Exception as e:
+            return {"url": url, "success": False, "error": str(e)}
+
+    # Test all webhooks in parallel
+    tasks = [test_webhook(url) for url in data.items]
+    results = await asyncio.gather(*tasks)
+
+    return {
+        "total": len(results),
+        "successful": sum(1 for r in results if r["success"]),
+        "failed": sum(1 for r in results if not r["success"]),
+        "results": results,
+    }
+
+
+class ChatwootConfigRequest(BaseModel):
+    url: str
+    token: str
+    account_id: str
+    enabled: bool = True
+
+
+class ChatwootTenantConfigRequest(BaseModel):
+    enabled: bool = True
+    sign_messages: bool = True
+    reopen_conversation: bool = True
+
+
+@api_router.post("/chatwoot/config")
+async def set_chatwoot_global_config(
+    data: ChatwootConfigRequest,
+    session_id: str = Depends(require_admin_session),
+):
+    from ..chatwoot import ChatwootConfig, ChatwootClient, ChatwootAPIError
+
+    config = ChatwootConfig(
+        enabled=data.enabled,
+        url=data.url.rstrip("/"),
+        token=data.token,
+        account_id=data.account_id,
+    )
+
+    client = ChatwootClient(config)
+    try:
+        await client.list_inboxes()
+        connected = True
+    except ChatwootAPIError as e:
+        logger.error(f"Chatwoot connection error: {e.message}")
+        raise HTTPException(
+            status_code=400, detail=f"Chatwoot connection error: {e.message}"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected Chatwoot error: {e}")
+        raise HTTPException(status_code=400, detail=f"Unexpected error: {str(e)}")
+    finally:
+        await client.close()
+
+    if tenant_manager._db:
+        await tenant_manager._db.save_global_config(
+            "chatwoot",
+            {
+                "url": data.url.rstrip("/"),
+                "token": data.token,
+                "account_id": data.account_id,
+                "enabled": data.enabled,
+            },
+        )
+
+    return {"status": "configured", "connected": connected}
+
+
+@api_router.get("/chatwoot/tenants")
+async def list_chatwoot_tenants_api(session_id: str = Depends(require_admin_session)):
+    tenants = tenant_manager.list_tenants()
+    result = []
+    for tenant in tenants:
+        config = getattr(tenant, "chatwoot_config", None) or {}
+        result.append(
+            {
+                "tenant_hash": tenant.api_key_hash[:16],
+                "tenant_name": tenant.name,
+                "chatwoot_enabled": config.get("enabled", False),
+                "chatwoot_url": config.get("url"),
+                "chatwoot_inbox_id": config.get("inbox_id"),
+            }
+        )
+    return {"tenants": result}
+
+
+@api_router.post("/tenants/{tenant_hash}/chatwoot")
+async def set_tenant_chatwoot_config(
+    tenant_hash: str,
+    data: ChatwootTenantConfigRequest,
+    session_id: str = Depends(require_admin_session),
+):
+    tenant = None
+    for t in tenant_manager.list_tenants():
+        if t.api_key_hash.startswith(tenant_hash):
+            tenant = t
+            break
+
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    existing_config = getattr(tenant, "chatwoot_config", None) or {}
+
+    new_config = {
+        **existing_config,
+        "enabled": data.enabled,
+        "sign_messages": data.sign_messages,
+        "reopen_conversation": data.reopen_conversation,
+    }
+
+    tenant.chatwoot_config = new_config
+
+    if tenant_manager._db:
+        await tenant_manager._db.save_chatwoot_config(tenant.api_key_hash, new_config)
+
+    return {"status": "updated", "config": new_config}
+
+
+@api_router.delete("/tenants/{tenant_hash}/chatwoot")
+async def disable_tenant_chatwoot(
+    tenant_hash: str,
+    session_id: str = Depends(require_admin_session),
+):
+    tenant = None
+    for t in tenant_manager.list_tenants():
+        if t.api_key_hash.startswith(tenant_hash):
+            tenant = t
+            break
+
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    tenant.chatwoot_config = None
+
+    if tenant_manager._db:
+        await tenant_manager._db.save_chatwoot_config(tenant.api_key_hash, None)
+
+    return {"status": "disabled"}
+
+
+@api_router.get("/session-id")
+async def get_session_id(
+    request: Request,
+    session_id: str = Depends(require_admin_session),
+):
+    """Get current admin session ID for WebSocket connection"""
+    return {"session_id": session_id}

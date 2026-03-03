@@ -48,6 +48,26 @@ class RateLimiter:
         }
         logger.warning(f"IP blocked", extra={"ip": ip, "reason": reason})
 
+        # Broadcast security event to admin dashboard
+        try:
+            import asyncio
+            from ..admin import admin_ws_manager
+            
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(
+                    admin_ws_manager.broadcast(
+                        "security_event",
+                        {
+                            "event": "ip_blocked",
+                            "ip": ip,
+                            "reason": reason,
+                        }
+                    )
+                )
+        except Exception as e:
+            logger.debug(f"Failed to broadcast security event: {e}")
+
     def unblock_ip(self, ip: str) -> bool:
         if ip in self._blocked_ips:
             del self._blocked_ips[ip]
