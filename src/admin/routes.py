@@ -2389,7 +2389,7 @@ async def get_tenant_panel_fragment(
     messages_html = ""
     if messages:
         for msg in reversed(messages):
-            is_inbound = msg.get("direction") == "in"
+            is_inbound = msg.get("direction") != "outbound"
             text = msg.get("text") or ""
             ts = msg.get("timestamp")
             if ts:
@@ -2501,7 +2501,7 @@ async def get_tenant_messages_fragment(
 
     html_parts = []
     for msg in reversed(messages):  # Show oldest to newest
-        is_inbound = msg.get("direction") == "in"
+        is_inbound = msg.get("direction") != "outbound"
         text = msg.get("text") or "<i class='text-gray-500'>No text</i>"
         ts = msg.get("timestamp")
 

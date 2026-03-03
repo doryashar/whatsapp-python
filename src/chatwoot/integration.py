@@ -39,6 +39,7 @@ class ChatwootIntegration:
 
     async def handle_message(self, event_data: dict) -> bool:
         if not self._config.enabled:
+            logger.debug("Chatwoot integration disabled, skipping message")
             return False
 
         try:
@@ -50,6 +51,10 @@ class ChatwootIntegration:
             is_group = event_data.get("is_group", False)
             message_id = event_data.get("id")
 
+            logger.debug(
+                f"handle_message: from={from_jid}, chat={chat_jid}, text={text[:50] if text else ''}, type={msg_type}, is_group={is_group}"
+            )
+
             if is_group:
                 logger.debug(f"Skipping group message for tenant {self._tenant.name}")
                 return False
@@ -59,8 +64,13 @@ class ChatwootIntegration:
                 logger.warning(f"Could not extract phone from jid: {from_jid}")
                 return False
 
+            logger.debug(f"Extracted phone: {phone_number}")
+
             contact_name = push_name or phone_number
 
+            logger.debug(
+                f"Finding or creating contact: phone={phone_number}, name={contact_name}"
+            )
             contact = await self._client.find_or_create_contact(
                 phone_number=phone_number,
                 name=contact_name,
@@ -70,6 +80,7 @@ class ChatwootIntegration:
                 f"Contact resolved: id={contact.id}, phone={contact.phone_number}"
             )
 
+            logger.debug(f"Getting or creating conversation for contact {contact.id}")
             conversation = await self._client.get_or_create_conversation(
                 contact=contact,
                 source_id=chat_jid,
@@ -84,6 +95,9 @@ class ChatwootIntegration:
             if msg_type != "text" and "media_url" in event_data:
                 attachments = await self._prepare_attachments(event_data)
 
+            logger.debug(
+                f"Creating message in conversation {conversation.id}: content={content[:50] if content else ''}"
+            )
             message = await self._client.create_message(
                 conversation_id=conversation.id,
                 content=content or f"[{msg_type}]",
@@ -98,10 +112,12 @@ class ChatwootIntegration:
             return True
 
         except ChatwootAPIError as e:
-            logger.error(f"Chatwoot API error handling message: {e}")
+            logger.error(f"Chatwoot API error handling message: {e}", exc_info=True)
             return False
         except Exception as e:
-            logger.error(f"Unexpected error handling message for Chatwoot: {e}")
+            logger.error(
+                f"Unexpected error handling message for Chatwoot: {e}", exc_info=True
+            )
             return False
 
     async def handle_connected(self, event_data: dict) -> bool:

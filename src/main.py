@@ -118,12 +118,20 @@ async def handle_chatwoot_event(
 ):
     """Handle Chatwoot integration for events."""
     chatwoot_config = getattr(tenant, "chatwoot_config", None)
+    logger.debug(
+        f"Chatwoot event check: tenant={tenant.name}, enabled={chatwoot_config.get('enabled') if chatwoot_config else None}"
+    )
+
     if not chatwoot_config or not chatwoot_config.get("enabled"):
+        logger.debug(
+            f"Chatwoot skipped for tenant {tenant.name}: config={chatwoot_config}"
+        )
         return
 
     try:
         if tenant_manager._db:
             global_config = await tenant_manager._db.get_global_config("chatwoot")
+            logger.debug(f"Global Chatwoot config: {global_config}")
         else:
             global_config = None
 
@@ -135,16 +143,27 @@ async def handle_chatwoot_event(
         else:
             merged_config = chatwoot_config
 
+        logger.info(
+            f"Creating ChatwootConfig with: url={merged_config.get('url')}, account_id={merged_config.get('account_id')}, inbox_id={merged_config.get('inbox_id')}"
+        )
+
         config = ChatwootConfig(**merged_config)
         integration = ChatwootIntegration(config, tenant)
+
         if event_type == "message":
-            await integration.handle_message(params)
+            logger.info(
+                f"Processing Chatwoot message for tenant {tenant.name}: from={params.get('from')}, text={params.get('text', '')[:50]}"
+            )
+            result = await integration.handle_message(params)
+            logger.info(f"Chatwoot message result: {result}")
         elif event_type == "connected":
             await integration.handle_connected(params)
         elif event_type == "disconnected":
             await integration.handle_disconnected(params)
     except Exception as e:
-        logger.error(f"Chatwoot integration error for tenant {tenant.name}: {e}")
+        logger.error(
+            f"Chatwoot integration error for tenant {tenant.name}: {e}", exc_info=True
+        )
 
 
 def handle_bridge_event(
@@ -227,15 +246,21 @@ def handle_bridge_event(
         logger.debug(f"Unknown event type arrived: {event_type} with params: {params}")
 
     if event_type == "message":
+        # Determine message direction: outbound if from tenant, inbound otherwise
+        from_jid = params["from"]
+        is_outbound = tenant.self_jid and from_jid == tenant.self_jid
+        direction = "outbound" if is_outbound else "inbound"
+        
         msg = StoredMessage(
             id=params["id"],
-            from_jid=params["from"],
+            from_jid=from_jid,
             chat_jid=params["chat_jid"],
             is_group=params.get("is_group", False),
             push_name=params.get("push_name"),
             text=params.get("text", ""),
             msg_type=params.get("type", "text"),
             timestamp=params.get("timestamp", 0),
+            direction=direction,
         )
         tenant.message_store.add(msg)
         if hasattr(tenant.message_store, "add_with_persist"):
