@@ -387,3 +387,331 @@ async def clear_failed_auth_attempts(
 ):
     rate_limiter.clear_failed_auth(ip)
     return {"status": "cleared", "ip": ip}
+
+
+# Group Management Endpoints (evolution-api compatible)
+
+
+@router.post("/group/create")
+async def create_group(
+    request: CreateGroupRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Create group: tenant={tenant.name}, subject={request.subject}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_create(
+            subject=request.subject,
+            participants=request.participants,
+            description=request.description,
+        )
+        return CreateGroupResponse(
+            status=result.get("status"),
+            group_jid=result.get("group_jid"),
+            subject=result.get("subject"),
+            participants=result.get("participants"),
+        )
+    except BridgeError as e:
+        logger.error(f"Create group failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/group/updateSubject")
+async def update_group_subject(
+    group_jid: str = Query(..., description="Group JID"),
+    subject: str = Query(..., description="New subject"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.debug(f"Update group subject: tenant={tenant.name}, group={group_jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_update_subject(
+            group_jid=group_jid,
+            subject=subject,
+        )
+        return UpdateGroupSubjectResponse(
+            status=result.get("status"),
+            group_jid=result.get("group_jid"),
+            subject=result.get("subject"),
+        )
+    except BridgeError as e:
+        logger.error(f"Update group subject failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/group/updateDescription")
+async def update_group_description(
+    group_jid: str = Query(..., description="Group JID"),
+    description: str = Query(..., description="New description"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.debug(f"Update group description: tenant={tenant.name}, group={group_jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_update_description(
+            group_jid=group_jid,
+            description=description,
+        )
+        return UpdateGroupDescriptionResponse(
+            status=result.get("status"),
+            group_jid=result.get("group_jid"),
+        )
+    except BridgeError as e:
+        logger.error(f"Update group description failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/group/updatePicture")
+async def update_group_picture(
+    group_jid: str = Query(..., description="Group JID"),
+    image_url: str = Query(..., description="Image file path or URL"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.debug(f"Update group picture: tenant={tenant.name}, group={group_jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_update_picture(
+            group_jid=group_jid,
+            image_url=image_url,
+        )
+        return UpdateGroupPictureResponse(
+            status=result.get("status"),
+            group_jid=result.get("group_jid"),
+        )
+    except BridgeError as e:
+        logger.error(f"Update group picture failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/group/findGroupInfos")
+async def get_group_info(
+    group_jid: str = Query(..., description="Group JID"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.debug(f"Get group info: tenant={tenant.name}, group={group_jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_get_info(group_jid)
+        return GroupInfoResponse(**result)
+    except BridgeError as e:
+        logger.error(f"Get group info failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/group/fetchAllGroups")
+async def get_all_groups(
+    get_participants: bool = Query(default=False, description="Include participants"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Fetch all groups: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_get_all(get_participants=get_participants)
+        groups = []
+        for g in result.get("groups", []):
+            participants = None
+            if get_participants:
+                participants = [
+                    GroupParticipant(jid=p.get("jid"), admin=p.get("admin"))
+                    for p in g.get("participants", [])
+                ]
+            groups.append(
+                GroupSummary(
+                    jid=g.get("jid"),
+                    name=g.get("name"),
+                    size=g.get("size"),
+                    participants=participants,
+                )
+            )
+        return GroupListResponse(groups=groups)
+    except BridgeError as e:
+        logger.error(f"Fetch all groups failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/group/participants")
+async def get_group_participants(
+    group_jid: str = Query(..., description="Group JID"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.debug(f"Get group participants: tenant={tenant.name}, group={group_jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_get_participants(group_jid)
+        participants = [
+            GroupParticipant(jid=p.get("jid"), admin=p.get("admin"))
+            for p in result.get("participants", [])
+        ]
+        return GroupParticipantsResponse(
+            group_jid=group_jid,
+            participants=participants,
+        )
+    except BridgeError as e:
+        logger.error(f"Get group participants failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/group/inviteCode")
+async def get_group_invite_code(
+    group_jid: str = Query(..., description="Group JID"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.debug(f"Get group invite code: tenant={tenant.name}, group={group_jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_get_invite_code(group_jid)
+        return InviteCodeResponse(
+            group_jid=group_jid,
+            invite_code=result.get("invite_code"),
+        )
+    except BridgeError as e:
+        logger.error(f"Get group invite code failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/group/revokeInviteCode")
+async def revoke_group_invite(
+    group_jid: str = Query(..., description="Group JID"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.debug(f"Revoke group invite: tenant={tenant.name}, group={group_jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_revoke_invite(group_jid)
+        return RevokeInviteResponse(
+            group_jid=group_jid,
+            new_invite_code=result.get("new_invite_code"),
+        )
+    except BridgeError as e:
+        logger.error(f"Revoke group invite failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/group/acceptInviteCode")
+async def accept_group_invite(
+    invite_code: str = Query(..., description="Group invite code"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Accept group invite: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_accept_invite(invite_code)
+        return AcceptInviteResponse(
+            status=result.get("status"),
+            group_jid=result.get("group_jid"),
+        )
+    except BridgeError as e:
+        logger.error(f"Accept group invite failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/group/inviteInfo")
+async def get_group_invite_info(
+    invite_code: str = Query(..., description="Group invite code"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.debug(f"Get group invite info: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_get_invite_info(invite_code)
+        return InviteInfoResponse(**result)
+    except BridgeError as e:
+        logger.error(f"Get group invite info failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/group/updateParticipant")
+async def update_group_participant(
+    request: UpdateGroupParticipantRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(
+        f"Update group participant: tenant={tenant.name}, "
+        f"group={request.group_jid}, action={request.action}"
+    )
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_update_participant(
+            group_jid=request.group_jid,
+            action=request.action,
+            participants=request.participants,
+        )
+        results = [
+            ParticipantUpdateResult(
+                status=r.get("status"),
+                jid=r.get("jid"),
+                content=r.get("content"),
+            )
+            for r in result.get("results", [])
+        ]
+        return UpdateGroupParticipantResponse(
+            status="updated",
+            group_jid=request.group_jid,
+            action=request.action,
+            results=results,
+        )
+    except BridgeError as e:
+        logger.error(f"Update group participant failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/group/updateSetting")
+async def update_group_setting(
+    request: UpdateGroupSettingRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Update group setting: tenant={tenant.name}, group={request.group_jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_update_setting(
+            group_jid=request.group_jid,
+            action=request.action,
+        )
+        return UpdateGroupSettingResponse(
+            status=result.get("status"),
+            group_jid=result.get("group_jid"),
+            setting=result.get("setting"),
+        )
+    except BridgeError as e:
+        logger.error(f"Update group setting failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/group/toggleEphemeral")
+async def toggle_group_ephemeral(
+    request: ToggleEphemeralRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Toggle group ephemeral: tenant={tenant.name}, group={request.group_jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_toggle_ephemeral(
+            group_jid=request.group_jid,
+            expiration=request.expiration,
+        )
+        return ToggleEphemeralResponse(
+            status=result.get("status"),
+            group_jid=result.get("group_jid"),
+            expiration=request.expiration,
+        )
+    except BridgeError as e:
+        logger.error(f"Toggle group ephemeral failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/group/leaveGroup")
+async def leave_group(
+    group_jid: str = Query(..., description="Group JID"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Leave group: tenant={tenant.name}, group={group_jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.group_leave(group_jid)
+        return LeaveGroupResponse(
+            status=result.get("status"),
+            group_jid=result.get("group_jid"),
+        )
+    except BridgeError as e:
+        logger.error(f"Leave group failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
