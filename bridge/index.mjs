@@ -1042,6 +1042,280 @@ const methods = {
       throw err;
     }
   },
+
+  // Advanced Messaging
+
+  async send_location(params) {
+    const { to, latitude, longitude, name, address } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(to);
+
+    try {
+      const result = await sock.sendMessage(jid, {
+        location: {
+          degreesLatitude: latitude,
+          degreesLongitude: longitude,
+          name: name || undefined,
+          address: address || undefined,
+        },
+      });
+
+      const messageId = result?.key?.id || "unknown";
+      const timestamp = typeof result?.messageTimestamp === 'object' 
+        ? result.messageTimestamp.low 
+        : (result?.messageTimestamp || Date.now());
+
+      logger.info({ jid, messageId }, "Location sent");
+      sendEvent("sent", { message_id: messageId, to: jid, type: "location", timestamp });
+      
+      return { message_id: messageId, to: jid };
+    } catch (err) {
+      logger.error({ err: err.message, jid }, "Failed to send location");
+      throw err;
+    }
+  },
+
+  async send_contact(params) {
+    const { to, contacts } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(to);
+
+    try {
+      const vcard = (contact) => {
+        const vcard = 'BEGIN:VCARD\n'
+          + 'VERSION:3.0\n'
+          + `FN:${contact.name || contact.phone}\n`
+          + `TEL;type=CELL;type=VOICE;waid=${contact.phone.replace(/[^0-9]/g, '')}:${contact.phone}\n`
+          + 'END:VCARD';
+        return vcard;
+      };
+
+      const message = {
+        contacts: {
+          displayName: contacts.length > 1 ? `${contacts.length} contacts` : contacts[0].name,
+          contacts: contacts.map(c => ({ vcard: vcard(c) })),
+        },
+      };
+
+      const result = await sock.sendMessage(jid, message);
+
+      const messageId = result?.key?.id || "unknown";
+      const timestamp = typeof result?.messageTimestamp === 'object' 
+        ? result.messageTimestamp.low 
+        : (result?.messageTimestamp || Date.now());
+
+      logger.info({ jid, messageId, count: contacts.length }, "Contact(s) sent");
+      sendEvent("sent", { message_id: messageId, to: jid, type: "contact", timestamp });
+      
+      return { message_id: messageId, to: jid };
+    } catch (err) {
+      logger.error({ err: err.message, jid }, "Failed to send contact");
+      throw err;
+    }
+  },
+
+  // Chat Operations
+
+  async archive_chat(params) {
+    const { chat_jid, archive } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(chat_jid);
+
+    try {
+      await sock.chatModify({ archive: archive !== false }, jid);
+      logger.info({ jid, archived: archive !== false }, "Chat archived/unarchived");
+      return { status: "updated", chat_jid: jid, archived: archive !== false };
+    } catch (err) {
+      logger.error({ err: err.message, jid }, "Failed to archive chat");
+      throw err;
+    }
+  },
+
+  async block_user(params) {
+    const { jid, block } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const userJid = toJid(jid);
+
+    try {
+      if (block) {
+        await sock.updateBlockStatus(userJid, "block");
+        logger.info({ jid: userJid }, "User blocked");
+        return { status: "blocked", jid: userJid };
+      } else {
+        await sock.updateBlockStatus(userJid, "unblock");
+        logger.info({ jid: userJid }, "User unblocked");
+        return { status: "unblocked", jid: userJid };
+      }
+    } catch (err) {
+      logger.error({ err: err.message, jid: userJid }, "Failed to update block status");
+      throw err;
+    }
+  },
+
+  async edit_message(params) {
+    const { to, message_id, text, from_me } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(to);
+
+    try {
+      const result = await sock.sendMessage(jid, {
+        text: text,
+        edit: {
+          remoteJid: jid,
+          id: message_id,
+          fromMe: from_me ?? true,
+        },
+      });
+
+      const messageId = result?.key?.id || message_id;
+      logger.info({ jid, messageId }, "Message edited");
+      
+      return { message_id: messageId, to: jid };
+    } catch (err) {
+      logger.error({ err: err.message, jid }, "Failed to edit message");
+      throw err;
+    }
+  },
+
+  // Profile Operations
+
+  async update_profile_name(params) {
+    const { name } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      await sock.updateProfileName(name);
+      logger.info({ name }, "Profile name updated");
+      return { status: "updated", name };
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to update profile name");
+      throw err;
+    }
+  },
+
+  async update_profile_status(params) {
+    const { status } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      await sock.updateProfileStatus(status);
+      logger.info({ status }, "Profile status updated");
+      return { status: "updated" };
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to update profile status");
+      throw err;
+    }
+  },
+
+  async update_profile_picture(params) {
+    const { image_url } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const buffer = fs.readFileSync(image_url);
+      await sock.updateProfilePicture(selfInfo?.jid, buffer);
+      logger.info("Profile picture updated");
+      return { status: "updated" };
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to update profile picture");
+      throw err;
+    }
+  },
+
+  async remove_profile_picture() {
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      await sock.removeProfilePicture(selfInfo?.jid);
+      logger.info("Profile picture removed");
+      return { status: "removed" };
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to remove profile picture");
+      throw err;
+    }
+  },
+
+  async get_profile(params) {
+    const { jid } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const userJid = jid ? toJid(jid) : selfInfo?.jid;
+      const [result] = await sock.onWhatsApp(userJid);
+      
+      if (result) {
+        return {
+          jid: result.jid,
+          exists: result.exists,
+        };
+      }
+      return { jid: userJid, exists: false };
+    } catch (err) {
+      logger.error({ err: err.message, jid }, "Failed to get profile");
+      throw err;
+    }
+  },
+
+  async check_whatsapp(params) {
+    const { numbers } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const results = [];
+      for (const number of numbers) {
+        const jid = toJid(number);
+        const [result] = await sock.onWhatsApp(jid);
+        results.push({
+          number: number,
+          jid: result?.jid || null,
+          exists: result?.exists || false,
+        });
+      }
+      
+      logger.info({ count: results.length }, "Checked WhatsApp numbers");
+      return { results };
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to check WhatsApp numbers");
+      throw err;
+    }
+  },
 };
 
 async function handleRequest(line) {

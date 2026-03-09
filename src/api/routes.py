@@ -24,6 +24,52 @@ from ..models import (
     AuthExistsResponse,
     AuthAgeResponse,
     SelfIdResponse,
+    CreateGroupRequest,
+    CreateGroupResponse,
+    UpdateGroupSubjectRequest,
+    UpdateGroupSubjectResponse,
+    UpdateGroupDescriptionRequest,
+    UpdateGroupDescriptionResponse,
+    UpdateGroupPictureRequest,
+    UpdateGroupPictureResponse,
+    GroupInfoResponse,
+    GroupListResponse,
+    GroupParticipantsResponse,
+    InviteCodeResponse,
+    RevokeInviteResponse,
+    AcceptInviteRequest,
+    AcceptInviteResponse,
+    InviteInfoResponse,
+    UpdateGroupParticipantRequest,
+    UpdateGroupParticipantResponse,
+    UpdateGroupSettingRequest,
+    UpdateGroupSettingResponse,
+    ToggleEphemeralRequest,
+    ToggleEphemeralResponse,
+    LeaveGroupResponse,
+    GroupParticipant,
+    GroupSummary,
+    ParticipantUpdateResult,
+    SendLocationRequest,
+    SendLocationResponse,
+    SendContactRequest,
+    SendContactResponse,
+    ArchiveChatRequest,
+    ArchiveChatResponse,
+    BlockUserRequest,
+    BlockUserResponse,
+    EditMessageRequest,
+    EditMessageResponse,
+    CheckWhatsAppRequest,
+    CheckWhatsAppResponse,
+    UpdateProfileNameRequest,
+    UpdateProfileNameResponse,
+    UpdateProfileStatusRequest,
+    UpdateProfileStatusResponse,
+    UpdateProfilePictureRequest,
+    UpdateProfilePictureResponse,
+    RemoveProfilePictureResponse,
+    GetProfileResponse,
 )
 from .auth import get_tenant, get_admin_key
 
@@ -660,7 +706,9 @@ async def update_group_setting(
     request: UpdateGroupSettingRequest,
     tenant: Tenant = Depends(get_tenant),
 ):
-    logger.info(f"Update group setting: tenant={tenant.name}, group={request.group_jid}")
+    logger.info(
+        f"Update group setting: tenant={tenant.name}, group={request.group_jid}"
+    )
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
         result = await bridge.group_update_setting(
@@ -682,7 +730,9 @@ async def toggle_group_ephemeral(
     request: ToggleEphemeralRequest,
     tenant: Tenant = Depends(get_tenant),
 ):
-    logger.info(f"Toggle group ephemeral: tenant={tenant.name}, group={request.group_jid}")
+    logger.info(
+        f"Toggle group ephemeral: tenant={tenant.name}, group={request.group_jid}"
+    )
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
         result = await bridge.group_toggle_ephemeral(
@@ -714,4 +764,218 @@ async def leave_group(
         )
     except BridgeError as e:
         logger.error(f"Leave group failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Advanced Messaging Endpoints
+
+
+@router.post("/message/sendLocation")
+async def send_location(
+    request: SendLocationRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Send location: tenant={tenant.name}, to={request.number}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.send_location(
+            to=request.number,
+            latitude=request.latitude,
+            longitude=request.longitude,
+            name=request.name,
+            address=request.address,
+        )
+        return SendLocationResponse(
+            message_id=result.get("message_id"),
+            to=result.get("to"),
+        )
+    except BridgeError as e:
+        logger.error(f"Send location failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/message/sendContact")
+async def send_contact(
+    request: SendContactRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Send contact: tenant={tenant.name}, to={request.number}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        contacts = [{"name": c.name, "phone": c.phone} for c in request.contacts]
+        result = await bridge.send_contact(
+            to=request.number,
+            contacts=contacts,
+        )
+        return SendContactResponse(
+            message_id=result.get("message_id"),
+            to=result.get("to"),
+        )
+    except BridgeError as e:
+        logger.error(f"Send contact failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Chat Operations Endpoints
+
+
+@router.post("/chat/archiveChat")
+async def archive_chat(
+    request: ArchiveChatRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Archive chat: tenant={tenant.name}, chat={request.chat_jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.archive_chat(
+            chat_jid=request.chat_jid,
+            archive=request.archive,
+        )
+        return ArchiveChatResponse(
+            status=result.get("status"),
+            chat_jid=result.get("chat_jid"),
+            archived=result.get("archived"),
+        )
+    except BridgeError as e:
+        logger.error(f"Archive chat failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat/updateBlockStatus")
+async def block_user(
+    request: BlockUserRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Block user: tenant={tenant.name}, jid={request.jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.block_user(
+            jid=request.jid,
+            block=request.block,
+        )
+        return BlockUserResponse(
+            status=result.get("status"),
+            jid=result.get("jid"),
+        )
+    except BridgeError as e:
+        logger.error(f"Block user failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat/updateMessage")
+async def edit_message(
+    request: EditMessageRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Edit message: tenant={tenant.name}, to={request.to}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.edit_message(
+            to=request.to,
+            message_id=request.message_id,
+            text=request.text,
+            from_me=request.from_me,
+        )
+        return EditMessageResponse(
+            message_id=result.get("message_id"),
+            to=result.get("to"),
+        )
+    except BridgeError as e:
+        logger.error(f"Edit message failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat/whatsappNumbers")
+async def check_whatsapp_numbers(
+    request: CheckWhatsAppRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Check WhatsApp numbers: tenant={tenant.name}, count={len(request.numbers)}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.check_whatsapp(request.numbers)
+        return CheckWhatsAppResponse(results=result.get("results", []))
+    except BridgeError as e:
+        logger.error(f"Check WhatsApp numbers failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Profile Operations Endpoints
+
+
+@router.post("/chat/updateProfileName")
+async def update_profile_name(
+    request: UpdateProfileNameRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Update profile name: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.update_profile_name(request.name)
+        return UpdateProfileNameResponse(
+            status=result.get("status"),
+            name=request.name,
+        )
+    except BridgeError as e:
+        logger.error(f"Update profile name failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat/updateProfileStatus")
+async def update_profile_status(
+    request: UpdateProfileStatusRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Update profile status: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.update_profile_status(request.status)
+        return UpdateProfileStatusResponse(status=result.get("status"))
+    except BridgeError as e:
+        logger.error(f"Update profile status failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat/updateProfilePicture")
+async def update_profile_picture(
+    request: UpdateProfilePictureRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Update profile picture: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.update_profile_picture(request.image_url)
+        return UpdateProfilePictureResponse(status=result.get("status"))
+    except BridgeError as e:
+        logger.error(f"Update profile picture failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/chat/removeProfilePicture")
+async def remove_profile_picture(tenant: Tenant = Depends(get_tenant)):
+    logger.info(f"Remove profile picture: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.remove_profile_picture()
+        return RemoveProfilePictureResponse(status=result.get("status"))
+    except BridgeError as e:
+        logger.error(f"Remove profile picture failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat/fetchProfile")
+async def get_profile(
+    jid: Optional[str] = Query(None, description="User JID (optional)"),
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.debug(f"Get profile: tenant={tenant.name}, jid={jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.get_profile(jid)
+        return GetProfileResponse(
+            jid=result.get("jid"),
+            exists=result.get("exists", False),
+        )
+    except BridgeError as e:
+        logger.error(f"Get profile failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

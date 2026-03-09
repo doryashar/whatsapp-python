@@ -169,3 +169,114 @@ class ToggleEphemeralResponse(BaseModel):
 class LeaveGroupResponse(BaseModel):
     status: str
     group_jid: str
+
+
+# Advanced Messaging Models
+
+class SendLocationRequest(BaseModel):
+    number: str
+    latitude: float
+    longitude: float
+    name: Optional[str] = None
+    address: Optional[str] = None
+
+
+class SendLocationResponse(BaseModel):
+    message_id: str
+    to: str
+
+
+class ContactCard(BaseModel):
+    name: str
+    phone: str
+
+
+class SendContactRequest(BaseModel):
+    number: str
+    contacts: list[ContactCard]
+
+
+class SendContactResponse(BaseModel):
+    message_id: str
+    to: str
+
+
+class ArchiveChatRequest(BaseModel):
+    chat_jid: str
+    archive: bool = True
+
+
+class ArchiveChatResponse(BaseModel):
+    status: str
+    chat_jid: str
+    archived: bool
+
+
+class BlockUserRequest(BaseModel):
+    jid: str
+    block: bool = True
+
+
+class BlockUserResponse(BaseModel):
+    status: str
+    jid: str
+
+
+class EditMessageRequest(BaseModel):
+    to: str
+    message_id: str
+    text: str
+    from_me: bool = True
+
+
+class EditMessageResponse(BaseModel):
+    message_id: str
+    to: str
+
+
+class CheckWhatsAppRequest(BaseModel):
+    numbers: list[str]
+
+
+class WhatsAppNumberResult(BaseModel):
+    number: str
+    jid: Optional[str] = None
+    exists: bool
+
+
+class CheckWhatsAppResponse(BaseModel):
+    results: list[WhatsAppNumberResult]
+
+
+class UpdateProfileNameRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class UpdateProfileNameResponse(BaseModel):
+    status: str
+    name: str
+
+
+class UpdateProfileStatusRequest(BaseModel):
+    status: str = Field(..., max_length=500)
+
+
+class UpdateProfileStatusResponse(BaseModel):
+    status: str
+
+
+class UpdateProfilePictureRequest(BaseModel):
+    image_url: str
+
+
+class UpdateProfilePictureResponse(BaseModel):
+    status: str
+
+
+class RemoveProfilePictureResponse(BaseModel):
+    status: str
+
+
+class GetProfileResponse(BaseModel):
+    jid: str
+    exists: bool
