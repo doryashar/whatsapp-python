@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Optional, Callable, Any
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, UTC
 
 from ..config import settings
 from ..telemetry import get_logger
@@ -20,7 +20,7 @@ logger = get_logger("whatsapp.tenant")
 class Tenant:
     api_key_hash: str
     name: str
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     bridge: Optional[BaileysBridge] = None
     message_store: Optional[MessageStore] = None
     webhook_urls: list[str] = field(default_factory=list)
@@ -34,6 +34,13 @@ class Tenant:
     has_auth: bool = False
     creds_json: Optional[dict] = None
     chatwoot_config: Optional[dict] = None
+    health_check_failures: int = 0
+    last_health_check: Optional[datetime] = None
+    last_successful_health_check: Optional[datetime] = None
+    total_restarts: int = 0
+    last_restart_at: Optional[datetime] = None
+    last_restart_reason: Optional[str] = None
+    enabled: bool = True
 
     def __post_init__(self):
         if self.message_store is None:
@@ -62,6 +69,7 @@ class TenantManager:
         ] = None
         self._db = database
         self._initialized = False
+        self._restart_history: dict[str, list[datetime]] = {}
         logger.debug("TenantManager initialized")
 
     def set_database(self, database: Database) -> None:
@@ -99,6 +107,7 @@ class TenantManager:
                 has_auth=data.get("has_auth", False),
                 creds_json=data.get("creds_json"),
                 chatwoot_config=data.get("chatwoot_config"),
+                enabled=data.get("enabled", True),
             )
             self._tenants[tenant.api_key_hash] = tenant
             logger.debug(
@@ -228,7 +237,9 @@ class TenantManager:
                 tenant.webhook_urls,
             )
 
-        logger.info(f"Tenant created: {name}, api_key={raw_key[:20]}...")
+        logger.info(
+            f"Tenant created: {name}, api_key_hash={tenant.api_key_hash[:16]}..."
+        )
         return tenant, raw_key
 
     def get_tenant_by_key(self, api_key: str) -> Optional[Tenant]:
@@ -303,9 +314,9 @@ class TenantManager:
             tenant.has_auth = has_auth
 
         if connection_state == "connected":
-            tenant.last_connected_at = datetime.utcnow()
+            tenant.last_connected_at = datetime.now(UTC)
         elif connection_state == "disconnected":
-            tenant.last_disconnected_at = datetime.utcnow()
+            tenant.last_disconnected_at = datetime.now(UTC)
 
         if self._db:
             await self._db.update_session_state(
@@ -335,6 +346,51 @@ class TenantManager:
         except ValueError:
             logger.debug(f"Webhook not found: {url}")
             return False
+
+    def reset_health_failures(self, tenant: Tenant) -> None:
+        tenant.health_check_failures = 0
+        tenant.last_successful_health_check = datetime.now(UTC)
+        logger.debug(f"Health check failures reset for tenant: {tenant.name}")
+
+    def increment_health_failures(self, tenant: Tenant) -> int:
+        tenant.health_check_failures += 1
+        tenant.last_health_check = datetime.now(UTC)
+        logger.warning(
+            f"Health check failure incremented for {tenant.name}: "
+            f"{tenant.health_check_failures}/{settings.max_health_check_failures}"
+        )
+        return tenant.health_check_failures
+
+    def can_restart(self, tenant: Tenant) -> bool:
+        if not settings.auto_restart_bridge:
+            logger.debug(f"Auto-restart disabled for {tenant.name}")
+            return False
+
+        history = self._restart_history.get(tenant.api_key_hash, [])
+        cutoff = datetime.now(UTC) - timedelta(seconds=settings.restart_window_seconds)
+        history = [ts for ts in history if ts > cutoff]
+        self._restart_history[tenant.api_key_hash] = history
+
+        if len(history) >= settings.max_restart_attempts:
+            logger.warning(
+                f"Restart rate limit exceeded for {tenant.name}: "
+                f"{len(history)} attempts in {settings.restart_window_seconds}s"
+            )
+            return False
+
+        return True
+
+    def record_restart(self, tenant: Tenant, reason: str) -> None:
+        if tenant.api_key_hash not in self._restart_history:
+            self._restart_history[tenant.api_key_hash] = []
+        self._restart_history[tenant.api_key_hash].append(datetime.now(UTC))
+        tenant.total_restarts += 1
+        tenant.last_restart_at = datetime.now(UTC)
+        tenant.last_restart_reason = reason
+        logger.info(
+            f"Restart recorded for {tenant.name}: reason={reason}, "
+            f"total_restarts={tenant.total_restarts}"
+        )
 
 
 tenant_manager = TenantManager()

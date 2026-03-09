@@ -23,6 +23,7 @@ from .tenant import tenant_manager
 from .store.database import Database
 from .webhooks import WebhookSender
 from .store.messages import StoredMessage
+from .bridge.client import BaileysBridge
 from .chatwoot import ChatwootConfig, ChatwootIntegration
 
 if TYPE_CHECKING:
@@ -37,24 +38,170 @@ setup_telemetry(
 logger = get_logger()
 
 
+async def handle_bridge_crash(tenant):
+    logger.error(
+        f"Bridge process crashed for {tenant.name}",
+        extra={
+            "tenant": tenant.name,
+            "exit_code": tenant.bridge._process.returncode
+            if tenant.bridge and tenant.bridge._process
+            else None,
+        },
+    )
+
+    await tenant_manager.update_session_state(tenant, "connecting")
+
+    if tenant.bridge:
+        try:
+            await tenant.bridge.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping dead bridge for {tenant.name}: {e}")
+
+    if not tenant.has_valid_auth():
+        logger.warning(
+            f"No valid auth for {tenant.name}, cannot auto-restart",
+            extra={"tenant": tenant.name},
+        )
+        await tenant_manager.update_session_state(
+            tenant, "disconnected", has_auth=False
+        )
+        return
+
+    if not tenant_manager.can_restart(tenant):
+        logger.error(
+            f"Cannot restart bridge for {tenant.name} - rate limit exceeded",
+            extra={"tenant": tenant.name},
+        )
+        await tenant_manager.update_session_state(tenant, "disconnected")
+        return
+
+    try:
+        logger.info(f"Auto-restarting bridge for {tenant.name}")
+        await asyncio.sleep(settings.restart_cooldown_seconds)
+
+        auth_dir = tenant.get_auth_dir(settings.auth_dir)
+        new_bridge = BaileysBridge(
+            auth_dir=auth_dir,
+            auto_login=True,
+            tenant_id=tenant.api_key_hash,
+        )
+
+        if tenant_manager._event_handler:
+            new_bridge.on_event(tenant_manager._event_handler)
+
+        await new_bridge.start()
+
+        tenant.bridge = new_bridge
+        tenant_manager.record_restart(tenant, "process_crash")
+        tenant_manager.reset_health_failures(tenant)
+
+        logger.info(
+            f"Bridge auto-restarted successfully for {tenant.name}",
+            extra={
+                "tenant": tenant.name,
+                "new_pid": new_bridge._process.pid if new_bridge._process else None,
+            },
+        )
+
+        await tenant_manager.update_session_state(tenant, "connecting")
+
+    except Exception as e:
+        logger.error(
+            f"Failed to auto-restart bridge for {tenant.name}: {e}",
+            extra={"tenant": tenant.name},
+            exc_info=True,
+        )
+        await tenant_manager.update_session_state(tenant, "disconnected")
+
+
 async def connection_health_check():
     while True:
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(settings.health_check_interval_seconds)
 
             for tenant in tenant_manager.list_tenants():
-                if tenant.bridge and tenant.connection_state == "connected":
+                if not tenant.bridge or tenant.connection_state != "connected":
+                    continue
+
+                try:
                     if not tenant.bridge.is_alive():
                         logger.warning(
-                            f"Bridge process died for tenant {tenant.name}, marking as disconnected"
+                            f"Bridge process died for {tenant.name}",
+                            extra={"tenant": tenant.name},
                         )
-                        await tenant_manager.update_session_state(
-                            tenant, "disconnected"
+                        await handle_bridge_crash(tenant)
+                        continue
+
+                    try:
+                        status = await asyncio.wait_for(
+                            tenant.bridge.get_status(),
+                            timeout=settings.health_check_timeout_seconds,
                         )
+
+                        if status.get("connection_state") == "connected":
+                            tenant_manager.reset_health_failures(tenant)
+                            logger.debug(
+                                f"Health check passed for {tenant.name}",
+                                extra={
+                                    "tenant": tenant.name,
+                                    "pid": tenant.bridge._process.pid
+                                    if tenant.bridge._process
+                                    else None,
+                                    "whatsapp_jid": tenant.self_jid,
+                                },
+                            )
+                        else:
+                            failures = tenant_manager.increment_health_failures(tenant)
+                            logger.warning(
+                                f"WhatsApp reports disconnected for {tenant.name} "
+                                f"({failures}/{settings.max_health_check_failures})",
+                                extra={
+                                    "tenant": tenant.name,
+                                    "failure_count": failures,
+                                    "status": status,
+                                },
+                            )
+
+                            if failures >= settings.max_health_check_failures:
+                                logger.error(
+                                    f"Max health check failures reached for {tenant.name}, marking offline",
+                                    extra={"tenant": tenant.name},
+                                )
+                                await tenant_manager.update_session_state(
+                                    tenant, "disconnected"
+                                )
+
+                    except asyncio.TimeoutError:
+                        failures = tenant_manager.increment_health_failures(tenant)
+                        logger.warning(
+                            f"Health check timeout for {tenant.name} "
+                            f"({failures}/{settings.max_health_check_failures})",
+                            extra={
+                                "tenant": tenant.name,
+                                "failure_count": failures,
+                            },
+                        )
+
+                        if failures >= settings.max_health_check_failures:
+                            logger.error(
+                                f"Max health check failures reached for {tenant.name}, marking offline",
+                                extra={"tenant": tenant.name},
+                            )
+                            await tenant_manager.update_session_state(
+                                tenant, "disconnected"
+                            )
+
+                except Exception as e:
+                    logger.error(
+                        f"Health check error for {tenant.name}: {e}",
+                        extra={"tenant": tenant.name},
+                        exc_info=True,
+                    )
+
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Health check error: {e}")
+            logger.error(f"Health check loop error: {e}", exc_info=True)
 
 
 @asynccontextmanager
@@ -113,6 +260,46 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+async def handle_contacts_sync(tenant: "Tenant", contacts: list[dict]):
+    """Sync contacts from WhatsApp to database"""
+    if not tenant_manager._db:
+        logger.debug(f"No database available for contact sync: tenant={tenant.name}")
+        return
+
+    from .utils.phone import normalize_phone
+
+    synced_count = 0
+    for contact in contacts:
+        try:
+            phone = contact.get("phone")
+            jid = contact.get("jid")
+            if not phone or not jid:
+                continue
+
+            normalized_phone = normalize_phone(phone)
+            if not normalized_phone:
+                continue
+
+            await tenant_manager._db.upsert_contact(
+                tenant_hash=tenant.api_key_hash,
+                phone=normalized_phone,
+                name=contact.get("name"),
+                chat_jid=jid,
+                is_group=contact.get("is_group", False),
+            )
+            synced_count += 1
+        except Exception as e:
+            logger.error(
+                f"Failed to sync contact for tenant {tenant.name}: {e}",
+                exc_info=True,
+            )
+
+    logger.info(
+        f"Synced {synced_count} contacts for tenant {tenant.name}",
+        extra={"tenant": tenant.name, "count": synced_count},
+    )
+
+
 async def handle_chatwoot_event(
     tenant: "Tenant", event_type: str, params: dict[str, Any]
 ):
@@ -128,6 +315,7 @@ async def handle_chatwoot_event(
         )
         return
 
+    integration = None
     try:
         if tenant_manager._db:
             global_config = await tenant_manager._db.get_global_config("chatwoot")
@@ -154,8 +342,14 @@ async def handle_chatwoot_event(
             logger.info(
                 f"Processing Chatwoot message for tenant {tenant.name}: from={params.get('from')}, text={params.get('text', '')[:50]}"
             )
-            result = await integration.handle_message(params)
+            result = await integration.handle_message(params, is_outgoing=False)
             logger.info(f"Chatwoot message result: {result}")
+        elif event_type == "sent":
+            logger.info(
+                f"Processing Chatwoot outgoing message for tenant {tenant.name}: to={params.get('to')}, text={params.get('text', '')[:50]}"
+            )
+            result = await integration.handle_message(params, is_outgoing=True)
+            logger.info(f"Chatwoot outgoing message result: {result}")
         elif event_type == "connected":
             await integration.handle_connected(params)
         elif event_type == "disconnected":
@@ -164,6 +358,9 @@ async def handle_chatwoot_event(
         logger.error(
             f"Chatwoot integration error for tenant {tenant.name}: {e}", exc_info=True
         )
+    finally:
+        if integration:
+            await integration.close()
 
 
 def handle_bridge_event(
@@ -191,6 +388,20 @@ def handle_bridge_event(
 
     if event_type == "qr":
         logger.info(f"QR code generated for tenant {tenant.name}")
+        asyncio.create_task(
+            admin_ws_manager.broadcast(
+                "qr_generated",
+                {
+                    "tenant_hash": tenant_id,
+                    "tenant_name": tenant.name,
+                    "qr": params.get("qr"),
+                    "qr_data_url": params.get("qr_data_url"),
+                },
+            )
+        )
+        config = getattr(tenant, "chatwoot_config", None)
+        if config and config.get("enabled"):
+            asyncio.create_task(handle_chatwoot_event(tenant, "qr", params))
     elif event_type == "connected":
         logger.info(
             f"Tenant {tenant.name} connected: jid={params.get('jid')}, phone={params.get('phone')}"
@@ -205,6 +416,11 @@ def handle_bridge_event(
                 has_auth=True,
             )
         )
+    elif event_type == "contacts":
+        logger.info(
+            f"Received contacts for tenant {tenant.name}: count={len(params.get('contacts', []))}"
+        )
+        asyncio.create_task(handle_contacts_sync(tenant, params.get("contacts", [])))
     elif event_type == "disconnected":
         reason = params.get("reason")
         reason_name = params.get("reason_name", "unknown")
@@ -242,29 +458,42 @@ def handle_bridge_event(
         logger.debug(
             f"Message received for tenant {tenant.name}: from={params.get('from')}"
         )
+    elif event_type == "sent":
+        logger.debug(
+            f"Message sent by tenant {tenant.name}: to={params.get('to')}, params={params}"
+        )
     else:
         logger.debug(f"Unknown event type arrived: {event_type} with params: {params}")
 
-    if event_type == "message":
-        # Determine message direction: outbound if from tenant, inbound otherwise
-        from_jid = params["from"]
-        is_outbound = tenant.self_jid and from_jid == tenant.self_jid
+    if event_type in ["message", "sent"]:
+        if tenant.message_store is None:
+            logger.warning(f"Message store not initialized for tenant {tenant.name}")
+            return
+        # Determine message direction: outbound if from tenant or if it's a "sent" event, inbound otherwise
+        from_jid = params.get("from") or params.get(
+            "to", ""
+        )  # sent events have "to", message events have "from"
+        is_outbound = event_type == "sent" or (
+            tenant.self_jid and from_jid == tenant.self_jid
+        )
         direction = "outbound" if is_outbound else "inbound"
-        
+
         msg = StoredMessage(
-            id=params["id"],
-            from_jid=from_jid,
-            chat_jid=params["chat_jid"],
+            id=params.get("id") or params.get("message_id", ""),
+            from_jid=from_jid or "",
+            chat_jid=params.get("chat_jid") or params.get("to", ""),
             is_group=params.get("is_group", False),
             push_name=params.get("push_name"),
             text=params.get("text", ""),
             msg_type=params.get("type", "text"),
             timestamp=params.get("timestamp", 0),
             direction=direction,
+            media_url=params.get("media_url"),
         )
-        tenant.message_store.add(msg)
         if hasattr(tenant.message_store, "add_with_persist"):
             asyncio.create_task(tenant.message_store.add_with_persist(msg))
+        else:
+            tenant.message_store.add(msg)
 
     asyncio.create_task(manager.broadcast(tenant_id, event_type, params))
 
@@ -281,7 +510,7 @@ def handle_bridge_event(
                 },
             )
         )
-    elif event_type == "message":
+    elif event_type in ["message", "sent"]:
         asyncio.create_task(
             admin_ws_manager.broadcast(
                 "new_message",
@@ -309,7 +538,8 @@ def handle_bridge_event(
 
     chatwoot_config = getattr(tenant, "chatwoot_config", None)
     if chatwoot_config and chatwoot_config.get("enabled"):
-        asyncio.create_task(handle_chatwoot_event(tenant, event_type, params))
+        if event_type in ["message", "sent", "connected", "disconnected"]:
+            asyncio.create_task(handle_chatwoot_event(tenant, event_type, params))
 
 
 tenant_manager.on_event(handle_bridge_event)
@@ -325,7 +555,7 @@ instrument_app(app)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -353,7 +583,7 @@ async def ws_events(
     api_key: Optional[str] = Query(None),
 ):
     logger.debug(
-        f"WebSocket connection attempt: api_key={api_key[:20] if api_key else 'none'}..."
+        f"WebSocket connection attempt: api_key_hash={hash(api_key) if api_key else 'none'}"
     )
     if not api_key:
         logger.warning("WebSocket rejected: no API key")
@@ -393,7 +623,7 @@ async def admin_ws_events(
 ):
     """WebSocket endpoint for admin dashboard real-time updates"""
     logger.debug(
-        f"Admin WebSocket connection attempt: session={session_id[:16] if session_id else 'none'}..."
+        f"Admin WebSocket connection attempt: session_hash={hash(session_id) if session_id else 'none'}"
     )
 
     if not session_id:

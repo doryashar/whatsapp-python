@@ -98,6 +98,8 @@ async def list_messages(
     offset: int = Query(default=0, ge=0),
     tenant: Tenant = Depends(get_tenant),
 ):
+    if tenant.message_store is None:
+        raise HTTPException(status_code=500, detail="Message store not initialized")
     messages, total = tenant.message_store.list(limit=limit, offset=offset)
     return MessageListResponse(
         messages=[InboundMessage(**m) for m in messages],
@@ -109,6 +111,8 @@ async def list_messages(
 
 @router.delete("/messages")
 async def clear_messages(tenant: Tenant = Depends(get_tenant)):
+    if tenant.message_store is None:
+        raise HTTPException(status_code=500, detail="Message store not initialized")
     tenant.message_store.clear()
     return {"status": "cleared"}
 

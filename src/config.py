@@ -44,6 +44,22 @@ class Settings(BaseSettings):
         default=15, alias="FAILED_AUTH_WINDOW_MINUTES"
     )
 
+    health_check_interval_seconds: int = Field(
+        default=30, alias="HEALTH_CHECK_INTERVAL_SECONDS"
+    )
+    health_check_timeout_seconds: int = Field(
+        default=10, alias="HEALTH_CHECK_TIMEOUT_SECONDS"
+    )
+    max_health_check_failures: int = Field(default=3, alias="MAX_HEALTH_CHECK_FAILURES")
+    bridge_timeout_seconds: int = Field(default=60, alias="BRIDGE_TIMEOUT_SECONDS")
+
+    auto_restart_bridge: bool = Field(default=True, alias="AUTO_RESTART_BRIDGE")
+    max_restart_attempts: int = Field(default=3, alias="MAX_RESTART_ATTEMPTS")
+    restart_window_seconds: int = Field(default=300, alias="RESTART_WINDOW_SECONDS")
+    restart_cooldown_seconds: int = Field(default=10, alias="RESTART_COOLDOWN_SECONDS")
+
+    cors_origins: list[str] = Field(default_factory=lambda: ["*"], alias="CORS_ORIGINS")
+
     model_config = {"env_prefix": "", "populate_by_name": True}
 
 

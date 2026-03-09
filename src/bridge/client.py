@@ -169,7 +169,15 @@ class BaileysBridge:
         self._process.stdin.write(data.encode("utf-8"))
         await self._process.stdin.drain()
 
-        return await future
+        try:
+            return await asyncio.wait_for(
+                future, timeout=settings.bridge_timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            self._pending.pop(request_id, None)
+            raise BridgeError(
+                f"Bridge call timed out after {settings.bridge_timeout_seconds}s: {method}"
+            )
 
     async def login(self) -> dict:
         logger.info("Bridge login requested")
@@ -232,6 +240,30 @@ class BaileysBridge:
 
     async def get_status(self) -> dict:
         return await self.call("get_status")
+
+    async def get_contacts(self) -> dict:
+        logger.info("Bridge get_contacts requested")
+        return await self.call("get_contacts")
+
+    async def get_profile_picture(self, jid: str) -> dict:
+        logger.debug(f"Bridge get_profile_picture: jid={jid}")
+        return await self.call("get_profile_picture", {"jid": jid})
+
+    async def delete_message(
+        self, to: str, message_id: str, from_me: bool = False
+    ) -> dict:
+        logger.info(f"Bridge delete_message: to={to}, message_id={message_id}")
+        return await self.call(
+            "delete_message",
+            {"to": to, "message_id": message_id, "from_me": from_me},
+        )
+
+    async def mark_read(self, to: str, message_ids: list[str]) -> dict:
+        logger.debug(f"Bridge mark_read: to={to}, count={len(message_ids)}")
+        return await self.call(
+            "mark_read",
+            {"to": to, "message_ids": message_ids},
+        )
 
     def is_alive(self) -> bool:
         if not self._process or not self._running:

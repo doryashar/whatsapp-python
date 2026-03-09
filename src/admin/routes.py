@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, Depends, HTTPException, Query, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, UTC
 import json
 
 from ..config import settings
@@ -10,6 +10,7 @@ from ..telemetry import get_logger
 from ..tenant import tenant_manager
 from ..middleware import rate_limiter
 from .auth import AdminSession, require_admin_session, get_session_id
+from .websocket import admin_ws_manager
 
 logger = get_logger("whatsapp.admin")
 
@@ -25,7 +26,11 @@ async def get_websocket_js():
     from fastapi.responses import FileResponse
 
     js_path = Path(__file__).parent / "static" / "websocket.js"
-    return FileResponse(js_path, media_type="application/javascript")
+    response = FileResponse(js_path, media_type="application/javascript")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 class TenantCreate(BaseModel):
@@ -146,7 +151,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
             }}
         }}
     </script>
-    <script src="/admin/static/websocket.js"></script>
+    <script src="/admin/static/websocket.js?v=3"></script>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
     <div class="flex h-screen">
@@ -290,13 +295,24 @@ async def admin_dashboard(
             </a>
         </div>
     </div>
-    <div class="bg-gray-800 rounded-xl border border-gray-700">
-        <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
-            <h2 class="text-lg font-semibold">Recent Tenants</h2>
-            <a href="/admin/tenants" class="text-whatsapp hover:underline text-sm">View All</a>
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+        <div class="lg:col-span-2 bg-gray-800 rounded-xl border border-gray-700">
+            <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+                <h2 class="text-lg font-semibold">Recent Tenants</h2>
+                <a href="/admin/tenants" class="text-whatsapp hover:underline text-sm">View All</a>
+            </div>
+            <div id="tenants-list" hx-get="/admin/fragments/tenants" hx-trigger="load, every 30s" class="divide-y divide-gray-700">
+                <div class="p-6 text-center text-gray-500">Loading...</div>
+            </div>
         </div>
-        <div id="tenants-list" hx-get="/admin/fragments/tenants" hx-trigger="load, every 30s" class="divide-y divide-gray-700">
-            <div class="p-6 text-center text-gray-500">Loading...</div>
+        <div class="bg-gray-800 rounded-xl border border-gray-700">
+            <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+                <h2 class="text-lg font-semibold">WebSocket Connections</h2>
+                <span id="ws-count" class="text-xs bg-green-500/20 text-green-400 px-2 py-1 rounded">0</span>
+            </div>
+            <div id="ws-list" hx-get="/admin/fragments/websockets" hx-trigger="load, every 5s" class="p-4 max-h-80 overflow-y-auto">
+                <div class="text-gray-500 text-sm">Loading...</div>
+            </div>
         </div>
     </div>
 </div>
@@ -592,6 +608,25 @@ function handleDelete(event) {
         hideTenantActionsModal();
     }
 }
+
+async function toggleEnabled(hash, enabled) {
+    const action = enabled ? 'enable' : 'disable';
+    if (!confirm(`Are you sure you want to ${action} this tenant?`)) return;
+    
+    const response = await fetch('/admin/api/tenants/' + hash + '/enabled', {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: enabled})
+    });
+    
+    const data = await response.json();
+    if (response.ok) {
+        htmx.trigger('#tenants-list', 'load');
+    } else {
+        alert('Failed: ' + (data.detail || JSON.stringify(data)));
+    }
+}
+
 let expandedTenant = null;
 function toggleTenantPanel(hash) {
     const panel = document.getElementById('tenant-panel-' + hash);
@@ -998,6 +1033,25 @@ function handleDelete(event) {
         hideTenantActionsModal();
     }
 }
+
+async function toggleEnabled(hash, enabled) {
+    const action = enabled ? 'enable' : 'disable';
+    if (!confirm(`Are you sure you want to ${action} this tenant?`)) return;
+    
+    const response = await fetch('/admin/api/tenants/' + hash + '/enabled', {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: enabled})
+    });
+    
+    const data = await response.json();
+    if (response.ok) {
+        htmx.trigger('#tenants-list', 'load');
+    } else {
+        alert('Failed: ' + (data.detail || JSON.stringify(data)));
+    }
+}
+
 let expandedTenant = null;
 function toggleTenantPanel(hash) {
     const panel = document.getElementById('tenant-panel-' + hash);
@@ -1091,8 +1145,8 @@ async def admin_messages_page(
             
             <select id="direction-filter" class="px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp" onchange="searchMessages()">
                 <option value="">All Directions</option>
-                <option value="in">Inbound</option>
-                <option value="out">Outbound</option>
+                <option value="inbound">Inbound</option>
+                <option value="outbound">Outbound</option>
             </select>
             
             <button onclick="searchMessages()" class="px-6 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg font-medium transition">
@@ -1355,43 +1409,73 @@ async function saveChatwootTenantConfig() {
         
         const data = await response.json();
         
-        if (response.ok) {{
+        if (response.ok) {
             status.textContent = 'Saved!';
             status.className = 'text-sm text-green-400';
-            setTimeout(() => {{
+            setTimeout(() => {
                 closeChatwootTenantModal();
-                htmx.ajax('GET', '/admin/fragments/chatwoot/tenants', {{target: '#chatwoot-tenants', swap: 'innerHTML'}});
-            }}, 500);
-        }} else {{
+                htmx.ajax('GET', '/admin/fragments/chatwoot/tenants', {target: '#chatwoot-tenants', swap: 'innerHTML'});
+            }, 500);
+        } else {
             status.textContent = data.detail || 'Failed to save';
             status.className = 'text-sm text-red-400';
-        }}
-    }} catch (e) {{
+        }
+    } catch (e) {
         status.textContent = 'Error: ' + e.message;
         status.className = 'text-sm text-red-400';
-    }}
-}}
+    }
+}
 
-async function syncChatwootContacts(tenantHash) {{
+async function syncChatwootContacts(tenantHash) {
     if (!confirm('Sync all WhatsApp contacts to Chatwoot?')) return;
     
-    try {{
-        const response = await fetch(`/admin/api/tenants/${{tenantHash}}/chatwoot/sync-contacts`, {{
+    try {
+        const response = await fetch(`/admin/api/tenants/${tenantHash}/chatwoot/sync-contacts`, {
             method: 'POST',
-            headers: {{'Content-Type': 'application/json'}}
-        }});
+            headers: {'Content-Type': 'application/json'}
+        });
         
         const data = await response.json();
         
-        if (response.ok) {{
-            alert(`Contacts synced!\\nCreated: ${{data.created}}\\nUpdated: ${{data.updated}}\\nSkipped: ${{data.skipped}}`);
-        }} else {{
+        if (response.ok) {
+            alert('Contacts synced!\\nCreated: ' + data.created + '\\nUpdated: ' + data.updated + '\\nSkipped: ' + data.skipped);
+        } else {
             alert(data.detail || 'Failed to sync contacts');
-        }}
-    }} catch (e) {{
+        }
+    } catch (e) {
         alert('Error: ' + e.message);
-    }}
-}}
+    }
+}
+
+async function syncChatwootMessages(tenantHash) {
+    if (!confirm('Sync WhatsApp message history to Chatwoot? This may take a while for large histories.')) return;
+    
+    const button = event.target;
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Syncing...';
+    
+    try {
+        const response = await fetch(`/admin/api/tenants/${tenantHash}/chatwoot/sync-messages`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            const errorInfo = data.errors > 0 ? '\\nErrors: ' + data.errors : '';
+            alert('Messages synced!\\nSynced: ' + data.synced + '\\nSkipped: ' + data.skipped + errorInfo);
+        } else {
+            alert(data.detail || 'Failed to sync messages');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+}
 """
     html = PAGE_TEMPLATE.format(
         title="Chatwoot",
@@ -1681,18 +1765,51 @@ async function removeWebhook(url) {
 
 async function reconnectTenant() {
     if (!confirm('Reconnect this tenant session?')) return;
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Connecting...';
+    
     const response = await fetch('/admin/api/tenants/"""
         + tenant_hash
         + """/reconnect', {
         method: 'POST'
     });
+    
     if (response.ok) {
-        alert('Reconnecting...');
-        setTimeout(() => location.reload(), 2000);
+        showNotification('Initiating connection... Watch for QR code.', 'info');
     } else {
         const data = await response.json();
-        alert('Failed: ' + (data.detail || JSON.stringify(data)));
+        showNotification('Failed: ' + (data.detail || JSON.stringify(data)), 'error');
+        btn.disabled = false;
+        btn.textContent = 'Reconnect Session';
     }
+}
+
+function showNotification(message, type = 'info') {
+    const colors = {
+        'info': 'bg-blue-600',
+        'success': 'bg-green-600',
+        'warning': 'bg-yellow-600',
+        'error': 'bg-red-600'
+    };
+    const notification = document.createElement('div');
+    notification.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-50 transition-all transform translate-x-full \\${colors[type] || colors.info}`;
+    notification.innerHTML = `
+        <div class="flex items-center space-x-2">
+            <span class="text-white font-medium">\\${message}</span>
+            <button onclick="this.parentElement.parentElement.remove()" class="text-white hover:text-gray-200">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                </svg>
+            </button>
+        </div>
+    `;
+    document.body.appendChild(notification);
+    setTimeout(() => notification.classList.remove('translate-x-full'), 10);
+    setTimeout(() => {
+        notification.classList.add('translate-x-full');
+        setTimeout(() => notification.remove(), 300);
+    }, 5000);
 }
 
 async function clearCredentials() {
@@ -1800,7 +1917,7 @@ async def get_stats_fragment(session_id: str = Depends(require_admin_session)):
         try:
             pool = db._pool
             pool_info = f"Pool: {pool._queue.qsize()}/{pool._maxsize}"
-        except:
+        except Exception:
             pool_info = ""
 
     html = f"""
@@ -1867,6 +1984,39 @@ async def get_stats_fragment(session_id: str = Depends(require_admin_session)):
     return HTMLResponse(content=html)
 
 
+@fragments_router.get("/websockets", response_class=HTMLResponse)
+async def get_websockets_fragment(session_id: str = Depends(require_admin_session)):
+    connections = admin_ws_manager.get_connections_info()
+    count = admin_ws_manager.get_connection_count()
+
+    if count == 0:
+        html = '<div class="text-gray-500 text-sm">No active connections</div>'
+    else:
+        rows = []
+        for conn in connections:
+            connected_at = conn.get("connected_at")
+            if connected_at:
+                try:
+                    dt = datetime.fromisoformat(connected_at)
+                    time_str = dt.strftime("%H:%M:%S")
+                except Exception:
+                    time_str = "unknown"
+            else:
+                time_str = "unknown"
+            rows.append(f"""
+                <div class="flex items-center justify-between py-2 border-b border-gray-700 last:border-0">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                        <span class="text-sm font-mono">{conn["session_id"]}</span>
+                    </div>
+                    <span class="text-xs text-gray-500">Since {time_str}</span>
+                </div>
+            """)
+        html = f'<div class="divide-y divide-gray-700">{"".join(rows)}</div>'
+
+    return HTMLResponse(content=html)
+
+
 @fragments_router.get("/tenants", response_class=HTMLResponse)
 async def get_tenants_fragment(session_id: str = Depends(require_admin_session)):
     tenants = tenant_manager.list_tenants()
@@ -1886,12 +2036,23 @@ async def get_tenants_fragment(session_id: str = Depends(require_admin_session))
         else:
             state_badge = '<span class="px-2 py-1 text-xs bg-gray-500/20 text-gray-400 rounded">Disconnected</span>'
 
+        enabled_badge = ""
+        if not t.enabled:
+            enabled_badge = '<span class="px-2 py-1 text-xs bg-red-500/20 text-red-400 rounded">Disabled</span>'
+
         phone_info = (
             f"<span class='text-gray-400'>{t.self_phone}</span>"
             if t.self_phone
             else "<span class='text-gray-500'>No phone</span>"
         )
         webhook_count = len(t.webhook_urls)
+
+        enable_disable_btn = f"""
+            <button onclick="toggleEnabled('{t.api_key_hash}', {str(not t.enabled).lower()})"
+                    class="px-3 py-1 text-sm {"text-red-400 hover:bg-red-500/20" if t.enabled else "text-green-400 hover:bg-green-500/20"} rounded transition">
+                {"Disable" if t.enabled else "Enable"}
+            </button>
+        """
 
         html_parts.append(f"""
 <div class="tenant-row" data-tenant-hash="{t.api_key_hash}">
@@ -1905,6 +2066,7 @@ async def get_tenants_fragment(session_id: str = Depends(require_admin_session))
                     <div class="flex items-center gap-3">
                         <h3 class="font-medium text-lg">{t.name}</h3>
                         {state_badge}
+                        {enabled_badge}
                         {"<span class='px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded'>Has Auth</span>" if t.has_auth else ""}
                     </div>
                     <div class="text-sm text-gray-400 mt-1">
@@ -1914,6 +2076,7 @@ async def get_tenants_fragment(session_id: str = Depends(require_admin_session))
                 </div>
             </div>
             <div class="flex items-center gap-2" onclick="event.stopPropagation()">
+                {enable_disable_btn}
                 <a href="/admin/tenants/{t.api_key_hash}" class="px-3 py-1 text-sm text-whatsapp hover:bg-whatsapp/10 rounded transition">
                     View
                 </a>
@@ -1978,7 +2141,7 @@ async def get_messages_fragment(
         tenant_name = tenants.get(msg.get("tenant_hash") or "", "Unknown")
         direction_badge = (
             '<span class="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded">In</span>'
-            if msg.get("direction") == "in"
+            if msg.get("direction") == "inbound"
             else '<span class="px-2 py-1 text-xs bg-purple-500/20 text-purple-400 rounded">Out</span>'
         )
         msg_type = msg.get("msg_type") or "text"
@@ -2313,7 +2476,7 @@ async def get_chatwoot_tenants_fragment(
                     class="px-3 py-1 text-sm text-gray-400 hover:text-white hover:bg-gray-600 rounded transition">
                 Configure
             </button>
-            {"<button onclick=\"syncChatwootContacts('" + tenant.api_key_hash[:16] + '\')" class="px-3 py-1 text-sm text-blue-400 hover:bg-blue-500/20 rounded transition">Sync Contacts</button>' if enabled else ""}
+            {"<button onclick=\"syncChatwootContacts('" + tenant.api_key_hash[:16] + '\')" class="px-3 py-1 text-sm text-blue-400 hover:bg-blue-500/20 rounded transition">Sync Contacts</button>' + ("<button onclick=\"syncChatwootMessages('" + tenant.api_key_hash[:16] + '\')" class="px-3 py-1 text-sm text-green-400 hover:bg-green-500/20 rounded transition">Sync Messages</button>' if config.get("import_messages") else "") if enabled else ""}
         </div>
     </div>
 </div>
@@ -2415,9 +2578,21 @@ async def get_tenant_panel_fragment(
     </div>
 </div>"""
             else:
+                chat_jid = msg.get("chat_jid") or ""
+                recipient_phone = (
+                    chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
+                )
+                recipient_name = push_name if push_name else recipient_phone
+                recipient_display = (
+                    f"{recipient_name} ({recipient_phone})"
+                    if push_name
+                    else recipient_phone
+                )
+
                 messages_html += f"""
 <div class="flex gap-2 mb-3 justify-end">
     <div class="max-w-[80%] bg-whatsapp/20 rounded-2xl rounded-tr-sm px-4 py-2">
+        <div class='text-xs text-whatsapp/70 mb-1'>To: {recipient_display}</div>
         <div class="text-sm text-gray-100">{text}</div>
         <div class="text-xs text-gray-400 mt-1 text-right">{timestamp}</div>
     </div>
@@ -2427,7 +2602,9 @@ async def get_tenant_panel_fragment(
     for chat in recent_chats:
         push_name = chat.get("push_name") or ""
         chat_jid = chat.get("chat_jid", "")
-        phone = chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
+        phone = chat.get("phone") or (
+            chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
+        )
         is_group = chat.get("is_group")
 
         if push_name:
@@ -2528,16 +2705,25 @@ async def get_tenant_messages_fragment(
     </div>
 </div>""")
         else:
+            chat_jid = msg.get("chat_jid") or ""
+            recipient_phone = chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
+            recipient_name = push_name if push_name else recipient_phone
+            recipient_display = (
+                f"{recipient_name} ({recipient_phone})"
+                if push_name
+                else recipient_phone
+            )
+
             html_parts.append(f"""
 <div class="flex gap-2 mb-3 justify-end px-4">
     <div class="max-w-[80%] bg-whatsapp/20 rounded-2xl rounded-tr-sm px-4 py-2">
+        <div class='text-xs text-whatsapp/70 mb-1'>To: {recipient_display}</div>
         <div class="text-sm text-gray-100">{text}</div>
         <div class="text-xs text-gray-400 mt-1 text-right">{timestamp}</div>
     </div>
 </div>""")
 
     return HTMLResponse(content="".join(html_parts))
-
 
 
 @fragments_router.get("/tenant-contacts/{tenant_hash}", response_class=HTMLResponse)
@@ -2548,34 +2734,41 @@ async def get_tenant_contacts_fragment(
 ):
     tenant = tenant_manager._tenants.get(tenant_hash)
     if not tenant:
-        return HTMLResponse(content='<div class="p-6 text-center text-red-400">Tenant not found</div>')
-    
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-red-400">Tenant not found</div>'
+        )
+
     db = tenant_manager._db
     if not db:
-        return HTMLResponse(content='<div class="p-6 text-center text-gray-500">Database not available</div>')
-    
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">Database not available</div>'
+        )
+
     contacts = await db.get_recent_chats(tenant_hash, limit=limit)
-    
+
     if not contacts:
-        return HTMLResponse(content='<div class="p-6 text-center text-gray-500">No contacts yet</div>')
-    
+        return HTMLResponse(
+            content='<div class="p-6 text-center text-gray-500">No contacts yet</div>'
+        )
+
     html_parts = []
     for contact in contacts:
         chat_jid = contact.get("chat_jid", "")
         push_name = contact.get("push_name") or ""
+        phone = contact.get("phone") or (
+            chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
+        )
         is_group = contact.get("is_group", False)
         message_count = contact.get("message_count", 0)
         last_message_at = contact.get("last_message_at")
-        
-        phone = chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
-        
+
         if push_name:
             display_name = push_name
             subtitle = phone
         else:
             display_name = phone
             subtitle = ""
-        
+
         if last_message_at:
             if isinstance(last_message_at, datetime):
                 last_time = last_message_at.strftime("%Y-%m-%d %H:%M")
@@ -2583,16 +2776,16 @@ async def get_tenant_contacts_fragment(
                 last_time = str(last_message_at)
         else:
             last_time = ""
-        
+
         if is_group:
             icon_svg = '<svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>'
             badge = '<span class="ml-2 px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded">Group</span>'
         else:
             icon_svg = '<svg class="w-6 h-6 text-whatsapp" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>'
             badge = ""
-        
-        display_name_escaped = display_name.replace("'", "\'")
-        
+
+        display_name_escaped = display_name.replace("'", "'")
+
         contact_html = f"""
 <div class="p-4 hover:bg-gray-700/50 transition cursor-pointer" onclick="selectContact('{chat_jid}', '{display_name_escaped}')">
     <div class="flex items-center justify-between">
@@ -2615,10 +2808,10 @@ async def get_tenant_contacts_fragment(
     </div>
 </div>"""
         html_parts.append(contact_html)
-    
+
     header = f'<div class="px-6 py-3 bg-gray-700/50 border-b border-gray-700"><span class="text-sm text-gray-400">{len(contacts)} contacts</span></div>'
     html_parts.insert(0, header)
-    
+
     return HTMLResponse(content="".join(html_parts))
 
 
@@ -2685,6 +2878,14 @@ async def get_stats(session_id: str = Depends(require_admin_session)):
         "rate_limit": {
             "blocked_ips": len(rate_limiter.get_blocked_ips()),
         },
+    }
+
+
+@api_router.get("/websockets")
+async def list_websockets_api(session_id: str = Depends(require_admin_session)):
+    return {
+        "count": admin_ws_manager.get_connection_count(),
+        "connections": admin_ws_manager.get_connections_info(),
     }
 
 
@@ -2809,6 +3010,34 @@ async def clear_tenant_credentials(
 
     await tenant_manager.clear_creds(tenant)
     return {"status": "credentials_cleared"}
+
+
+class ToggleEnabledRequest(BaseModel):
+    enabled: bool
+
+
+@api_router.patch("/tenants/{tenant_hash}/enabled")
+async def toggle_tenant_enabled(
+    tenant_hash: str,
+    request: ToggleEnabledRequest,
+    session_id: str = Depends(require_admin_session),
+):
+    tenant = tenant_manager._tenants.get(tenant_hash)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    db = tenant_manager._db
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    await db.update_tenant_enabled(tenant_hash, request.enabled)
+    tenant.enabled = request.enabled
+
+    if not request.enabled and tenant.bridge:
+        await tenant.bridge.stop()
+        tenant.connection_state = "disconnected"
+
+    return {"status": "updated", "enabled": request.enabled}
 
 
 @api_router.get("/messages")
@@ -3025,15 +3254,15 @@ async def clear_failed_auth_api(
 
 
 class BulkOperationRequest(BaseModel):
-    items: list[str] = Field(..., max_items=50)
+    items: list[str] = Field(..., max_length=50)
 
 
 class BulkTenantReconnectRequest(BaseModel):
-    tenant_hashes: list[str] = Field(..., max_items=50)
+    tenant_hashes: list[str] = Field(..., max_length=50)
 
 
 class BulkMessageDeleteRequest(BaseModel):
-    message_ids: list[int] = Field(..., max_items=50)
+    message_ids: list[int] = Field(..., max_length=50)
 
 
 @api_router.post("/tenants/bulk/reconnect")
@@ -3151,7 +3380,7 @@ async def bulk_test_webhooks(
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.post(
                     url,
-                    json={"test": True, "timestamp": datetime.utcnow().isoformat()},
+                    json={"test": True, "timestamp": datetime.now(UTC).isoformat()},
                     headers={"Content-Type": "application/json"},
                 )
                 return {
@@ -3258,7 +3487,7 @@ async def set_tenant_chatwoot_config(
 
     tenant = None
     for t in tenant_manager.list_tenants():
-        if t.api_key_hash.startswith(tenant_hash):
+        if t.api_key_hash == tenant_hash:
             tenant = t
             break
 
@@ -3288,7 +3517,7 @@ async def set_tenant_chatwoot_config(
         client = ChatwootClient(cw_config)
         try:
             inbox_name = f"WhatsApp - {tenant.name}"
-            webhook_url = f"{settings.base_url.rstrip('/')}/chatwoot/webhook/{tenant.api_key_hash[:16]}"
+            webhook_url = f"{settings.base_url.rstrip('/')}/webhooks/chatwoot/{tenant.api_key_hash[:16]}/outgoing"
 
             existing_inbox_id = existing_config.get("inbox_id")
             if not existing_inbox_id:
@@ -3349,7 +3578,7 @@ async def sync_tenant_chatwoot_contacts(
 
     tenant = None
     for t in tenant_manager.list_tenants():
-        if t.api_key_hash.startswith(tenant_hash):
+        if t.api_key_hash == tenant_hash:
             tenant = t
             break
 
@@ -3419,6 +3648,66 @@ async def sync_tenant_chatwoot_contacts(
     return {"created": created, "updated": updated, "skipped": skipped}
 
 
+@api_router.post("/tenants/{tenant_hash}/chatwoot/sync-messages")
+async def sync_tenant_chatwoot_messages(
+    tenant_hash: str,
+    session_id: str = Depends(require_admin_session),
+):
+    from ..chatwoot import ChatwootConfig, ChatwootSyncService
+
+    tenant = None
+    for t in tenant_manager.list_tenants():
+        if t.api_key_hash == tenant_hash:
+            tenant = t
+            break
+
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    config = getattr(tenant, "chatwoot_config", None)
+    if not config or not config.get("enabled"):
+        raise HTTPException(
+            status_code=400, detail="Chatwoot not enabled for this tenant"
+        )
+
+    if not config.get("import_messages", False):
+        raise HTTPException(
+            status_code=400,
+            detail="Message import not enabled. Enable 'import_messages' in Chatwoot config.",
+        )
+
+    if not tenant_manager._db:
+        raise HTTPException(status_code=400, detail="Database not available")
+
+    global_config = await tenant_manager._db.get_global_config("chatwoot")
+    if not global_config:
+        raise HTTPException(status_code=400, detail="Chatwoot global config not found")
+
+    cw_config = ChatwootConfig(
+        enabled=True,
+        url=config.get("url", global_config["url"]),
+        token=global_config["token"],
+        account_id=config.get("account_id", global_config["account_id"]),
+        inbox_id=config.get("inbox_id"),
+        days_limit_import=config.get("days_limit_import", 3),
+        reopen_conversation=config.get("reopen_conversation", True),
+        merge_brazil_contacts=config.get("merge_brazil_contacts", True),
+    )
+
+    sync_service = ChatwootSyncService(cw_config, tenant, tenant_manager._db)
+
+    try:
+        result = await sync_service.sync_message_history()
+        return result
+    except Exception as e:
+        logger.error(f"Failed to sync messages for tenant {tenant.name}: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to sync messages: {str(e)}"
+        )
+    finally:
+        await sync_service.close()
+
+
 @api_router.delete("/tenants/{tenant_hash}/chatwoot")
 async def disable_tenant_chatwoot(
     tenant_hash: str,
@@ -3426,7 +3715,7 @@ async def disable_tenant_chatwoot(
 ):
     tenant = None
     for t in tenant_manager.list_tenants():
-        if t.api_key_hash.startswith(tenant_hash):
+        if t.api_key_hash == tenant_hash:
             tenant = t
             break
 

@@ -111,6 +111,7 @@ function extractMessageContent(message) {
       text: msg.imageMessage.caption || "",
       type: "image",
       mimetype: msg.imageMessage.mimetype,
+      contextInfo: msg.imageMessage.contextInfo,
     };
   }
   if (msg.videoMessage) {
@@ -118,10 +119,16 @@ function extractMessageContent(message) {
       text: msg.videoMessage.caption || "",
       type: "video",
       mimetype: msg.videoMessage.mimetype,
+      contextInfo: msg.videoMessage.contextInfo,
     };
   }
   if (msg.audioMessage) {
-    return { text: "", type: "audio", mimetype: msg.audioMessage.mimetype };
+    return { 
+      text: "", 
+      type: "audio", 
+      mimetype: msg.audioMessage.mimetype,
+      contextInfo: msg.audioMessage.contextInfo,
+    };
   }
   if (msg.documentMessage) {
     return {
@@ -129,6 +136,7 @@ function extractMessageContent(message) {
       type: "document",
       filename: msg.documentMessage.fileName,
       mimetype: msg.documentMessage.mimetype,
+      contextInfo: msg.documentMessage.contextInfo,
     };
   }
   if (msg.stickerMessage) return { text: "", type: "sticker" };
@@ -315,6 +323,33 @@ async function createSocket() {
 
       logger.info({ jid: selfInfo.jid, phone: selfInfo.phone, isNewLogin }, "Connected successfully");
       sendEvent("connected", selfInfo);
+
+      // Fetch contacts after successful connection
+      setTimeout(async () => {
+        try {
+          const contacts = [];
+          
+          // Get all contacts from the store
+          if (sock.store && sock.store.contacts) {
+            for (const [jid, contact] of sock.store.contacts) {
+              if (jid && !jid.endsWith('@broadcast') && jid !== 'status@broadcast') {
+                const isGroup = isJidGroup(jid);
+                contacts.push({
+                  jid: jid,
+                  name: contact.name || contact.notify || null,
+                  phone: isGroup ? null : jid.split('@')[0].split(':')[0],
+                  is_group: isGroup,
+                });
+              }
+            }
+          }
+
+          logger.info({ contactCount: contacts.length }, "Fetched contacts on connection");
+          sendEvent("contacts", { contacts });
+        } catch (err) {
+          logger.error({ err: err.message }, "Failed to fetch contacts on connection");
+        }
+      }, 2000); // Wait 2 seconds for contacts to sync
     }
 
     if (receivedPendingNotifications) {
@@ -347,11 +382,21 @@ async function createSocket() {
         timestamp: msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now(),
       };
 
+      if (content.contextInfo) {
+        eventData.quoted_message_id = content.contextInfo.stanzaId || null;
+        eventData.quoted_participant = content.contextInfo.participant || null;
+        if (content.contextInfo.quotedMessage) {
+          eventData.quoted_text = content.contextInfo.quotedMessage.conversation || "";
+        }
+      }
+
       sendEvent("message", eventData);
 
       try {
         await sock.readMessages([{ remoteJid, id: msg.key.id, fromMe: false }]);
-      } catch {}
+      } catch (err) {
+        logger.debug({ err: err.message, remoteJid, messageId: msg.key.id }, "Failed to mark message as read");
+      }
     }
   });
 
@@ -407,6 +452,7 @@ const methods = {
 
     const jid = toJid(to);
     let result;
+    let msgType = "text";
 
     if (media_url) {
       const buffer = fs.readFileSync(media_url);
@@ -423,7 +469,7 @@ const methods = {
       };
       const mimetype = mimeTypes[ext] || "application/octet-stream";
 
-      const msgType = mimetype.startsWith("image/")
+      msgType = mimetype.startsWith("image/")
         ? "image"
         : mimetype.startsWith("video/")
           ? "video"
@@ -442,7 +488,16 @@ const methods = {
     }
 
     const messageId = result?.key?.id || "unknown";
-    sendEvent("sent", { message_id: messageId, to: jid });
+    const timestamp = typeof result?.messageTimestamp === 'object' 
+      ? result.messageTimestamp.low 
+      : (result?.messageTimestamp || Date.now());
+    sendEvent("sent", { 
+      message_id: messageId, 
+      to: jid, 
+      text: text || "",
+      type: msgType,
+      timestamp: timestamp
+    });
 
     return { message_id: messageId, to: jid };
   },
@@ -486,7 +541,8 @@ const methods = {
     });
 
     const messageId = result?.key?.id || "unknown";
-    sendEvent("sent", { message_id: messageId, to: jid, type: "poll" });
+    const timestamp = result?.messageTimestamp || Date.now();
+    sendEvent("sent", { message_id: messageId, to: jid, type: "poll", timestamp: timestamp });
 
     return { message_id: messageId, to: jid };
   },
@@ -532,6 +588,105 @@ const methods = {
       self: selfInfo,
       has_qr: currentQr !== null,
     };
+  },
+
+  async get_contacts() {
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const contacts = [];
+      
+      // Get all contacts from the store
+      if (sock.store && sock.store.contacts) {
+        for (const [jid, contact] of sock.store.contacts) {
+          if (jid && !jid.endsWith('@broadcast') && jid !== 'status@broadcast') {
+            const isGroup = isJidGroup(jid);
+            contacts.push({
+              jid: jid,
+              name: contact.name || contact.notify || null,
+              phone: isGroup ? null : jid.split('@')[0].split(':')[0],
+              is_group: isGroup,
+            });
+          }
+        }
+      }
+
+      logger.info({ contactCount: contacts.length }, "Fetched contacts from WhatsApp");
+      return { contacts };
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to fetch contacts");
+      throw err;
+    }
+  },
+
+  async get_profile_picture(params) {
+    const { jid } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const url = await sock.profilePictureUrl(jid, "image");
+      return { url };
+    } catch (err) {
+      logger.debug({ err: err.message, jid }, "Failed to get profile picture");
+      return { url: null };
+    }
+  },
+
+  async delete_message(params) {
+    const { to, message_id, from_me } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(to);
+
+    try {
+      await sock.sendMessage(jid, {
+        delete: {
+          remoteJid: jid,
+          id: message_id,
+          fromMe: from_me ?? false,
+        },
+      });
+
+      logger.info({ jid, message_id, from_me: from_me ?? false }, "Message deleted");
+      return { status: "deleted", jid, message_id };
+    } catch (err) {
+      logger.error({ err: err.message, jid, message_id }, "Failed to delete message");
+      throw err;
+    }
+  },
+
+  async mark_read(params) {
+    const { to, message_ids } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(to);
+
+    try {
+      const keys = message_ids.map((id) => ({
+        remoteJid: jid,
+        id,
+        fromMe: false,
+      }));
+
+      await sock.readMessages(keys);
+
+      logger.info({ jid, count: keys.length }, "Messages marked as read");
+      return { status: "read", jid, count: keys.length };
+    } catch (err) {
+      logger.error({ err: err.message, jid }, "Failed to mark messages as read");
+      throw err;
+    }
   },
 };
 
