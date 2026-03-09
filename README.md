@@ -159,6 +159,14 @@ ws.onmessage = (event) => {
 | `WEBHOOK_RETRIES` | `3` | Max retries for failed webhooks |
 | `ADMIN_API_KEY` | `""` | Admin API key for tenant management |
 | `DATABASE_URL` | `""` | PostgreSQL URL (empty = SQLite) |
+| `HEALTH_CHECK_INTERVAL_SECONDS` | `30` | How often to check connection health |
+| `HEALTH_CHECK_TIMEOUT_SECONDS` | `10` | Timeout for health check queries |
+| `MAX_HEALTH_CHECK_FAILURES` | `3` | Failures before marking tenant offline |
+| `AUTO_RESTART_BRIDGE` | `true` | Enable auto-restart of crashed bridges |
+| `MAX_RESTART_ATTEMPTS` | `3` | Max restart attempts in window |
+| `RESTART_WINDOW_SECONDS` | `300` | Time window for restart rate limiting |
+| `RESTART_COOLDOWN_SECONDS` | `10` | Cooldown between restart attempts |
+| `CORS_ORIGINS` | `["*"]` | Allowed CORS origins (JSON array) |
 
 ## Docker Compose
 

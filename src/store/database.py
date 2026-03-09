@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -149,6 +149,39 @@ class Database:
             await conn.execute("""
                 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS chatwoot_config JSONB
             """)
+            await conn.execute("""
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE
+            """)
+            await conn.execute("""
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS chatwoot_synced_at TIMESTAMP
+            """)
+            await conn.execute("""
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_url TEXT
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_chatwoot_sync ON messages(tenant_hash, chatwoot_synced_at, created_at DESC)"
+            )
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS contacts (
+                    id SERIAL PRIMARY KEY,
+                    tenant_hash TEXT NOT NULL REFERENCES tenants(api_key_hash) ON DELETE CASCADE,
+                    phone TEXT NOT NULL,
+                    name TEXT,
+                    chat_jid TEXT NOT NULL,
+                    is_group BOOLEAN DEFAULT FALSE,
+                    last_message_at TIMESTAMP,
+                    message_count INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(tenant_hash, phone)
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_contacts_tenant ON contacts(tenant_hash, last_message_at DESC)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone)"
+            )
 
     async def _create_tables_sqlite(self) -> None:
         logger.debug("Creating SQLite tables if not exist")
@@ -228,6 +261,52 @@ class Database:
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        cursor = await self._pool.execute("PRAGMA table_info(tenants)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        if "chatwoot_config" not in columns:
+            logger.info("Adding chatwoot_config column to tenants table")
+            await self._pool.execute(
+                "ALTER TABLE tenants ADD COLUMN chatwoot_config TEXT"
+            )
+        if "enabled" not in columns:
+            logger.info("Adding enabled column to tenants table")
+            await self._pool.execute(
+                "ALTER TABLE tenants ADD COLUMN enabled INTEGER DEFAULT 1"
+            )
+        cursor = await self._pool.execute("PRAGMA table_info(messages)")
+        msg_columns = [row[1] for row in await cursor.fetchall()]
+        if "chatwoot_synced_at" not in msg_columns:
+            logger.info("Adding chatwoot_synced_at column to messages table")
+            await self._pool.execute(
+                "ALTER TABLE messages ADD COLUMN chatwoot_synced_at TEXT"
+            )
+            await self._pool.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_chatwoot_sync ON messages(tenant_hash, chatwoot_synced_at, created_at DESC)"
+            )
+        if "media_url" not in msg_columns:
+            logger.info("Adding media_url column to messages table")
+            await self._pool.execute("ALTER TABLE messages ADD COLUMN media_url TEXT")
+        await self._pool.execute("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_hash TEXT NOT NULL REFERENCES tenants(api_key_hash) ON DELETE CASCADE,
+                phone TEXT NOT NULL,
+                name TEXT,
+                chat_jid TEXT NOT NULL,
+                is_group INTEGER DEFAULT 0,
+                last_message_at TEXT,
+                message_count INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_hash, phone)
+            )
+        """)
+        await self._pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contacts_tenant ON contacts(tenant_hash, last_message_at DESC)"
+        )
+        await self._pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone)"
+        )
         await self._pool.commit()
 
     async def save_tenant(
@@ -292,7 +371,7 @@ class Database:
                     """SELECT api_key_hash, name, created_at, webhook_urls, 
                               connection_state, self_jid, self_phone, self_name,
                               last_connected_at, last_disconnected_at, has_auth, creds_json,
-                              chatwoot_config
+                              chatwoot_config, enabled
                        FROM tenants"""
                 )
                 tenants = [
@@ -317,6 +396,9 @@ class Database:
                         if row["chatwoot_config"]
                         and isinstance(row["chatwoot_config"], str)
                         else row["chatwoot_config"],
+                        "enabled": bool(row["enabled"])
+                        if row["enabled"] is not None
+                        else True,
                     }
                     for row in rows
                 ]
@@ -325,7 +407,7 @@ class Database:
                 """SELECT api_key_hash, name, created_at, webhook_urls,
                           connection_state, self_jid, self_phone, self_name,
                           last_connected_at, last_disconnected_at, has_auth, creds_json,
-                          chatwoot_config
+                          chatwoot_config, enabled
                    FROM tenants"""
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -348,6 +430,7 @@ class Database:
                         "has_auth": bool(row[10]),
                         "creds_json": json.loads(row[11]) if row[11] else None,
                         "chatwoot_config": json.loads(row[12]) if row[12] else None,
+                        "enabled": bool(row[13]) if row[13] is not None else True,
                     }
                     for row in rows
                 ]
@@ -391,6 +474,25 @@ class Database:
             await self._pool.commit()
         logger.debug("Webhooks updated")
 
+    async def update_tenant_enabled(self, api_key_hash: str, enabled: bool) -> None:
+        logger.debug(
+            f"Updating enabled status for tenant: hash={api_key_hash[:16]}..., enabled={enabled}"
+        )
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE tenants SET enabled = $1 WHERE api_key_hash = $2",
+                    enabled,
+                    api_key_hash,
+                )
+        else:
+            await self._pool.execute(
+                "UPDATE tenants SET enabled = ? WHERE api_key_hash = ?",
+                (1 if enabled else 0, api_key_hash),
+            )
+            await self._pool.commit()
+        logger.debug(f"Tenant enabled status updated to {enabled}")
+
     async def update_session_state(
         self,
         api_key_hash: str,
@@ -403,7 +505,7 @@ class Database:
         logger.debug(
             f"Updating session state for tenant: hash={api_key_hash[:16]}..., state={connection_state}"
         )
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         if self._is_postgres:
             async with self._pool.acquire() as conn:
@@ -637,13 +739,16 @@ class Database:
         msg_type: str = "text",
         timestamp: int = 0,
         direction: str = "inbound",
+        media_url: Optional[str] = None,
     ) -> int:
+        from ..utils.phone import normalize_phone, extract_phone_from_jid
+
         if self._is_postgres:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
                     """
-                    INSERT INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    INSERT INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, media_url)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     RETURNING id
                     """,
                     tenant_hash,
@@ -656,13 +761,14 @@ class Database:
                     msg_type,
                     timestamp,
                     direction,
+                    media_url,
                 )
-                return row["id"]
+                msg_id = row["id"]
         else:
             cursor = await self._pool.execute(
                 """
-                INSERT INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, media_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     tenant_hash,
@@ -675,10 +781,24 @@ class Database:
                     msg_type,
                     timestamp,
                     direction,
+                    media_url,
                 ),
             )
             await self._pool.commit()
-            return cursor.lastrowid
+            msg_id = cursor.lastrowid
+
+        phone = extract_phone_from_jid(chat_jid)
+        normalized_phone = normalize_phone(phone)
+        if normalized_phone:
+            await self.upsert_contact(
+                tenant_hash=tenant_hash,
+                phone=normalized_phone,
+                name=push_name,
+                chat_jid=chat_jid,
+                is_group=is_group,
+            )
+
+        return msg_id
 
     async def list_messages(
         self,
@@ -801,25 +921,267 @@ class Database:
             await self._pool.commit()
             return cursor.rowcount > 0
 
+    async def upsert_contact(
+        self,
+        tenant_hash: str,
+        phone: str,
+        name: Optional[str],
+        chat_jid: str,
+        is_group: bool = False,
+        message_time: Optional[datetime] = None,
+    ) -> None:
+        """
+        Insert or update a contact.
+        Updates name only if the new name is not empty/None.
+        """
+        if message_time is None:
+            message_time = datetime.now(UTC)
+
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO contacts (tenant_hash, phone, name, chat_jid, is_group, last_message_at, message_count, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, 1, NOW(), NOW())
+                    ON CONFLICT (tenant_hash, phone) DO UPDATE SET
+                        name = CASE WHEN EXCLUDED.name IS NOT NULL AND EXCLUDED.name != '' THEN EXCLUDED.name ELSE contacts.name END,
+                        chat_jid = EXCLUDED.chat_jid,
+                        is_group = EXCLUDED.is_group,
+                        last_message_at = EXCLUDED.last_message_at,
+                        message_count = contacts.message_count + 1,
+                        updated_at = NOW()
+                    """,
+                    tenant_hash,
+                    phone,
+                    name,
+                    chat_jid,
+                    is_group,
+                    message_time,
+                )
+        else:
+            await self._pool.execute(
+                """
+                INSERT INTO contacts (tenant_hash, phone, name, chat_jid, is_group, last_message_at, message_count, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(tenant_hash, phone) DO UPDATE SET
+                    name = CASE WHEN excluded.name IS NOT NULL AND excluded.name != '' THEN excluded.name ELSE contacts.name END,
+                    chat_jid = excluded.chat_jid,
+                    is_group = excluded.is_group,
+                    last_message_at = excluded.last_message_at,
+                    message_count = contacts.message_count + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    tenant_hash,
+                    phone,
+                    name,
+                    chat_jid,
+                    1 if is_group else 0,
+                    message_time.isoformat(),
+                ),
+            )
+            await self._pool.commit()
+
+    async def get_contact_by_phone(
+        self, tenant_hash: str, phone: str
+    ) -> Optional[dict]:
+        """Get a contact by normalized phone number."""
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, tenant_hash, phone, name, chat_jid, is_group, 
+                           last_message_at, message_count, created_at, updated_at
+                    FROM contacts
+                    WHERE tenant_hash = $1 AND phone = $2
+                    """,
+                    tenant_hash,
+                    phone,
+                )
+                if row:
+                    return {
+                        "id": row["id"],
+                        "tenant_hash": row["tenant_hash"],
+                        "phone": row["phone"],
+                        "name": row["name"],
+                        "chat_jid": row["chat_jid"],
+                        "is_group": row["is_group"],
+                        "last_message_at": row["last_message_at"],
+                        "message_count": row["message_count"],
+                        "created_at": row["created_at"],
+                        "updated_at": row["updated_at"],
+                    }
+                return None
+        else:
+            async with self._pool.execute(
+                """
+                SELECT id, tenant_hash, phone, name, chat_jid, is_group, 
+                       last_message_at, message_count, created_at, updated_at
+                FROM contacts
+                WHERE tenant_hash = ? AND phone = ?
+                """,
+                (tenant_hash, phone),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return {
+                        "id": row[0],
+                        "tenant_hash": row[1],
+                        "phone": row[2],
+                        "name": row[3],
+                        "chat_jid": row[4],
+                        "is_group": bool(row[5]),
+                        "last_message_at": row[6],
+                        "message_count": row[7],
+                        "created_at": row[8],
+                        "updated_at": row[9],
+                    }
+                return None
+
+    async def populate_contacts_from_messages(
+        self, tenant_hash: Optional[str] = None
+    ) -> int:
+        """
+        Populate contacts table from existing messages.
+        If tenant_hash is provided, only populate for that tenant.
+        Returns the number of contacts created/updated.
+        """
+        from ..utils.phone import normalize_phone, extract_phone_from_jid
+
+        count = 0
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                if tenant_hash:
+                    rows = await conn.fetch(
+                        """
+                        SELECT DISTINCT tenant_hash, chat_jid, push_name, is_group, MAX(created_at) as last_msg
+                        FROM messages
+                        WHERE tenant_hash = $1 AND chat_jid IS NOT NULL AND chat_jid != ''
+                        GROUP BY tenant_hash, chat_jid, push_name, is_group
+                        """,
+                        tenant_hash,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        """
+                        SELECT DISTINCT tenant_hash, chat_jid, push_name, is_group, MAX(created_at) as last_msg
+                        FROM messages
+                        WHERE chat_jid IS NOT NULL AND chat_jid != ''
+                        GROUP BY tenant_hash, chat_jid, push_name, is_group
+                        """
+                    )
+
+                for row in rows:
+                    phone = extract_phone_from_jid(row["chat_jid"])
+                    if not phone:
+                        continue
+                    normalized = normalize_phone(phone)
+                    if not normalized:
+                        continue
+
+                    await conn.execute(
+                        """
+                        INSERT INTO contacts (tenant_hash, phone, name, chat_jid, is_group, last_message_at, message_count, created_at, updated_at)
+                        VALUES ($1, $2, $3, $4, $5, $6, 1, NOW(), NOW())
+                        ON CONFLICT (tenant_hash, phone) DO UPDATE SET
+                            name = CASE WHEN EXCLUDED.name IS NOT NULL AND EXCLUDED.name != '' THEN EXCLUDED.name ELSE contacts.name END,
+                            chat_jid = EXCLUDED.chat_jid,
+                            last_message_at = GREATEST(contacts.last_message_at, EXCLUDED.last_message_at),
+                            message_count = contacts.message_count + 1,
+                            updated_at = NOW()
+                        """,
+                        row["tenant_hash"],
+                        normalized,
+                        row["push_name"],
+                        row["chat_jid"],
+                        row["is_group"],
+                        row["last_msg"],
+                    )
+                    count += 1
+        else:
+            if tenant_hash:
+                cursor = await self._pool.execute(
+                    """
+                    SELECT DISTINCT tenant_hash, chat_jid, push_name, is_group, MAX(created_at) as last_msg
+                    FROM messages
+                    WHERE tenant_hash = ? AND chat_jid IS NOT NULL AND chat_jid != ''
+                    GROUP BY tenant_hash, chat_jid, push_name, is_group
+                    """,
+                    (tenant_hash,),
+                )
+            else:
+                cursor = await self._pool.execute(
+                    """
+                    SELECT DISTINCT tenant_hash, chat_jid, push_name, is_group, MAX(created_at) as last_msg
+                    FROM messages
+                    WHERE chat_jid IS NOT NULL AND chat_jid != ''
+                    GROUP BY tenant_hash, chat_jid, push_name, is_group
+                    """
+                )
+            rows = await cursor.fetchall()
+
+            for row in rows:
+                phone = extract_phone_from_jid(row[1])
+                if not phone:
+                    continue
+                normalized = normalize_phone(phone)
+                if not normalized:
+                    continue
+
+                await self._pool.execute(
+                    """
+                    INSERT INTO contacts (tenant_hash, phone, name, chat_jid, is_group, last_message_at, message_count, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT(tenant_hash, phone) DO UPDATE SET
+                        name = CASE WHEN excluded.name IS NOT NULL AND excluded.name != '' THEN excluded.name ELSE contacts.name END,
+                        chat_jid = excluded.chat_jid,
+                        last_message_at = CASE 
+                            WHEN contacts.last_message_at IS NULL THEN excluded.last_message_at
+                            WHEN excluded.last_message_at IS NULL THEN contacts.last_message_at
+                            WHEN excluded.last_message_at > contacts.last_message_at THEN excluded.last_message_at
+                            ELSE contacts.last_message_at
+                        END,
+                        message_count = contacts.message_count + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        row[0],
+                        normalized,
+                        row[2],
+                        row[1],
+                        1 if row[3] else 0,
+                        row[4],
+                    ),
+                )
+                count += 1
+            await self._pool.commit()
+
+        logger.info(f"Populated {count} contacts from messages")
+        return count
+
     async def get_recent_chats(
         self,
         tenant_hash: str,
         limit: int = 50,
     ) -> list[dict]:
+        """
+        Get recent chats from the contacts table (deduplicated by normalized phone).
+        Returns contacts with their name, phone, chat_jid, and metadata.
+        """
         if self._is_postgres:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
                     """
                     SELECT 
+                        phone,
+                        name,
                         chat_jid,
-                        push_name,
                         is_group,
-                        MAX(created_at) as last_message_at,
-                        COUNT(*) as message_count
-                    FROM messages
-                    WHERE tenant_hash = $1 AND chat_jid IS NOT NULL AND chat_jid != ''
-                    GROUP BY chat_jid, push_name, is_group
-                    ORDER BY MAX(created_at) DESC
+                        last_message_at,
+                        message_count
+                    FROM contacts
+                    WHERE tenant_hash = $1 AND phone IS NOT NULL AND phone != ''
+                    ORDER BY last_message_at DESC NULLS LAST
                     LIMIT $2
                     """,
                     tenant_hash,
@@ -827,8 +1189,9 @@ class Database:
                 )
                 return [
                     {
+                        "phone": row["phone"],
+                        "push_name": row["name"],
                         "chat_jid": row["chat_jid"],
-                        "push_name": row["push_name"],
                         "is_group": row["is_group"],
                         "last_message_at": row["last_message_at"],
                         "message_count": row["message_count"],
@@ -839,15 +1202,15 @@ class Database:
             async with self._pool.execute(
                 """
                 SELECT 
+                    phone,
+                    name,
                     chat_jid,
-                    push_name,
                     is_group,
-                    MAX(created_at) as last_message_at,
-                    COUNT(*) as message_count
-                FROM messages
-                WHERE tenant_hash = ? AND chat_jid IS NOT NULL AND chat_jid != ''
-                GROUP BY chat_jid, push_name, is_group
-                ORDER BY MAX(created_at) DESC
+                    last_message_at,
+                    message_count
+                FROM contacts
+                WHERE tenant_hash = ? AND phone IS NOT NULL AND phone != ''
+                ORDER BY last_message_at DESC
                 LIMIT ?
                 """,
                 (tenant_hash, limit),
@@ -855,11 +1218,12 @@ class Database:
                 rows = await cursor.fetchall()
                 return [
                     {
-                        "chat_jid": row[0],
+                        "phone": row[0],
                         "push_name": row[1],
-                        "is_group": bool(row[2]),
-                        "last_message_at": row[3],
-                        "message_count": row[4],
+                        "chat_jid": row[2],
+                        "is_group": bool(row[3]),
+                        "last_message_at": row[4],
+                        "message_count": row[5],
                     }
                     for row in rows
                 ]
@@ -1127,13 +1491,13 @@ class Database:
         if self._is_postgres:
             async with self._pool.acquire() as conn:
                 result = await conn.execute(
-                    "DELETE FROM webhook_attempts WHERE created_at < NOW() - INTERVAL '%s days'"
-                    % days
+                    "DELETE FROM webhook_attempts WHERE created_at < NOW() - INTERVAL '1 day' * $1",
+                    days,
                 )
                 cleaned["webhook_attempts"] = int(result.split()[-1])
                 result = await conn.execute(
-                    "DELETE FROM messages WHERE created_at < NOW() - INTERVAL '%s days'"
-                    % days
+                    "DELETE FROM messages WHERE created_at < NOW() - INTERVAL '1 day' * $1",
+                    days,
                 )
                 cleaned["messages"] = int(result.split()[-1])
                 result = await conn.execute(
@@ -1158,3 +1522,77 @@ class Database:
             await self._pool.commit()
         logger.info(f"Cleaned up old data: {cleaned}")
         return cleaned
+
+    async def mark_message_chatwoot_synced(self, message_id: int) -> None:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE messages SET chatwoot_synced_at = NOW() WHERE id = $1",
+                    message_id,
+                )
+        else:
+            await self._pool.execute(
+                "UPDATE messages SET chatwoot_synced_at = datetime('now') WHERE id = ?",
+                (message_id,),
+            )
+            await self._pool.commit()
+
+    async def get_unsynced_messages_for_chatwoot(
+        self,
+        tenant_hash: str,
+        days_limit: int = 3,
+        limit: int = 1000,
+    ) -> list[dict]:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, 
+                           text, msg_type, timestamp, direction, created_at, media_url
+                    FROM messages
+                    WHERE tenant_hash = $1 
+                      AND chatwoot_synced_at IS NULL
+                      AND is_group = FALSE
+                      AND created_at >= NOW() - INTERVAL '%s days'
+                    ORDER BY created_at ASC
+                    LIMIT $2
+                    """
+                    % days_limit,
+                    tenant_hash,
+                    limit,
+                )
+                return [dict(row) for row in rows]
+        else:
+            async with self._pool.execute(
+                """
+                SELECT id, tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, 
+                       text, msg_type, timestamp, direction, created_at, media_url
+                FROM messages
+                WHERE tenant_hash = ? 
+                  AND chatwoot_synced_at IS NULL
+                  AND is_group = 0
+                  AND datetime(created_at) >= datetime('now', ?)
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (tenant_hash, f"-{days_limit} days", limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [
+                    {
+                        "id": row[0],
+                        "tenant_hash": row[1],
+                        "message_id": row[2],
+                        "from_jid": row[3],
+                        "chat_jid": row[4],
+                        "is_group": bool(row[5]),
+                        "push_name": row[6],
+                        "text": row[7],
+                        "msg_type": row[8],
+                        "timestamp": row[9],
+                        "direction": row[10],
+                        "created_at": row[11],
+                        "media_url": row[12] if len(row) > 12 else None,
+                    }
+                    for row in rows
+                ]

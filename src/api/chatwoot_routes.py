@@ -1,7 +1,7 @@
 import json
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Header, Request, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..tenant import tenant_manager
 from ..chatwoot import (
@@ -26,14 +26,24 @@ class ChatwootConfigRequest(BaseModel):
     account_id: str
     inbox_name: str = "WhatsApp"
     sign_messages: bool = True
+    sign_delimiter: str = "\n"
     reopen_conversation: bool = True
     conversation_pending: bool = False
     import_contacts: bool = True
     import_messages: bool = False
     days_limit_import: int = 3
     merge_brazil_contacts: bool = True
+    bot_contact_enabled: bool = True
     bot_name: str = "Bot"
     bot_avatar_url: Optional[str] = None
+    ignore_jids: List[str] = Field(default_factory=list)
+    number: Optional[str] = None
+    auto_create: bool = True
+    organization: Optional[str] = None
+    logo: Optional[str] = None
+    message_delete_enabled: bool = True
+    mark_read_on_reply: bool = True
+    group_messages_enabled: bool = True
 
 
 class ChatwootSetupRequest(BaseModel):
@@ -45,7 +55,7 @@ class ChatwootStatusResponse(BaseModel):
     connected: bool = False
     url: Optional[str] = None
     account_id: Optional[str] = None
-    inbox_id: Optional[str] = None
+    inbox_id: Optional[int] = None
 
 
 def get_tenant(api_key: str = Header(None, alias="X-API-Key")):
@@ -90,14 +100,24 @@ async def set_config(request: ChatwootConfigRequest, tenant=Depends(get_tenant))
         inbox_name=request.inbox_name,
         hmac_token=existing.get("hmac_token"),
         sign_messages=request.sign_messages,
+        sign_delimiter=request.sign_delimiter,
         reopen_conversation=request.reopen_conversation,
         conversation_pending=request.conversation_pending,
         import_contacts=request.import_contacts,
         import_messages=request.import_messages,
         days_limit_import=request.days_limit_import,
         merge_brazil_contacts=request.merge_brazil_contacts,
+        bot_contact_enabled=request.bot_contact_enabled,
         bot_name=request.bot_name,
         bot_avatar_url=request.bot_avatar_url,
+        ignore_jids=request.ignore_jids,
+        number=request.number,
+        auto_create=request.auto_create,
+        organization=request.organization,
+        logo=request.logo,
+        message_delete_enabled=request.message_delete_enabled,
+        mark_read_on_reply=request.mark_read_on_reply,
+        group_messages_enabled=request.group_messages_enabled,
     )
 
     client = ChatwootClient(config)
@@ -174,7 +194,7 @@ async def setup_inbox(request: ChatwootSetupRequest, tenant=Depends(get_tenant))
             webhook_url=webhook_url,
         )
 
-        chatwoot_config.inbox_id = str(inbox.id)
+        chatwoot_config.inbox_id = inbox.id
         chatwoot_config.webhook_url = webhook_url
         chatwoot_config.hmac_token = webhook_token
 
@@ -236,7 +256,7 @@ async def handle_outgoing(
 ):
     tenant = None
     for t in tenant_manager.list_tenants():
-        if t.api_key_hash.startswith(tenant_hash):
+        if t.api_key_hash == tenant_hash:
             tenant = t
             break
 
@@ -257,16 +277,22 @@ async def handle_outgoing(
     handler = ChatwootWebhookHandler(
         tenant=tenant,
         bridge=bridge,
+        config=chatwoot_config,
         hmac_token=chatwoot_config.hmac_token,
     )
 
-    if x_webhook_signature and not handler.verify_signature(body, x_webhook_signature):
-        raise HTTPException(status_code=401, detail="Invalid signature")
+    try:
+        if x_webhook_signature and not handler.verify_signature(
+            body, x_webhook_signature
+        ):
+            raise HTTPException(status_code=401, detail="Invalid signature")
 
-    result = await handler.handle_webhook(payload)
+        result = await handler.handle_webhook(payload)
 
-    logger.debug(
-        f"Chatwoot webhook processed for tenant {tenant.name}: result={result}"
-    )
+        logger.debug(
+            f"Chatwoot webhook processed for tenant {tenant.name}: result={result}"
+        )
 
-    return result
+        return result
+    finally:
+        await handler.close()

@@ -12,6 +12,7 @@ import logging
 import os
 import sys
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 import httpx
@@ -28,7 +29,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="OpenCode WhatsApp Webhook Handler")
 session_manager: Optional[SessionManager] = None
 
 WHATSAPP_API_URL = os.getenv("WHATSAPP_API_URL", "http://localhost:8080")
@@ -52,21 +52,22 @@ class SessionInfo(BaseModel):
     last_used_at: str
 
 
-@app.on_event("startup")
-async def startup():
-    """Initialize session manager on startup."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle."""
     global session_manager
     session_manager = SessionManager(SESSION_DB_PATH)
     await session_manager.init_db()
     logger.info("Webhook handler started")
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown():
-    """Cleanup on shutdown."""
     if session_manager:
         await session_manager.close()
     logger.info("Webhook handler stopped")
+
+
+app = FastAPI(title="OpenCode WhatsApp Webhook Handler", lifespan=lifespan)
 
 
 @app.get("/health")

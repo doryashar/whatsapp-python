@@ -70,6 +70,15 @@ class AdminWebSocket {
 
         switch (message.type) {
             case 'tenant_state_changed':
+                // Close QR modal if tenant connected
+                if (message.data.event === 'connected') {
+                    const qrModal = document.getElementById('qr-modal');
+                    if (qrModal) {
+                        qrModal.classList.add('hidden');
+                        console.log('QR modal closed - tenant connected');
+                    }
+                }
+                
                 // Refresh tenant list
                 if (typeof htmx !== 'undefined') {
                     htmx.trigger('#tenants-list', 'load');
@@ -127,6 +136,12 @@ class AdminWebSocket {
                 );
                 break;
 
+            case 'qr_generated':
+                // Show QR code for tenant connection
+                console.log('QR event received:', message.data);
+                this.showQRCode(message.data);
+                break;
+
             case 'pong':
                 // Heartbeat response, do nothing
                 break;
@@ -179,6 +194,44 @@ class AdminWebSocket {
             clearInterval(this.heartbeatInterval);
             this.heartbeatInterval = null;
         }
+    }
+
+    showQRCode(data) {
+        console.log('showQRCode called with:', data);
+        let modal = document.getElementById('qr-modal');
+        if (!modal) {
+            console.log('Creating new QR modal');
+            modal = document.createElement('div');
+            modal.id = 'qr-modal';
+            modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+            modal.innerHTML = `
+                <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xl font-semibold text-white">Scan QR Code</h3>
+                        <button onclick="this.closest('#qr-modal').classList.add('hidden')" class="text-gray-400 hover:text-white">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <p class="text-gray-300 mb-4">Tenant: <span id="qr-tenant-name" class="font-medium"></span></p>
+                    <div class="bg-white p-4 rounded-lg flex justify-center">
+                        <img id="qr-image" src="" alt="QR Code" class="max-w-full" />
+                    </div>
+                    <p class="text-gray-400 text-sm mt-4 text-center">Open WhatsApp on your phone and scan this QR code</p>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            console.log('QR modal added to DOM');
+        }
+        
+        modal.classList.remove('hidden');
+        console.log('Modal shown, setting tenant name and QR image');
+        document.getElementById('qr-tenant-name').textContent = data.tenant_name || 'Unknown';
+        document.getElementById('qr-image').src = data.qr_data_url || '';
+        console.log('QR image src set to:', data.qr_data_url ? 'data URL present' : 'empty');
+        
+        this.showNotification(`QR code generated for ${data.tenant_name}`, 'info');
     }
 
     showNotification(message, type = 'info') {

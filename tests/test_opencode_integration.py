@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scripts.session_manager import SessionManager
+from scripts.sample_integration.session_manager import SessionManager
 
 
 async def test_session_manager():
@@ -78,7 +78,7 @@ async def test_opencode_integration():
 
     print("\n1. Testing opencode run command...")
 
-    from scripts.opencode_webhook_handler import run_opencode
+    from scripts.sample_integration.opencode_webhook_handler import run_opencode
 
     try:
         result = await run_opencode(
@@ -101,10 +101,18 @@ async def test_full_message_flow():
     print("Testing Full Message Flow")
     print("=" * 60)
 
-    from scripts.opencode_webhook_handler import process_message, session_manager
+    from unittest.mock import AsyncMock, patch
+    from scripts.sample_integration.opencode_webhook_handler import (
+        process_message,
+    )
+    from scripts.sample_integration.session_manager import SessionManager
+    import scripts.sample_integration.opencode_webhook_handler as handler_module
 
     print("\nInitializing session manager...")
-    await session_manager.init_db()
+    test_session_manager = SessionManager("./data/test_sessions_flow.db")
+    await test_session_manager.init_db()
+
+    handler_module.session_manager = test_session_manager
 
     print("\n1. Simulating incoming message...")
     message_data = {
@@ -120,13 +128,25 @@ async def test_full_message_flow():
 
     print("\n2. Processing message (this may take a moment)...")
     try:
-        await process_message(message_data)
-        print("   ✓ Message processed")
+        with patch(
+            "scripts.sample_integration.opencode_webhook_handler.run_opencode",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            with patch(
+                "scripts.sample_integration.opencode_webhook_handler.send_whatsapp_message",
+                new_callable=AsyncMock,
+            ):
+                mock_run.return_value = {
+                    "session_id": "test_session_123",
+                    "text": "Test response",
+                }
+                await process_message(message_data)
+                print("   ✓ Message processed")
     except Exception as e:
         print(f"   ✗ Message processing failed: {e}")
 
     print("\n3. Checking session was created...")
-    session_id = await session_manager.get_session(message_data["chat_jid"])
+    session_id = await test_session_manager.get_session(message_data["chat_jid"])
     if session_id:
         print(f"   ✓ Session created: {session_id}")
     else:
@@ -141,12 +161,26 @@ async def test_full_message_flow():
     }
 
     try:
-        await process_message(follow_up)
-        print("   ✓ Follow-up processed")
+        with patch(
+            "scripts.sample_integration.opencode_webhook_handler.run_opencode",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            with patch(
+                "scripts.sample_integration.opencode_webhook_handler.send_whatsapp_message",
+                new_callable=AsyncMock,
+            ):
+                mock_run.return_value = {
+                    "session_id": session_id,
+                    "text": "Follow-up response",
+                }
+                await process_message(follow_up)
+                print("   ✓ Follow-up processed")
     except Exception as e:
         print(f"   ✗ Follow-up failed: {e}")
+    finally:
+        await test_session_manager.close()
+        handler_module.session_manager = None
 
-    await session_manager.close()
     print("\n✓ Full flow test completed\n")
 
 

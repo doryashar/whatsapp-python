@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 from httpx import ASGITransport, AsyncClient
 
 from src.tenant import TenantManager, tenant_manager
@@ -9,6 +9,50 @@ from src.tenant import TenantManager, tenant_manager
 def fresh_tenant_manager():
     manager = TenantManager()
     return manager
+
+
+@pytest.fixture
+def mock_db():
+    db = MagicMock()
+    db.list_messages = AsyncMock(return_value=([], 0))
+    db.get_recent_chats = AsyncMock(return_value=[])
+    db.get_webhook_stats = AsyncMock(
+        return_value={"total": 0, "success_count": 0, "fail_count": 0}
+    )
+    db.create_admin_session = AsyncMock(return_value="test-session-id")
+    db.get_admin_session = AsyncMock(
+        return_value={
+            "id": "test-session-id",
+            "expires_at": "2099-01-01",
+            "user_agent": "test",
+            "ip_address": "127.0.0.1",
+        }
+    )
+    db.save_tenant = AsyncMock()
+    db.delete_tenant = AsyncMock()
+    return db
+
+
+@pytest.fixture(autouse=True)
+def setup_admin_api_key(monkeypatch, mock_db):
+    """Set admin password for all tests in this module"""
+    from src import config
+    from src.admin import auth as admin_auth
+    from src.tenant import tenant_manager
+
+    # Patch in both places
+    monkeypatch.setattr(config.settings, "admin_password", "test_admin_key")
+    monkeypatch.setattr(admin_auth.settings, "admin_password", "test_admin_key")
+
+    # Setup mock database
+    original_db = tenant_manager._db
+    tenant_manager._db = mock_db
+
+    yield
+
+    monkeypatch.setattr(config.settings, "admin_password", None)
+    monkeypatch.setattr(admin_auth.settings, "admin_password", None)
+    tenant_manager._db = original_db
 
 
 class TestTenantManager:
@@ -102,43 +146,52 @@ class TestTenantManager:
 @pytest.mark.asyncio
 async def test_admin_create_tenant():
     from src.main import app
-    from src.config import settings
 
-    with patch.object(settings, "admin_api_key", "test_admin_key"):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                "/admin/tenants",
-                params={"name": "new_user"},
-                headers={"X-API-Key": "test_admin_key"},
-            )
-            assert response.status_code == 200
-            data = response.json()
-            assert data["name"] == "new_user"
-            assert "api_key" in data
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Login first to get session cookie
+        login_response = await client.post(
+            "/admin/login", data={"password": "test_admin_key"}, follow_redirects=False
+        )
+        assert login_response.status_code == 302
+
+        # Now make the authenticated request
+        response = await client.post(
+            "/admin/api/tenants",
+            json={"name": "new_user"},
+        )
+        if response.status_code != 200:
+            print(f"Status: {response.status_code}, Body: {response.text}")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["tenant"]["name"] == "new_user"
+        assert "api_key" in data["tenant"]
 
 
 @pytest.mark.asyncio
 async def test_admin_list_tenants():
     from src.main import app
-    from src.config import settings
     from src.tenant import tenant_manager
 
     await tenant_manager.create_tenant("list_test_user")
 
-    with patch.object(settings, "admin_api_key", "test_admin_key"):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/admin/tenants", headers={"X-API-Key": "test_admin_key"}
-            )
-            assert response.status_code == 200
-            data = response.json()
-            assert "tenants" in data
-            names = [t["name"] for t in data["tenants"]]
-            assert "list_test_user" in names
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Login first to get session cookie
+        login_response = await client.post(
+            "/admin/login", data={"password": "test_admin_key"}, follow_redirects=False
+        )
+        assert login_response.status_code == 302
+
+        # Now make the authenticated request
+        response = await client.get("/admin/api/tenants")
+        assert response.status_code == 200
+        data = response.json()
+        assert "tenants" in data
+        names = [t["name"] for t in data["tenants"]]
+        assert "list_test_user" in names
 
 
 @pytest.mark.asyncio
@@ -148,5 +201,6 @@ async def test_admin_requires_key():
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
-        response = await client.post("/admin/tenants", params={"name": "new_user"})
+        # Try to access without logging in
+        response = await client.post("/admin/api/tenants", params={"name": "new_user"})
         assert response.status_code == 401

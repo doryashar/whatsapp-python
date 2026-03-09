@@ -1,5 +1,6 @@
 import asyncio
-from typing import Optional, Any
+import time
+from typing import Optional, Any, Tuple
 import httpx
 
 from .models import (
@@ -31,6 +32,8 @@ class ChatwootAPIError(Exception):
 
 
 class ChatwootClient:
+    CACHE_TTL = 1800
+
     def __init__(self, config: ChatwootConfig, timeout: int = 30):
         self._config = config
         self._timeout = timeout
@@ -38,6 +41,7 @@ class ChatwootClient:
         self._token = config.token
         self._account_id = config.account_id
         self._client: Optional[httpx.AsyncClient] = None
+        self._conversation_cache: dict[int, Tuple[ChatwootConversation, float]] = {}
 
     def _get_headers(self) -> dict:
         return {
@@ -186,6 +190,7 @@ class ChatwootClient:
         contact_id: int,
         name: Optional[str] = None,
         phone_number: Optional[str] = None,
+        avatar_url: Optional[str] = None,
         custom_attributes: Optional[dict] = None,
     ) -> ChatwootContact:
         endpoint = f"/api/v1/accounts/{self._account_id}/contacts/{contact_id}"
@@ -195,6 +200,8 @@ class ChatwootClient:
             data["name"] = name
         if phone_number:
             data["phone_number"] = phone_number
+        if avatar_url is not None:
+            data["avatar_url"] = avatar_url
         if custom_attributes:
             data["custom_attributes"] = custom_attributes
 
@@ -211,6 +218,18 @@ class ChatwootClient:
 
         contact = await self.find_contact_by_phone(phone_normalized)
         if contact:
+            if name and name != contact.name and name != phone_normalized:
+                try:
+                    updated_contact = await self.update_contact(
+                        contact_id=contact.id,
+                        name=name,
+                    )
+                    logger.info(
+                        f"Updated contact name from '{contact.name}' to '{name}' for phone {phone_normalized}"
+                    )
+                    return updated_contact
+                except ChatwootAPIError as e:
+                    logger.warning(f"Failed to update contact name: {e}")
             return contact
 
         if self._config.merge_brazil_contacts and phone_normalized.startswith("55"):
@@ -218,6 +237,18 @@ class ChatwootClient:
             if alt_phone:
                 contact = await self.find_contact_by_phone(alt_phone)
                 if contact:
+                    if name and name != contact.name and name != phone_normalized:
+                        try:
+                            updated_contact = await self.update_contact(
+                                contact_id=contact.id,
+                                name=name,
+                            )
+                            logger.info(
+                                f"Updated contact name from '{contact.name}' to '{name}' for phone {alt_phone}"
+                            )
+                            return updated_contact
+                        except ChatwootAPIError as e:
+                            logger.warning(f"Failed to update contact name: {e}")
                     return contact
 
         return await self.create_contact(
@@ -251,11 +282,12 @@ class ChatwootClient:
         self, contact_id: int
     ) -> Optional[ChatwootConversation]:
         endpoint = f"/api/v1/accounts/{self._account_id}/conversations"
-        params = {"contact_id": contact_id}
+        params = {"contact_id": contact_id, "status": "all", "assignee_type": "all"}
 
         try:
             result = await self._request("GET", endpoint, params=params)
-            payload = result.get("payload", result)
+            data_wrapper = result.get("data", result)
+            payload = data_wrapper.get("payload", data_wrapper)
             conversations = (
                 payload
                 if isinstance(payload, list)
@@ -265,7 +297,7 @@ class ChatwootClient:
             for conv_data in conversations:
                 if isinstance(conv_data, dict):
                     status = conv_data.get("status", "")
-                    if status in ("open", "pending"):
+                    if status in ("open", "pending", "resolved", "closed", "snoozed"):
                         return ChatwootConversation(**conv_data)
 
             return None
@@ -286,16 +318,27 @@ class ChatwootClient:
         content: str,
         message_type: str = "incoming",
         attachments: Optional[list] = None,
+        source_id: Optional[str] = None,
+        source_reply_id: Optional[str] = None,
+        content_attributes: Optional[dict] = None,
+        private: bool = False,
     ) -> ChatwootMessage:
         endpoint = f"/api/v1/accounts/{self._account_id}/conversations/{conversation_id}/messages"
 
         data: dict[str, Any] = {
             "content": content,
             "message_type": message_type,
+            "private": private,
         }
 
         if attachments:
             data["attachments"] = attachments
+        if source_id:
+            data["source_id"] = source_id
+        if source_reply_id:
+            data["source_reply_id"] = source_reply_id
+        if content_attributes:
+            data["content_attributes"] = content_attributes
 
         result = await self._request("POST", endpoint, data=data)
         return ChatwootMessage(**result)
@@ -305,16 +348,40 @@ class ChatwootClient:
         contact: ChatwootContact,
         source_id: Optional[str] = None,
     ) -> ChatwootConversation:
+        cached = self._get_cached_conversation(contact.id)
+        if cached:
+            return cached
+
         if self._config.reopen_conversation:
             existing = await self.find_conversation_by_contact(contact.id)
             if existing:
                 if existing.status in ("resolved", "closed"):
                     await self.toggle_conversation_status(existing.id, "open")
+                self._cache_conversation(contact.id, existing)
                 return existing
 
-        return await self.create_conversation(
+        conv = await self.create_conversation(
             contact_id=contact.id, source_id=source_id
         )
+        self._cache_conversation(contact.id, conv)
+        return conv
+
+    def _get_cached_conversation(
+        self, contact_id: int
+    ) -> Optional[ChatwootConversation]:
+        if contact_id in self._conversation_cache:
+            conv, timestamp = self._conversation_cache[contact_id]
+            if time.time() - timestamp < self.CACHE_TTL:
+                return conv
+            else:
+                del self._conversation_cache[contact_id]
+        return None
+
+    def _cache_conversation(self, contact_id: int, conv: ChatwootConversation) -> None:
+        self._conversation_cache[contact_id] = (conv, time.time())
+
+    def clear_cache(self) -> None:
+        self._conversation_cache.clear()
 
     async def create_inbox(self, name: str, webhook_url: str) -> ChatwootInbox:
         endpoint = f"/api/v1/accounts/{self._account_id}/inboxes"
@@ -342,6 +409,61 @@ class ChatwootClient:
             return True
         except ChatwootAPIError:
             return False
+
+    async def find_or_create_bot_contact(
+        self,
+        bot_name: Optional[str] = None,
+        bot_avatar_url: Optional[str] = None,
+    ) -> ChatwootContact:
+        bot_phone = "+123456"
+        bot_identifier = "123456"
+
+        contact = await self.find_contact_by_phone(bot_phone)
+        if contact:
+            return contact
+
+        return await self.create_contact(
+            phone_number=bot_phone,
+            name=bot_name or self._config.bot_name or "WhatsApp Bot",
+            identifier=bot_identifier,
+            custom_attributes={"is_bot": True},
+        )
+
+    async def find_bot_conversation(
+        self,
+        bot_contact: ChatwootContact,
+    ) -> Optional[ChatwootConversation]:
+        return await self.find_conversation_by_contact(bot_contact.id)
+
+    async def create_bot_conversation(
+        self,
+        bot_contact: ChatwootContact,
+    ) -> ChatwootConversation:
+        return await self.create_conversation(
+            contact_id=bot_contact.id,
+        )
+
+    async def get_or_create_bot_conversation(
+        self,
+        bot_contact: ChatwootContact,
+    ) -> ChatwootConversation:
+        existing = await self.find_bot_conversation(bot_contact)
+        if existing:
+            if existing.status in ("resolved", "closed"):
+                await self.toggle_conversation_status(existing.id, "open")
+            return existing
+        return await self.create_bot_conversation(bot_contact)
+
+    async def send_bot_message(
+        self,
+        conversation_id: int,
+        content: str,
+    ) -> ChatwootMessage:
+        return await self.create_message(
+            conversation_id=conversation_id,
+            content=content,
+            message_type="incoming",
+        )
 
     def _normalize_phone(self, phone: str) -> str:
         cleaned = "".join(c for c in phone if c.isdigit() or c == "+")

@@ -70,7 +70,7 @@ class TestWebhookSender:
 
             results = await webhook_sender.send("message", {"text": "hello"})
 
-            assert results["https://example.com/webhook"] is True
+            assert results["https://example.com/webhook"].success is True
 
     @pytest.mark.asyncio
     async def test_send_failure_retries(self, webhook_sender):
@@ -86,7 +86,7 @@ class TestWebhookSender:
 
             results = await webhook_sender.send("message", {"text": "hello"})
 
-            assert results["https://example.com/webhook"] is False
+            assert results["https://example.com/webhook"].success is False
             assert mock_instance.post.call_count == 2
 
     @pytest.mark.asyncio

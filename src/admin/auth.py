@@ -1,6 +1,7 @@
 import secrets
 import hashlib
-from datetime import datetime, timedelta
+import hmac
+from datetime import datetime, timedelta, UTC
 from typing import Optional
 from fastapi import Request, HTTPException, Cookie
 from fastapi.responses import RedirectResponse
@@ -24,7 +25,7 @@ class AdminSession:
         if not settings.admin_password:
             logger.warning("Admin password not configured")
             return False
-        return password == settings.admin_password
+        return hmac.compare_digest(password, settings.admin_password)
 
     async def create_session(
         self,
@@ -38,7 +39,7 @@ class AdminSession:
             return None
 
         session_id = secrets.token_urlsafe(32)
-        expires_at = datetime.utcnow() + timedelta(hours=24)
+        expires_at = datetime.now(UTC) + timedelta(hours=24)
 
         await self._db.create_admin_session(
             session_id=session_id,
@@ -61,6 +62,15 @@ class AdminSession:
 
         session = await self._db.get_admin_session(session_id)
         return session is not None
+
+    async def get_session(
+        self,
+        session_id: Optional[str],
+    ) -> Optional[dict]:
+        if not session_id:
+            return None
+
+        return await self._db.get_admin_session(session_id)
 
     async def logout(self, session_id: str) -> None:
         await self._db.delete_admin_session(session_id)

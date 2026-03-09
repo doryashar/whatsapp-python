@@ -6,7 +6,7 @@ Manages mappings between WhatsApp chat IDs and opencode session IDs using SQLite
 
 import aiosqlite
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -88,7 +88,7 @@ class SessionManager:
             """INSERT OR REPLACE INTO sessions 
                (chat_jid, opencode_session_id, created_at, last_used_at)
                VALUES (?, ?, ?, ?)""",
-            (chat_jid, opencode_session_id, datetime.utcnow(), datetime.utcnow()),
+            (chat_jid, opencode_session_id, datetime.now(UTC), datetime.now(UTC)),
         )
         await self.db.commit()
         logger.info(f"Created session mapping: {chat_jid} -> {opencode_session_id}")
@@ -100,7 +100,7 @@ class SessionManager:
 
         await self.db.execute(
             "UPDATE sessions SET last_used_at = ? WHERE chat_jid = ?",
-            (datetime.utcnow(), chat_jid),
+            (datetime.now(UTC), chat_jid),
         )
         await self.db.commit()
 
@@ -168,7 +168,7 @@ class SessionManager:
         if not self.db:
             raise RuntimeError("Database not initialized. Call init_db() first.")
 
-        cutoff = datetime.utcnow() - timedelta(days=days_old)
+        cutoff = datetime.now(UTC) - timedelta(days=days_old)
         cursor = await self.db.execute(
             "DELETE FROM sessions WHERE last_used_at < ?", (cutoff,)
         )

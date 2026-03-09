@@ -21,6 +21,7 @@ class StoredMessage:
         msg_type: str = "text",
         timestamp: int = 0,
         direction: str = "inbound",
+        media_url: Optional[str] = None,
         db_id: Optional[int] = None,
     ):
         self.id = id
@@ -32,6 +33,7 @@ class StoredMessage:
         self.type = msg_type
         self.timestamp = timestamp
         self.direction = direction
+        self.media_url = media_url
         self.db_id = db_id
 
     def to_dict(self) -> dict:
@@ -45,6 +47,7 @@ class StoredMessage:
             "type": self.type,
             "timestamp": self.timestamp,
             "direction": self.direction,
+            "media_url": self.media_url,
             "db_id": self.db_id,
         }
 
@@ -65,6 +68,10 @@ class MessageStore:
         self._messages.append(msg)
 
     async def add_with_persist(self, msg: StoredMessage) -> Optional[int]:
+        from ..telemetry import get_logger
+
+        logger = get_logger("whatsapp.messages")
+
         self._messages.append(msg)
         if self.db and self.tenant_hash:
             try:
@@ -79,11 +86,13 @@ class MessageStore:
                     msg_type=msg.type,
                     timestamp=msg.timestamp,
                     direction=getattr(msg, "direction", "inbound"),
+                    media_url=getattr(msg, "media_url", None),
                 )
                 msg.db_id = db_id
+                logger.debug(f"Message persisted to DB with db_id={db_id}")
                 return db_id
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Failed to persist message to DB: {e}", exc_info=True)
         return None
 
     def list(self, limit: int = 100, offset: int = 0) -> tuple[list[dict], int]:

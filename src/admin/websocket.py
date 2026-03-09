@@ -2,7 +2,7 @@ import asyncio
 import json
 from typing import Any, Optional
 from fastapi import WebSocket, WebSocketDisconnect
-from datetime import datetime
+from datetime import datetime, UTC
 
 from ..telemetry import get_logger
 
@@ -13,6 +13,7 @@ class AdminConnectionManager:
     def __init__(self):
         self._connections: list[WebSocket] = []
         self._connection_sessions: dict[WebSocket, str] = {}
+        self._connection_times: dict[WebSocket, datetime] = {}
         self._lock = asyncio.Lock()
         logger.info("AdminConnectionManager initialized")
 
@@ -21,6 +22,7 @@ class AdminConnectionManager:
         async with self._lock:
             self._connections.append(websocket)
             self._connection_sessions[websocket] = session_id
+            self._connection_times[websocket] = datetime.now(UTC)
         logger.info(
             f"Admin WebSocket connected: session={session_id[:16]}..., total={len(self._connections)}"
         )
@@ -30,19 +32,24 @@ class AdminConnectionManager:
             if websocket in self._connections:
                 self._connections.remove(websocket)
                 session_id = self._connection_sessions.pop(websocket, "unknown")
+                self._connection_times.pop(websocket, None)
                 logger.info(
                     f"Admin WebSocket disconnected: session={session_id[:16] if len(session_id) >= 16 else session_id}..., remaining={len(self._connections)}"
                 )
 
     async def broadcast(self, event_type: str, data: dict[str, Any]):
-        if not self._connections:
+        async with self._lock:
+            connections_count = len(self._connections)
+
+        if not connections_count:
+            logger.info(f"No WebSocket connections to broadcast '{event_type}'")
             return
 
         message = json.dumps(
             {
                 "type": event_type,
                 "data": data,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             }
         )
 
@@ -54,14 +61,14 @@ class AdminConnectionManager:
             try:
                 await connection.send_text(message)
             except Exception as e:
-                logger.debug(f"Failed to send to connection: {e}")
+                logger.warning(f"Failed to send to connection: {e}")
                 disconnected.append(connection)
 
         for conn in disconnected:
             await self.disconnect(conn)
 
-        logger.debug(
-            f"Broadcast event '{event_type}' to {len(connections_copy) - len(disconnected)} connections"
+        logger.info(
+            f"Broadcast event '{event_type}' to {len(connections_copy) - len(disconnected)}/{connections_count} connections"
         )
 
     async def send_to_connection(
@@ -71,7 +78,7 @@ class AdminConnectionManager:
             {
                 "type": event_type,
                 "data": data,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             }
         )
         try:
@@ -83,6 +90,20 @@ class AdminConnectionManager:
     def get_connection_count(self) -> int:
         return len(self._connections)
 
+    def get_connections_info(self) -> list[dict[str, Any]]:
+        connections_info = []
+        for ws, session_id in self._connection_sessions.items():
+            connected_at = self._connection_times.get(ws)
+            connections_info.append(
+                {
+                    "session_id": session_id[:16] + "..."
+                    if len(session_id) >= 16
+                    else session_id,
+                    "connected_at": connected_at.isoformat() if connected_at else None,
+                }
+            )
+        return connections_info
+
     async def close_all(self):
         async with self._lock:
             for connection in self._connections[:]:
@@ -92,6 +113,7 @@ class AdminConnectionManager:
                     pass
             self._connections.clear()
             self._connection_sessions.clear()
+            self._connection_times.clear()
         logger.info("All admin WebSocket connections closed")
 
 

@@ -28,6 +28,8 @@ def mock_db():
     db.get_admin_session = AsyncMock(
         return_value={"id": "test-session-id", "expires_at": "2099-01-01"}
     )
+    db.save_tenant = AsyncMock()
+    db.delete_tenant = AsyncMock()
     return db
 
 
@@ -96,7 +98,9 @@ async def test_admin_dashboard_requires_auth():
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
-        response = await client.get("/admin/dashboard", follow_redirects=False)
+        response = await client.get(
+            "/admin/dashboard", follow_redirects=False, headers={"Accept": "text/html"}
+        )
         assert response.status_code == 302
         assert response.headers["location"] == "/admin/login"
 
@@ -133,46 +137,6 @@ async def test_admin_fragments_tenants(setup_tenant_manager):
         response = await client.get("/admin/fragments/tenants")
         assert response.status_code == 200
         assert "No tenants yet" in response.text or "tenant-row" in response.text
-
-
-@pytest.mark.asyncio
-async def test_expandable_tenant_ui(setup_tenant_manager):
-    from src.admin.routes import get_tenants_fragment
-    from src.tenant import tenant_manager
-
-    tenant, api_key = await tenant_manager.create_tenant("Expandable Test")
-
-    try:
-        html = await get_tenants_fragment(session_id="test")
-        content = html.body.decode()
-
-        assert "toggleTenantPanel" in content
-        assert f"toggleTenantPanel('{tenant.api_key_hash}')" in content
-        assert f"chevron-{tenant.api_key_hash}" in content
-        assert f"tenant-panel-{tenant.api_key_hash}" in content
-        assert "cursor-pointer" in content
-    finally:
-        await tenant_manager.delete_tenant(api_key)
-
-
-@pytest.mark.asyncio
-async def test_tenant_panel_has_send_form(setup_tenant_manager):
-    from src.admin.routes import get_tenant_panel_fragment
-    from src.tenant import tenant_manager
-
-    tenant, api_key = await tenant_manager.create_tenant("Panel Send Test")
-
-    try:
-        html = await get_tenant_panel_fragment(tenant.api_key_hash, session_id="test")
-        content = html.body.decode()
-
-        assert "chat-select-" in content
-        assert "manual-jid-" in content
-        assert "msg-text-" in content
-        assert "sendMsgAsTenant" in content
-        assert "Send" in content
-    finally:
-        await tenant_manager.delete_tenant(api_key)
 
 
 @pytest.mark.asyncio

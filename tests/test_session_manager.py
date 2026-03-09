@@ -11,7 +11,7 @@ import pytest
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from scripts.session_manager import SessionManager
+from scripts.sample_integration.session_manager import SessionManager
 
 
 @pytest.fixture
@@ -139,14 +139,14 @@ async def test_update_last_used(session_manager):
 @pytest.mark.asyncio
 async def test_cleanup_old_sessions(session_manager):
     """Test cleaning up old sessions."""
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, UTC
 
     chat_jid = "1234567890@s.whatsapp.net"
     opencode_session_id = "test_session_123"
 
     await session_manager.create_session(chat_jid, opencode_session_id)
 
-    old_date = datetime.utcnow() - timedelta(days=40)
+    old_date = datetime.now(UTC) - timedelta(days=40)
     await session_manager.db.execute(
         "UPDATE sessions SET last_used_at = ? WHERE chat_jid = ?", (old_date, chat_jid)
     )

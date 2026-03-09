@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.store.database import Database
 from src.tenant import TenantManager
-from datetime import datetime
+from datetime import datetime, UTC
 
 
 @pytest.mark.asyncio
@@ -17,9 +17,9 @@ async def test_sqlite_persistence():
         await db.connect()
 
         await db.save_tenant(
-            "hash1", "tenant1", datetime.utcnow(), ["https://example.com/hook"]
+            "hash1", "tenant1", datetime.now(UTC), ["https://example.com/hook"]
         )
-        await db.save_tenant("hash2", "tenant2", datetime.utcnow(), [])
+        await db.save_tenant("hash2", "tenant2", datetime.now(UTC), [])
 
         tenants = await db.load_tenants()
         assert len(tenants) == 2
@@ -73,7 +73,7 @@ async def test_update_webhooks_persists():
         db = Database("", data_dir)
         await db.connect()
 
-        await db.save_tenant("hash1", "tenant1", datetime.utcnow(), [])
+        await db.save_tenant("hash1", "tenant1", datetime.now(UTC), [])
 
         await db.update_webhooks("hash1", ["https://hook1.com", "https://hook2.com"])
 
@@ -138,7 +138,7 @@ async def test_credential_persistence():
         db = Database("", data_dir)
         await db.connect()
 
-        await db.save_tenant("hash1", "tenant1", datetime.utcnow(), [])
+        await db.save_tenant("hash1", "tenant1", datetime.now(UTC), [])
 
         creds = {"me": {"id": "12345@s.whatsapp.net"}, "noiseKey": "abc123"}
         await db.save_creds("hash1", creds)
@@ -169,7 +169,7 @@ async def test_session_state_persistence():
         db = Database("", data_dir)
         await db.connect()
 
-        await db.save_tenant("hash1", "tenant1", datetime.utcnow(), [])
+        await db.save_tenant("hash1", "tenant1", datetime.now(UTC), [])
 
         await db.update_session_state(
             "hash1",

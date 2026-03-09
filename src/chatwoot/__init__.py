@@ -12,6 +12,7 @@ from .models import (
 from .client import ChatwootClient, ChatwootAPIError
 from .integration import ChatwootIntegration
 from .webhook_handler import ChatwootWebhookHandler
+from .sync import ChatwootSyncService
 
 __all__ = [
     "ChatwootConfig",
@@ -27,4 +28,5 @@ __all__ = [
     "ChatwootClient",
     "ChatwootIntegration",
     "ChatwootWebhookHandler",
+    "ChatwootSyncService",
 ]

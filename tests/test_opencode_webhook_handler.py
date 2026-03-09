@@ -35,7 +35,7 @@ def client(test_db, monkeypatch):
     monkeypatch.setenv("ADMIN_API_KEY", "admin123")
     monkeypatch.setenv("OPENCODE_TIMEOUT", "10")
 
-    from scripts.opencode_webhook_handler import app, session_manager
+    from scripts.sample_integration.opencode_webhook_handler import app, session_manager
 
     with TestClient(app) as client:
         yield client
@@ -55,7 +55,7 @@ class TestHealthEndpoint:
 class TestWebhookEndpoint:
     """Tests for webhook endpoint."""
 
-    @patch("scripts.opencode_webhook_handler.process_message")
+    @patch("scripts.sample_integration.opencode_webhook_handler.process_message")
     def test_webhook_accepts_message_event(self, mock_process, client):
         """Test webhook accepts message events."""
         event = {
@@ -151,102 +151,154 @@ class TestMessageProcessing:
     """Tests for message processing logic."""
 
     @pytest.mark.asyncio
-    @patch("scripts.opencode_webhook_handler.run_opencode")
-    @patch("scripts.opencode_webhook_handler.send_whatsapp_message")
+    @patch("scripts.sample_integration.opencode_webhook_handler.run_opencode")
+    @patch("scripts.sample_integration.opencode_webhook_handler.send_whatsapp_message")
     async def test_process_text_message_new_session(self, mock_send, mock_opencode):
         """Test processing a text message creates new session."""
-        from scripts.opencode_webhook_handler import process_message, session_manager
-
-        await session_manager.init_db()
-
-        mock_opencode.return_value = {
-            "text": "Hello! How can I help?",
-            "session_id": "new_session_123",
-        }
-
-        message_data = {
-            "chat_jid": "1234567890@s.whatsapp.net",
-            "text": "Hello",
-            "type": "text",
-            "from_me": False,
-        }
-
-        await process_message(message_data)
-
-        mock_opencode.assert_called_once()
-        call_args = mock_opencode.call_args
-        assert call_args.kwargs["message"] == "Hello"
-        assert call_args.kwargs["prompt_file"] == "PROMPT.md"
-
-        mock_send.assert_called_once_with(
-            "1234567890@s.whatsapp.net", "Hello! How can I help?"
+        import tempfile
+        from scripts.sample_integration.opencode_webhook_handler import (
+            process_message,
         )
+        from scripts.sample_integration.session_manager import SessionManager
+        import scripts.sample_integration.opencode_webhook_handler as handler_module
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            test_session_manager = SessionManager(db_path)
+            await test_session_manager.init_db()
+            handler_module.session_manager = test_session_manager
+
+            try:
+                mock_opencode.return_value = {
+                    "text": "Hello! How can I help?",
+                    "session_id": "new_session_123",
+                }
+
+                message_data = {
+                    "chat_jid": "1234567890@s.whatsapp.net",
+                    "text": "Hello",
+                    "type": "text",
+                    "from_me": False,
+                }
+
+                await process_message(message_data)
+
+                mock_opencode.assert_called_once()
+                call_args = mock_opencode.call_args
+                assert call_args.kwargs["message"] == "Hello"
+                assert call_args.kwargs["prompt_file"] == "PROMPT.md"
+
+                mock_send.assert_called_once_with(
+                    "1234567890@s.whatsapp.net", "Hello! How can I help?"
+                )
+            finally:
+                await test_session_manager.close()
+                handler_module.session_manager = None
 
     @pytest.mark.asyncio
-    @patch("scripts.opencode_webhook_handler.run_opencode")
-    @patch("scripts.opencode_webhook_handler.send_whatsapp_message")
+    @patch("scripts.sample_integration.opencode_webhook_handler.run_opencode")
+    @patch("scripts.sample_integration.opencode_webhook_handler.send_whatsapp_message")
     async def test_process_message_continues_existing_session(
         self, mock_send, mock_opencode
     ):
         """Test processing message continues existing session."""
-        from scripts.opencode_webhook_handler import process_message, session_manager
-
-        await session_manager.init_db()
-
-        await session_manager.create_session(
-            "1234567890@s.whatsapp.net", "existing_session_456"
+        import tempfile
+        from scripts.sample_integration.opencode_webhook_handler import (
+            process_message,
         )
+        from scripts.sample_integration.session_manager import SessionManager
+        import scripts.sample_integration.opencode_webhook_handler as handler_module
 
-        mock_opencode.return_value = {
-            "text": "Continuing our conversation...",
-            "session_id": "existing_session_456",
-        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            test_session_manager = SessionManager(db_path)
+            await test_session_manager.init_db()
+            handler_module.session_manager = test_session_manager
 
-        message_data = {
-            "chat_jid": "1234567890@s.whatsapp.net",
-            "text": "How are you?",
-            "type": "text",
-            "from_me": False,
-        }
+            try:
+                await test_session_manager.create_session(
+                    "1234567890@s.whatsapp.net", "existing_session_456"
+                )
 
-        await process_message(message_data)
+                mock_opencode.return_value = {
+                    "text": "Continuing our conversation...",
+                    "session_id": "existing_session_456",
+                }
 
-        mock_opencode.assert_called_once()
-        call_args = mock_opencode.call_args
-        assert call_args.kwargs["session_id"] == "existing_session_456"
+                message_data = {
+                    "chat_jid": "1234567890@s.whatsapp.net",
+                    "text": "How are you?",
+                    "type": "text",
+                    "from_me": False,
+                }
+
+                await process_message(message_data)
+
+                mock_opencode.assert_called_once()
+                call_args = mock_opencode.call_args
+                assert call_args.kwargs["session_id"] == "existing_session_456"
+            finally:
+                await test_session_manager.close()
+                handler_module.session_manager = None
 
     @pytest.mark.asyncio
-    @patch("scripts.opencode_webhook_handler.send_whatsapp_message")
+    @patch("scripts.sample_integration.opencode_webhook_handler.send_whatsapp_message")
     async def test_process_message_ignores_from_self(self, mock_send):
         """Test that messages from self are ignored."""
-        from scripts.opencode_webhook_handler import process_message, session_manager
+        import tempfile
+        from scripts.sample_integration.opencode_webhook_handler import (
+            process_message,
+        )
+        from scripts.sample_integration.session_manager import SessionManager
+        import scripts.sample_integration.opencode_webhook_handler as handler_module
 
-        await session_manager.init_db()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            test_session_manager = SessionManager(db_path)
+            await test_session_manager.init_db()
+            handler_module.session_manager = test_session_manager
 
-        message_data = {
-            "chat_jid": "1234567890@s.whatsapp.net",
-            "text": "Hello",
-            "type": "text",
-            "from_me": True,
-        }
+            try:
+                message_data = {
+                    "chat_jid": "1234567890@s.whatsapp.net",
+                    "text": "Hello",
+                    "type": "text",
+                    "from_me": True,
+                }
 
-        await process_message(message_data)
+                await process_message(message_data)
 
-        mock_send.assert_not_called()
+                mock_send.assert_not_called()
+            finally:
+                await test_session_manager.close()
+                handler_module.session_manager = None
 
     @pytest.mark.asyncio
-    @patch("scripts.opencode_webhook_handler.send_whatsapp_message")
+    @patch("scripts.sample_integration.opencode_webhook_handler.send_whatsapp_message")
     async def test_process_message_ignores_missing_chat_jid(self, mock_send):
         """Test that messages without chat_jid are ignored."""
-        from scripts.opencode_webhook_handler import process_message, session_manager
+        import tempfile
+        from scripts.sample_integration.opencode_webhook_handler import (
+            process_message,
+        )
+        from scripts.sample_integration.session_manager import SessionManager
+        import scripts.sample_integration.opencode_webhook_handler as handler_module
 
-        await session_manager.init_db()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            test_session_manager = SessionManager(db_path)
+            await test_session_manager.init_db()
+            handler_module.session_manager = test_session_manager
 
-        message_data = {"text": "Hello", "type": "text", "from_me": False}
+            try:
+                message_data = {"text": "Hello", "type": "text", "from_me": False}
 
-        await process_message(message_data)
+                await process_message(message_data)
 
-        mock_send.assert_not_called()
+                mock_send.assert_not_called()
+            finally:
+                await test_session_manager.close()
+                handler_module.session_manager = None
 
 
 class TestOpenCodeExecution:
@@ -256,7 +308,7 @@ class TestOpenCodeExecution:
     @patch("asyncio.create_subprocess_exec")
     async def test_run_opencode_new_session(self, mock_subprocess):
         """Test running opencode for new session."""
-        from scripts.opencode_webhook_handler import run_opencode
+        from scripts.sample_integration.opencode_webhook_handler import run_opencode
 
         mock_process = AsyncMock()
         mock_process.communicate = AsyncMock(
@@ -281,7 +333,7 @@ class TestOpenCodeExecution:
     @patch("asyncio.create_subprocess_exec")
     async def test_run_opencode_with_session(self, mock_subprocess):
         """Test running opencode with existing session."""
-        from scripts.opencode_webhook_handler import run_opencode
+        from scripts.sample_integration.opencode_webhook_handler import run_opencode
 
         mock_process = AsyncMock()
         mock_process.communicate = AsyncMock(
@@ -303,7 +355,7 @@ class TestOpenCodeExecution:
     @patch("asyncio.create_subprocess_exec")
     async def test_run_opencode_with_files(self, mock_subprocess):
         """Test running opencode with file attachments."""
-        from scripts.opencode_webhook_handler import run_opencode
+        from scripts.sample_integration.opencode_webhook_handler import run_opencode
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("test content")
@@ -333,7 +385,7 @@ class TestOpenCodeExecution:
     @patch("asyncio.wait_for")
     async def test_run_opencode_timeout(self, mock_wait_for, mock_subprocess):
         """Test opencode timeout handling."""
-        from scripts.opencode_webhook_handler import run_opencode
+        from scripts.sample_integration.opencode_webhook_handler import run_opencode
 
         mock_wait_for.side_effect = asyncio.TimeoutError()
 
@@ -350,7 +402,9 @@ class TestWhatsAppMessaging:
     @patch("httpx.AsyncClient")
     async def test_send_whatsapp_message_success(self, mock_client):
         """Test sending WhatsApp message successfully."""
-        from scripts.opencode_webhook_handler import send_whatsapp_message
+        from scripts.sample_integration.opencode_webhook_handler import (
+            send_whatsapp_message,
+        )
 
         mock_response = AsyncMock()
         mock_response.status_code = 200
@@ -368,7 +422,9 @@ class TestWhatsAppMessaging:
     @patch("httpx.AsyncClient")
     async def test_send_whatsapp_message_truncates_long_message(self, mock_client):
         """Test that long messages are truncated."""
-        from scripts.opencode_webhook_handler import send_whatsapp_message
+        from scripts.sample_integration.opencode_webhook_handler import (
+            send_whatsapp_message,
+        )
 
         long_message = "A" * 5000
 
@@ -397,7 +453,7 @@ class TestMediaHandling:
     @patch("httpx.AsyncClient")
     async def test_download_media_from_url(self, mock_client):
         """Test downloading media from URL."""
-        from scripts.opencode_webhook_handler import download_media
+        from scripts.sample_integration.opencode_webhook_handler import download_media
 
         mock_response = AsyncMock()
         mock_response.status_code = 200
@@ -422,7 +478,7 @@ class TestMediaHandling:
     @pytest.mark.asyncio
     async def test_download_media_missing_url(self):
         """Test handling missing media URL."""
-        from scripts.opencode_webhook_handler import download_media
+        from scripts.sample_integration.opencode_webhook_handler import download_media
 
         message_data = {"type": "image"}
 
