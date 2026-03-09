@@ -688,6 +688,360 @@ const methods = {
       throw err;
     }
   },
+
+  // Group Management Methods
+  
+  async group_create(params) {
+    const { subject, participants, description } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const participantJids = participants.map(p => toJid(p));
+      const result = await sock.groupCreate(subject, participantJids);
+      
+      if (description) {
+        await sock.groupUpdateDescription(result.id, description);
+      }
+      
+      logger.info({ groupJid: result.id, subject, participantCount: participants.length }, "Group created");
+      return { 
+        status: "created", 
+        group_jid: result.id, 
+        subject,
+        participants: participantJids 
+      };
+    } catch (err) {
+      logger.error({ err: err.message, subject }, "Failed to create group");
+      throw err;
+    }
+  },
+
+  async group_update_subject(params) {
+    const { group_jid, subject } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(group_jid);
+
+    try {
+      await sock.groupUpdateSubject(jid, subject);
+      logger.info({ groupJid: jid, subject }, "Group subject updated");
+      return { status: "updated", group_jid: jid, subject };
+    } catch (err) {
+      logger.error({ err: err.message, groupJid: jid }, "Failed to update group subject");
+      throw err;
+    }
+  },
+
+  async group_update_description(params) {
+    const { group_jid, description } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(group_jid);
+
+    try {
+      await sock.groupUpdateDescription(jid, description);
+      logger.info({ groupJid: jid }, "Group description updated");
+      return { status: "updated", group_jid: jid };
+    } catch (err) {
+      logger.error({ err: err.message, groupJid: jid }, "Failed to update group description");
+      throw err;
+    }
+  },
+
+  async group_update_picture(params) {
+    const { group_jid, image_url } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(group_jid);
+
+    try {
+      const buffer = fs.readFileSync(image_url);
+      await sock.updateProfilePicture(jid, buffer);
+      logger.info({ groupJid: jid }, "Group picture updated");
+      return { status: "updated", group_jid: jid };
+    } catch (err) {
+      logger.error({ err: err.message, groupJid: jid }, "Failed to update group picture");
+      throw err;
+    }
+  },
+
+  async group_get_info(params) {
+    const { group_jid } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(group_jid);
+
+    try {
+      const metadata = await sock.groupMetadata(jid);
+      return {
+        group_jid: jid,
+        subject: metadata.subject,
+        subject_owner: metadata.subjectOwner,
+        subject_time: metadata.subjectTime,
+        creation: metadata.creation,
+        owner: metadata.owner,
+        desc: metadata.desc,
+        desc_id: metadata.descId,
+        restrict: metadata.restrict,
+        announce: metadata.announce,
+        size: metadata.size,
+        participants: metadata.participants.map(p => ({
+          jid: p.id,
+          admin: p.admin || null,
+        })),
+      };
+    } catch (err) {
+      logger.error({ err: err.message, groupJid: jid }, "Failed to get group info");
+      throw err;
+    }
+  },
+
+  async group_get_all(params) {
+    const { get_participants } = params || {};
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const groups = [];
+      
+      if (sock.store && sock.store.chats) {
+        for (const [jid, chat] of sock.store.chats) {
+          if (isJidGroup(jid)) {
+            const groupInfo = {
+              jid: jid,
+              name: chat.name || chat.subject || null,
+            };
+            
+            if (get_participants) {
+              try {
+                const metadata = await sock.groupMetadata(jid);
+                groupInfo.participants = metadata.participants.map(p => ({
+                  jid: p.id,
+                  admin: p.admin || null,
+                }));
+                groupInfo.size = metadata.size;
+              } catch (err) {
+                logger.debug({ err: err.message, jid }, "Could not fetch group metadata");
+              }
+            }
+            
+            groups.push(groupInfo);
+          }
+        }
+      }
+
+      logger.info({ groupCount: groups.length }, "Fetched all groups");
+      return { groups };
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to fetch groups");
+      throw err;
+    }
+  },
+
+  async group_get_participants(params) {
+    const { group_jid } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(group_jid);
+
+    try {
+      const metadata = await sock.groupMetadata(jid);
+      const participants = metadata.participants.map(p => ({
+        jid: p.id,
+        admin: p.admin || null,
+      }));
+      
+      logger.info({ groupJid: jid, count: participants.length }, "Fetched group participants");
+      return { group_jid: jid, participants };
+    } catch (err) {
+      logger.error({ err: err.message, groupJid: jid }, "Failed to get group participants");
+      throw err;
+    }
+  },
+
+  async group_get_invite_code(params) {
+    const { group_jid } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(group_jid);
+
+    try {
+      const code = await sock.groupInviteCode(jid);
+      logger.info({ groupJid: jid }, "Fetched group invite code");
+      return { group_jid: jid, invite_code: code };
+    } catch (err) {
+      logger.error({ err: err.message, groupJid: jid }, "Failed to get invite code");
+      throw err;
+    }
+  },
+
+  async group_revoke_invite(params) {
+    const { group_jid } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(group_jid);
+
+    try {
+      const newCode = await sock.groupRevokeInvite(jid);
+      logger.info({ groupJid: jid }, "Revoked group invite code");
+      return { group_jid: jid, new_invite_code: newCode };
+    } catch (err) {
+      logger.error({ err: err.message, groupJid: jid }, "Failed to revoke invite code");
+      throw err;
+    }
+  },
+
+  async group_accept_invite(params) {
+    const { invite_code } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const groupJid = await sock.groupAcceptInvite(invite_code);
+      logger.info({ groupJid, inviteCode: invite_code }, "Accepted group invite");
+      return { status: "joined", group_jid: groupJid };
+    } catch (err) {
+      logger.error({ err: err.message, inviteCode: invite_code }, "Failed to accept group invite");
+      throw err;
+    }
+  },
+
+  async group_get_invite_info(params) {
+    const { invite_code } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const info = await sock.groupGetInviteInfo(invite_code);
+      return {
+        group_jid: info.id,
+        subject: info.subject,
+        creation: info.creation,
+        owner: info.owner,
+        desc: info.desc,
+        size: info.size,
+      };
+    } catch (err) {
+      logger.error({ err: err.message, inviteCode: invite_code }, "Failed to get invite info");
+      throw err;
+    }
+  },
+
+  async group_update_participant(params) {
+    const { group_jid, action, participants } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(group_jid);
+    const participantJids = participants.map(p => toJid(p));
+
+    try {
+      const result = await sock.groupParticipantsUpdate(jid, participantJids, action);
+      logger.info({ groupJid: jid, action, count: participants.length }, "Updated group participants");
+      return { 
+        status: "updated", 
+        group_jid: jid, 
+        action,
+        results: result 
+      };
+    } catch (err) {
+      logger.error({ err: err.message, groupJid: jid, action }, "Failed to update participants");
+      throw err;
+    }
+  },
+
+  async group_update_setting(params) {
+    const { group_jid, action } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(group_jid);
+
+    try {
+      const setting = action === 'announcement' ? 'announcement' : 
+                      action === 'not_announcement' ? 'not_announcement' :
+                      action === 'locked' ? 'locked' : 'unlocked';
+      
+      await sock.groupSettingUpdate(jid, setting);
+      logger.info({ groupJid: jid, setting }, "Updated group setting");
+      return { status: "updated", group_jid: jid, setting };
+    } catch (err) {
+      logger.error({ err: err.message, groupJid: jid }, "Failed to update group setting");
+      throw err;
+    }
+  },
+
+  async group_toggle_ephemeral(params) {
+    const { group_jid, expiration } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(group_jid);
+
+    try {
+      await sock.groupToggleEphemeral(jid, expiration);
+      logger.info({ groupJid: jid, expiration }, "Toggled group ephemeral");
+      return { status: "updated", group_jid: jid, expiration };
+    } catch (err) {
+      logger.error({ err: err.message, groupJid: jid }, "Failed to toggle ephemeral");
+      throw err;
+    }
+  },
+
+  async group_leave(params) {
+    const { group_jid } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(group_jid);
+
+    try {
+      await sock.groupLeave(jid);
+      logger.info({ groupJid: jid }, "Left group");
+      return { status: "left", group_jid: jid };
+    } catch (err) {
+      logger.error({ err: err.message, groupJid: jid }, "Failed to leave group");
+      throw err;
+    }
+  },
 };
 
 async function handleRequest(line) {

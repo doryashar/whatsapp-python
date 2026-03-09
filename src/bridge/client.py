@@ -265,6 +265,105 @@ class BaileysBridge:
             {"to": to, "message_ids": message_ids},
         )
 
+    # Group Management Methods
+
+    async def group_create(
+        self, subject: str, participants: list[str], description: str | None = None
+    ) -> dict:
+        logger.info(
+            f"Bridge group_create: subject={subject}, participants={len(participants)}"
+        )
+        return await self.call(
+            "group_create",
+            {
+                "subject": subject,
+                "participants": participants,
+                "description": description,
+            },
+        )
+
+    async def group_update_subject(self, group_jid: str, subject: str) -> dict:
+        logger.debug(
+            f"Bridge group_update_subject: group={group_jid}, subject={subject}"
+        )
+        return await self.call(
+            "group_update_subject",
+            {"group_jid": group_jid, "subject": subject},
+        )
+
+    async def group_update_description(self, group_jid: str, description: str) -> dict:
+        logger.debug(f"Bridge group_update_description: group={group_jid}")
+        return await self.call(
+            "group_update_description",
+            {"group_jid": group_jid, "description": description},
+        )
+
+    async def group_update_picture(self, group_jid: str, image_url: str) -> dict:
+        logger.debug(f"Bridge group_update_picture: group={group_jid}")
+        return await self.call(
+            "group_update_picture",
+            {"group_jid": group_jid, "image_url": image_url},
+        )
+
+    async def group_get_info(self, group_jid: str) -> dict:
+        logger.debug(f"Bridge group_get_info: group={group_jid}")
+        return await self.call("group_get_info", {"group_jid": group_jid})
+
+    async def group_get_all(self, get_participants: bool = False) -> dict:
+        logger.info("Bridge group_get_all requested")
+        return await self.call("group_get_all", {"get_participants": get_participants})
+
+    async def group_get_participants(self, group_jid: str) -> dict:
+        logger.debug(f"Bridge group_get_participants: group={group_jid}")
+        return await self.call("group_get_participants", {"group_jid": group_jid})
+
+    async def group_get_invite_code(self, group_jid: str) -> dict:
+        logger.debug(f"Bridge group_get_invite_code: group={group_jid}")
+        return await self.call("group_get_invite_code", {"group_jid": group_jid})
+
+    async def group_revoke_invite(self, group_jid: str) -> dict:
+        logger.debug(f"Bridge group_revoke_invite: group={group_jid}")
+        return await self.call("group_revoke_invite", {"group_jid": group_jid})
+
+    async def group_accept_invite(self, invite_code: str) -> dict:
+        logger.info(f"Bridge group_accept_invite: code={invite_code[:8]}...")
+        return await self.call("group_accept_invite", {"invite_code": invite_code})
+
+    async def group_get_invite_info(self, invite_code: str) -> dict:
+        logger.debug(f"Bridge group_get_invite_info: code={invite_code[:8]}...")
+        return await self.call("group_get_invite_info", {"invite_code": invite_code})
+
+    async def group_update_participant(
+        self, group_jid: str, action: str, participants: list[str]
+    ) -> dict:
+        logger.info(
+            f"Bridge group_update_participant: group={group_jid}, action={action}, count={len(participants)}"
+        )
+        return await self.call(
+            "group_update_participant",
+            {"group_jid": group_jid, "action": action, "participants": participants},
+        )
+
+    async def group_update_setting(self, group_jid: str, action: str) -> dict:
+        logger.debug(f"Bridge group_update_setting: group={group_jid}, action={action}")
+        return await self.call(
+            "group_update_setting",
+            {"group_jid": group_jid, "action": action},
+        )
+
+    async def group_toggle_ephemeral(self, group_jid: str, expiration: int) -> dict:
+        logger.debug(
+            f"Bridge group_toggle_ephemeral: group={group_jid}, expiration={expiration}"
+        )
+        return await self.call(
+            "group_toggle_ephemeral",
+            {"group_jid": group_jid, "expiration": expiration},
+        )
+
+    async def group_leave(self, group_jid: str) -> dict:
+        logger.info(f"Bridge group_leave: group={group_jid}")
+        return await self.call("group_leave", {"group_jid": group_jid})
+
     def is_alive(self) -> bool:
         if not self._process or not self._running:
             return False
