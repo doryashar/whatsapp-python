@@ -384,9 +384,9 @@ async function createSocket() {
 
       if (content.contextInfo) {
         eventData.quoted_message_id = content.contextInfo.stanzaId || null;
-        eventData.quoted_participant = content.contextInfo.participant || null;
+        eventData.quoted_participant = content.contextInfo.participant || null
         if (content.contextInfo.quotedMessage) {
-          eventData.quoted_text = content.contextInfo.quotedMessage.conversation || "";
+          eventData.quoted_text = content.contextInfo.quotedMessage.conversation || ""
         }
       }
 
@@ -398,7 +398,40 @@ async function createSocket() {
         logger.debug({ err: err.message, remoteJid, messageId: msg.key.id }, "Failed to mark message as read");
       }
     }
+  }
+});
+
+// Message delete event
+sock.ev.on("messages.delete", async ({ key }) => {
+  if (!key) return;
+
+  logger.info({ messageId: key.id, remoteJid: key.remoteJid }, "Message deleted");
+
+  sendEvent("message_deleted", {
+    id: key.id,
+    message_id: key.id,
+    chat_jid: key.remoteJid,
+    remote_jid: key.remoteJid,
+    timestamp: Date.now(),
   });
+});
+
+// Message read event
+sock.ev.on("messages.read", async ({ key }) => {
+  if (!key) return;
+
+  logger.debug({ messageId: key.id, remoteJid: key.remoteJid }, "Messages marked as read");
+
+  sendEvent("message_read", {
+    id: key.id,
+    message_ids: [key.id],
+    chat_jid: key.remoteJid,
+    remote_jid: key.remoteJid,
+    timestamp: Date.now(),
+  });
+});
+
+sock.ev.on("messages.upsert", async ({ messages, type }) => {
 
   return sock;
 }

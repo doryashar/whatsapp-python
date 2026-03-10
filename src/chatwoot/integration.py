@@ -3,6 +3,7 @@ import re
 from typing import Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 from datetime import datetime
+import time
 
 from .models import (
     ChatwootConfig,
@@ -16,24 +17,33 @@ from ..telemetry import get_logger
 if TYPE_CHECKING:
     from ..tenant import Tenant
     from ..bridge.client import BaileysBridge
+    from ..store.database import Database
 
 logger = get_logger("whatsapp.chatwoot.integration")
 
 
 class ChatwootIntegration:
+    LOCK_TIMEOUT = 5.0
+    LOCK_POLL_DELAY = 0.0
+    CONNECTION_NOTIFICATION_COOLDOWN = 300.0
+
     def __init__(
         self,
         config: ChatwootConfig,
         tenant: "Tenant",
         bridge: Optional["BaileysBridge"] = None,
+        db: Optional["Database"] = None,
     ):
         self._config = config
         self._tenant = tenant
         self._bridge = bridge
+        self._db = db
         self._client = ChatwootClient(config)
         self._contact_cache: dict[str, ChatwootContact] = {}
         self._conversation_cache: dict[int, ChatwootConversation] = {}
         self._profile_picture_cache: dict[str, str] = {}
+        self._conversation_locks: dict[str, asyncio.Lock] = {}
+        self._last_connection_notification: float = 0
 
     @property
     def enabled(self) -> bool:
@@ -45,6 +55,11 @@ class ChatwootIntegration:
 
     async def close(self):
         await self._client.close()
+
+    def _get_conversation_lock(self, jid: str) -> asyncio.Lock:
+        if jid not in self._conversation_locks:
+            self._conversation_locks[jid] = asyncio.Lock()
+        return self._conversation_locks[jid]
 
     async def handle_message(self, event_data: dict, is_outgoing: bool = False) -> bool:
         if not self._config.enabled:
@@ -136,6 +151,9 @@ class ChatwootIntegration:
 
         logger.debug(f"Extracted phone: {phone_number}")
 
+        if self._config.lid_contact_handling_enabled and "@lid" in from_jid:
+            await self._handle_lid_contact_update(phone_number, from_jid)
+
         contact_name = push_name or phone_number
 
         logger.debug(
@@ -151,11 +169,16 @@ class ChatwootIntegration:
         if self._bridge and chat_jid:
             await self._sync_profile_picture(contact, chat_jid)
 
-        logger.debug(f"Getting or creating conversation for contact {contact.id}")
-        conversation = await self._client.get_or_create_conversation(
-            contact=contact,
-            source_id=chat_jid,
-        )
+        if self._config.conversation_lock_enabled:
+            conversation = await self._get_or_create_conversation_with_lock(
+                contact, chat_jid
+            )
+        else:
+            logger.debug(f"Getting or creating conversation for contact {contact.id}")
+            conversation = await self._client.get_or_create_conversation(
+                contact=contact,
+                source_id=chat_jid,
+            )
         logger.debug(
             f"Conversation resolved: id={conversation.id}, status={conversation.status}"
         )
@@ -196,6 +219,19 @@ class ChatwootIntegration:
             f"Message sent to Chatwoot: tenant={self._tenant.name}, "
             f"conversation={conversation.id}, message={message.id}"
         )
+
+        if self._db and message_id:
+            await self._db.update_message_chatwoot_ids(
+                tenant_hash=self._tenant.api_key_hash,
+                message_id=message_id,
+                chatwoot_message_id=message.id,
+                chatwoot_conversation_id=conversation.id,
+                chatwoot_inbox_id=conversation.inbox_id,
+            )
+            logger.debug(
+                f"Saved Chatwoot IDs for message {message_id}: "
+                f"cw_msg={message.id}, cw_conv={conversation.id}"
+            )
 
         return True
 
@@ -286,6 +322,19 @@ class ChatwootIntegration:
             f"conversation={conversation.id}, message={message.id}"
         )
 
+        if self._db and message_id:
+            await self._db.update_message_chatwoot_ids(
+                tenant_hash=self._tenant.api_key_hash,
+                message_id=message_id,
+                chatwoot_message_id=message.id,
+                chatwoot_conversation_id=conversation.id,
+                chatwoot_inbox_id=conversation.inbox_id,
+            )
+            logger.debug(
+                f"Saved Chatwoot IDs for group message {message_id}: "
+                f"cw_msg={message.id}, cw_conv={conversation.id}"
+            )
+
         return True
 
     def _prepare_message_content(
@@ -311,7 +360,7 @@ class ChatwootIntegration:
 
         if is_edited and content:
             edited_text = event_data.get("edited_text", content)
-            content = f"Edited: {edited_text}"
+            content = f"\n\n*Edited:*\n{edited_text}"
 
         return content
 
@@ -556,3 +605,247 @@ class ChatwootIntegration:
                 contact.thumbnail = profile_url
         except Exception as e:
             logger.debug(f"Failed to sync profile picture for {jid}: {e}")
+
+    async def handle_message_deleted(self, event_data: dict) -> bool:
+        if not self._config.enabled:
+            return False
+
+        if not self._db:
+            logger.debug("No database available for message deletion tracking")
+            return False
+
+        try:
+            message_id = event_data.get("message_id") or event_data.get("id")
+            if not message_id:
+                logger.warning("No message_id in deletion event")
+                return False
+
+            msg = await self._db.get_message_by_id(
+                tenant_hash=self._tenant.api_key_hash,
+                message_id=message_id,
+            )
+            if not msg:
+                logger.debug(f"Message {message_id} not found in database")
+                return False
+
+            chatwoot_message_id = getattr(msg, "chatwoot_message_id", None)
+            chatwoot_conversation_id = getattr(msg, "chatwoot_conversation_id", None)
+
+            if not chatwoot_message_id or not chatwoot_conversation_id:
+                logger.debug(f"Message {message_id} has no Chatwoot IDs stored")
+                return False
+
+            deleted = await self._client.delete_message(
+                conversation_id=chatwoot_conversation_id,
+                message_id=chatwoot_message_id,
+            )
+
+            if deleted:
+                logger.info(
+                    f"Deleted message in Chatwoot: tenant={self._tenant.name}, "
+                    f"conversation={chatwoot_conversation_id}, message={chatwoot_message_id}"
+                )
+
+            return deleted
+
+        except Exception as e:
+            logger.error(f"Error handling message deletion: {e}", exc_info=True)
+            return False
+
+    async def handle_message_read(self, event_data: dict) -> bool:
+        if not self._config.enabled:
+            return False
+
+        try:
+            chat_jid = event_data.get("chat_jid")
+            if not chat_jid:
+                logger.warning("No chat_jid in read event")
+                return False
+
+            phone_number = self._extract_phone(chat_jid)
+            if not phone_number:
+                logger.debug(f"Could not extract phone from jid: {chat_jid}")
+                return False
+
+            contact = await self._client.find_or_create_contact(
+                phone_number=phone_number,
+                name=phone_number,
+                identifier=chat_jid,
+            )
+
+            conversation = await self._client.get_or_create_conversation(
+                contact=contact,
+                source_id=chat_jid,
+            )
+
+            await self._client.update_last_seen(conversation_id=conversation.id)
+
+            logger.info(
+                f"Marked conversation as read in Chatwoot: tenant={self._tenant.name}, "
+                f"conversation={conversation.id}"
+            )
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error handling message read: {e}", exc_info=True)
+            return False
+
+    async def handle_status_instance(self, event_data: dict) -> bool:
+        if not self._config.enabled:
+            return False
+
+        if not self._config.status_instance_enabled:
+            return False
+
+        if not self._config.bot_contact_enabled:
+            return False
+
+        try:
+            status = event_data.get("status", "unknown")
+
+            now = time.time()
+            time_since_last = now - self._last_connection_notification
+            if time_since_last < self.CONNECTION_NOTIFICATION_COOLDOWN:
+                logger.debug(
+                    f"Skipping status notification, cooldown active "
+                    f"({time_since_last:.0f}s < {self.CONNECTION_NOTIFICATION_COOLDOWN}s)"
+                )
+                return False
+
+            msg_status = f"WhatsApp status: {status}"
+
+            bot_contact = await self._client.find_or_create_bot_contact(
+                bot_name=self._config.bot_name,
+                bot_avatar_url=self._config.bot_avatar_url,
+            )
+            conversation = await self._client.get_or_create_bot_conversation(
+                bot_contact
+            )
+
+            await self._client.create_message(
+                conversation_id=conversation.id,
+                content=msg_status,
+                message_type="incoming",
+            )
+
+            self._last_connection_notification = now
+            logger.info(
+                f"Status notification sent to Chatwoot: tenant={self._tenant.name}, "
+                f"status={status}"
+            )
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error handling status instance: {e}", exc_info=True)
+            return False
+
+        if not self._config.status_instance_enabled:
+            return False
+
+        if not self._config.bot_contact_enabled:
+            return False
+
+        try:
+            status = event_data.get("status", "unknown")
+
+            now = time.time()
+            time_since_last = now - self._last_connection_notification
+            if time_since_last < self.CONNECTION_NOTIFICATION_COOLDOWN:
+                logger.debug(
+                    f"Skipping status notification, cooldown active "
+                    f"({time_since_last:.0f}s < {self.CONNECTION_NOTIFICATION_COOLDOWN}s)"
+                )
+                return False
+
+            inbox = await self._client.get_inbox()
+            if not inbox:
+                logger.warning("Could not find inbox for status notification")
+                return False
+
+            inbox_name = inbox.get("name", "WhatsApp")
+            msg_status = f"{inbox_name} status: {status}"
+
+            bot_contact = await self._client.find_or_create_bot_contact(
+                bot_name=self._config.bot_name,
+                bot_avatar_url=self._config.bot_avatar_url,
+            )
+            conversation = await self._client.get_or_create_bot_conversation(
+                bot_contact
+            )
+
+            await self._client.create_message(
+                conversation_id=conversation.id,
+                content=msg_status,
+                message_type="incoming",
+            )
+
+            self._last_connection_notification = now
+            logger.info(
+                f"Status notification sent to Chatwoot: tenant={self._tenant.name}, "
+                f"status={status}"
+            )
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error handling status instance: {e}", exc_info=True)
+            return False
+
+    async def _get_or_create_conversation_with_lock(
+        self, contact: ChatwootContact, source_id: str
+    ) -> ChatwootConversation:
+        jid = source_id or str(contact.id)
+        lock = self._get_conversation_lock(jid)
+
+        acquired = False
+        try:
+            acquired = await asyncio.wait_for(lock.acquire(), timeout=self.LOCK_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Conversation lock timeout for jid {jid}, proceeding without lock"
+            )
+
+        try:
+            cached = self._conversation_cache.get(contact.id)
+            if cached:
+                logger.debug(
+                    f"Found cached conversation for contact {contact.id} under lock"
+                )
+                return cached
+
+            logger.debug(f"Creating conversation for contact {contact.id} under lock")
+            conversation = await self._client.get_or_create_conversation(
+                contact=contact,
+                source_id=source_id,
+            )
+            self._conversation_cache[contact.id] = conversation
+            return conversation
+        finally:
+            if acquired and lock.locked():
+                lock.release()
+
+    async def _handle_lid_contact_update(
+        self, phone_number: str, remote_jid: str
+    ) -> None:
+        try:
+            if "@lid" not in remote_jid:
+                return
+
+            logger.debug(f"Updating contact identifier for @lid address: {remote_jid}")
+
+            contact = await self._client.find_contact_by_phone(phone_number)
+            if not contact:
+                return
+
+            if contact.identifier != remote_jid:
+                await self._client.update_contact(
+                    contact_id=contact.id,
+                    identifier=remote_jid,
+                )
+                logger.info(
+                    f"Updated contact {contact.id} identifier to @lid address: {remote_jid}"
+                )
+        except Exception as e:
+            logger.debug(f"Failed to update @lid contact: {e}")

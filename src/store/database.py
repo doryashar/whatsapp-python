@@ -158,6 +158,21 @@ class Database:
             await conn.execute("""
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_url TEXT
             """)
+            await conn.execute("""
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS chatwoot_message_id INTEGER
+            """)
+            await conn.execute("""
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS chatwoot_conversation_id INTEGER
+            """)
+            await conn.execute("""
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS chatwoot_inbox_id INTEGER
+            """)
+            await conn.execute("""
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS chatwoot_is_read BOOLEAN DEFAULT FALSE
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_chatwoot_msg_id ON messages(chatwoot_message_id) WHERE chatwoot_message_id IS NOT NULL"
+            )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_chatwoot_sync ON messages(tenant_hash, chatwoot_synced_at, created_at DESC)"
             )
@@ -286,6 +301,26 @@ class Database:
         if "media_url" not in msg_columns:
             logger.info("Adding media_url column to messages table")
             await self._pool.execute("ALTER TABLE messages ADD COLUMN media_url TEXT")
+        if "chatwoot_message_id" not in msg_columns:
+            logger.info("Adding chatwoot_message_id column to messages table")
+            await self._pool.execute(
+                "ALTER TABLE messages ADD COLUMN chatwoot_message_id INTEGER"
+            )
+        if "chatwoot_conversation_id" not in msg_columns:
+            logger.info("Adding chatwoot_conversation_id column to messages table")
+            await self._pool.execute(
+                "ALTER TABLE messages ADD COLUMN chatwoot_conversation_id INTEGER"
+            )
+        if "chatwoot_inbox_id" not in msg_columns:
+            logger.info("Adding chatwoot_inbox_id column to messages table")
+            await self._pool.execute(
+                "ALTER TABLE messages ADD COLUMN chatwoot_inbox_id INTEGER"
+            )
+        if "chatwoot_is_read" not in msg_columns:
+            logger.info("Adding chatwoot_is_read column to messages table")
+            await self._pool.execute(
+                "ALTER TABLE messages ADD COLUMN chatwoot_is_read INTEGER DEFAULT 0"
+            )
         await self._pool.execute("""
             CREATE TABLE IF NOT EXISTS contacts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -917,6 +952,108 @@ class Database:
         else:
             cursor = await self._pool.execute(
                 "DELETE FROM messages WHERE id = ?", (message_id,)
+            )
+            await self._pool.commit()
+            return cursor.rowcount > 0
+
+    async def get_message_by_id(
+        self,
+        tenant_hash: str,
+        message_id: str,
+    ) -> Optional[dict]:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, 
+                           text, msg_type, timestamp, direction, created_at, media_url,
+                           chatwoot_message_id, chatwoot_conversation_id, chatwoot_inbox_id, chatwoot_is_read
+                    FROM messages
+                    WHERE tenant_hash = $1 AND message_id = $2
+                    """,
+                    tenant_hash,
+                    message_id,
+                )
+                if row:
+                    return dict(row)
+                return None
+        else:
+            async with self._pool.execute(
+                """
+                SELECT id, tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, 
+                       text, msg_type, timestamp, direction, created_at, media_url,
+                       chatwoot_message_id, chatwoot_conversation_id, chatwoot_inbox_id, chatwoot_is_read
+                FROM messages
+                WHERE tenant_hash = ? AND message_id = ?
+                """,
+                (tenant_hash, message_id),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return {
+                        "id": row[0],
+                        "tenant_hash": row[1],
+                        "message_id": row[2],
+                        "from_jid": row[3],
+                        "chat_jid": row[4],
+                        "is_group": bool(row[5]),
+                        "push_name": row[6],
+                        "text": row[7],
+                        "msg_type": row[8],
+                        "timestamp": row[9],
+                        "direction": row[10],
+                        "created_at": row[11],
+                        "media_url": row[12],
+                        "chatwoot_message_id": row[13],
+                        "chatwoot_conversation_id": row[14],
+                        "chatwoot_inbox_id": row[15],
+                        "chatwoot_is_read": bool(row[16])
+                        if row[16] is not None
+                        else False,
+                    }
+                return None
+
+    async def update_message_chatwoot_ids(
+        self,
+        tenant_hash: str,
+        message_id: str,
+        chatwoot_message_id: int,
+        chatwoot_conversation_id: int,
+        chatwoot_inbox_id: Optional[int] = None,
+    ) -> bool:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    UPDATE messages 
+                    SET chatwoot_message_id = $1, 
+                        chatwoot_conversation_id = $2,
+                        chatwoot_inbox_id = COALESCE($3, chatwoot_inbox_id)
+                    WHERE tenant_hash = $4 AND message_id = $5
+                    """,
+                    chatwoot_message_id,
+                    chatwoot_conversation_id,
+                    chatwoot_inbox_id,
+                    tenant_hash,
+                    message_id,
+                )
+                return result.split()[-1] != "0"
+        else:
+            cursor = await self._pool.execute(
+                """
+                UPDATE messages 
+                SET chatwoot_message_id = ?, 
+                    chatwoot_conversation_id = ?,
+                    chatwoot_inbox_id = COALESCE(?, chatwoot_inbox_id)
+                WHERE tenant_hash = ? AND message_id = ?
+                """,
+                (
+                    chatwoot_message_id,
+                    chatwoot_conversation_id,
+                    chatwoot_inbox_id,
+                    tenant_hash,
+                    message_id,
+                ),
             )
             await self._pool.commit()
             return cursor.rowcount > 0

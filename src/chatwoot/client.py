@@ -191,6 +191,7 @@ class ChatwootClient:
         name: Optional[str] = None,
         phone_number: Optional[str] = None,
         avatar_url: Optional[str] = None,
+        identifier: Optional[str] = None,
         custom_attributes: Optional[dict] = None,
     ) -> ChatwootContact:
         endpoint = f"/api/v1/accounts/{self._account_id}/contacts/{contact_id}"
@@ -202,6 +203,8 @@ class ChatwootClient:
             data["phone_number"] = phone_number
         if avatar_url is not None:
             data["avatar_url"] = avatar_url
+        if identifier is not None:
+            data["identifier"] = identifier
         if custom_attributes:
             data["custom_attributes"] = custom_attributes
 
@@ -409,6 +412,28 @@ class ChatwootClient:
             return True
         except ChatwootAPIError:
             return False
+
+    async def delete_message(self, conversation_id: int, message_id: int) -> bool:
+        endpoint = f"/api/v1/accounts/{self._account_id}/conversations/{conversation_id}/messages/{message_id}"
+
+        try:
+            await self._request("DELETE", endpoint)
+            return True
+        except ChatwootAPIError as e:
+            if e.status_code == 404:
+                logger.debug(f"Message {message_id} not found in Chatwoot")
+                return False
+            raise
+
+    async def update_last_seen(self, conversation_id: int) -> None:
+        endpoint = f"/api/v1/accounts/{self._account_id}/conversations/{conversation_id}/last_seen"
+
+        try:
+            await self._request("POST", endpoint)
+        except ChatwootAPIError as e:
+            logger.debug(
+                f"Failed to update last seen for conversation {conversation_id}: {e}"
+            )
 
     async def find_or_create_bot_contact(
         self,

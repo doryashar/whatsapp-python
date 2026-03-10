@@ -336,7 +336,7 @@ async def handle_chatwoot_event(
         )
 
         config = ChatwootConfig(**merged_config)
-        integration = ChatwootIntegration(config, tenant)
+        integration = ChatwootIntegration(config, tenant, db=tenant_manager._db)
 
         if event_type == "message":
             logger.info(
@@ -354,6 +354,14 @@ async def handle_chatwoot_event(
             await integration.handle_connected(params)
         elif event_type == "disconnected":
             await integration.handle_disconnected(params)
+        elif event_type == "qr":
+            await integration.handle_qr(params)
+        elif event_type == "message_deleted":
+            await integration.handle_message_deleted(params)
+        elif event_type == "message_read":
+            await integration.handle_message_read(params)
+        elif event_type == "status_instance":
+            await integration.handle_status_instance(params)
     except Exception as e:
         logger.error(
             f"Chatwoot integration error for tenant {tenant.name}: {e}", exc_info=True
@@ -462,6 +470,22 @@ def handle_bridge_event(
         logger.debug(
             f"Message sent by tenant {tenant.name}: to={params.get('to')}, params={params}"
         )
+    elif event_type == "message_deleted":
+        logger.info(
+            f"Message deleted for tenant {tenant.name}: message_id={params.get('message_id')}"
+        )
+        chatwoot_config = getattr(tenant, "chatwoot_config", None)
+        if chatwoot_config and chatwoot_config.get("enabled"):
+            asyncio.create_task(
+                handle_chatwoot_event(tenant, "message_deleted", params)
+            )
+    elif event_type == "message_read":
+        logger.debug(
+            f"Messages marked as read for tenant {tenant.name}: chat={params.get('chat_jid')}"
+        )
+        chatwoot_config = getattr(tenant, "chatwoot_config", None)
+        if chatwoot_config and chatwoot_config.get("enabled"):
+            asyncio.create_task(handle_chatwoot_event(tenant, "message_read", params))
     else:
         logger.debug(f"Unknown event type arrived: {event_type} with params: {params}")
 
@@ -538,7 +562,13 @@ def handle_bridge_event(
 
     chatwoot_config = getattr(tenant, "chatwoot_config", None)
     if chatwoot_config and chatwoot_config.get("enabled"):
-        if event_type in ["message", "sent", "connected", "disconnected"]:
+        if event_type in [
+            "message",
+            "sent",
+            "connected",
+            "disconnected",
+            "status_instance",
+        ]:
             asyncio.create_task(handle_chatwoot_event(tenant, event_type, params))
 
 

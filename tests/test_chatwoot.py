@@ -1,6 +1,8 @@
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 import json
+import asyncio
+import time
 
 from src.chatwoot import (
     ChatwootConfig,
@@ -876,7 +878,115 @@ class TestMessageEditHandling:
             },
             is_edited=True,
         )
-        assert result == "Edited: Edited message"
+        assert result == "\n\n*Edited:*\nEdited message"
+
+
+class TestMessageDeletedHandler:
+    @pytest.fixture
+    def config(self):
+        return ChatwootConfig(
+            enabled=True,
+            url="https://chatwoot.example.com",
+            token="test_token",
+            account_id="1",
+            inbox_id=1,
+        )
+
+    @pytest.fixture
+    def mock_tenant(self):
+        tenant = Mock()
+        tenant.name = "test_tenant"
+        tenant.api_key_hash = "test_hash"
+        return tenant
+
+    @pytest.fixture
+    def mock_db(self):
+        db = AsyncMock()
+        return db
+
+    @pytest.mark.asyncio
+    async def test_handle_message_deleted_disabled(self, config, mock_tenant):
+        config.enabled = False
+        integration = ChatwootIntegration(config, mock_tenant)
+        result = await integration.handle_message_deleted({"message_id": "123"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_handle_message_deleted_no_message_id(
+        self, config, mock_tenant, mock_db
+    ):
+        integration = ChatwootIntegration(config, mock_tenant, db=mock_db)
+        result = await integration.handle_message_deleted({})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_handle_message_deleted_no_database(self, config, mock_tenant):
+        integration = ChatwootIntegration(config, mock_tenant)
+        result = await integration.handle_message_deleted({"message_id": "123"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_handle_message_deleted_message_not_found(
+        self, config, mock_tenant, mock_db
+    ):
+        mock_db.get_message_by_id = AsyncMock(return_value=None)
+        integration = ChatwootIntegration(config, mock_tenant, db=mock_db)
+        result = await integration.handle_message_deleted({"message_id": "123"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_handle_message_deleted_no_chatwoot_ids(
+        self, config, mock_tenant, mock_db
+    ):
+        mock_db.get_message_by_id = AsyncMock(
+            return_value={
+                "message_id": "123",
+                "chatwoot_message_id": None,
+                "chatwoot_conversation_id": None,
+            }
+        )
+        integration = ChatwootIntegration(config, mock_tenant, db=mock_db)
+        result = await integration.handle_message_deleted({"message_id": "123"})
+        assert result is False
+
+
+class TestMessageReadHandler:
+    @pytest.fixture
+    def config(self):
+        return ChatwootConfig(
+            enabled=True,
+            url="https://chatwoot.example.com",
+            token="test_token",
+            account_id="1",
+            inbox_id=1,
+        )
+
+    @pytest.fixture
+    def mock_tenant(self):
+        tenant = Mock()
+        tenant.name = "test_tenant"
+        return tenant
+
+    @pytest.mark.asyncio
+    async def test_handle_message_read_disabled(self, config, mock_tenant):
+        config.enabled = False
+        integration = ChatwootIntegration(config, mock_tenant)
+        result = await integration.handle_message_read(
+            {"chat_jid": "1234567890@s.whatsapp.net"}
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_handle_message_read_no_chat_jid(self, config, mock_tenant):
+        integration = ChatwootIntegration(config, mock_tenant)
+        result = await integration.handle_message_read({})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_handle_message_read_invalid_jid(self, config, mock_tenant):
+        integration = ChatwootIntegration(config, mock_tenant)
+        result = await integration.handle_message_read({"chat_jid": "invalid"})
+        assert result is False
 
 
 class TestConversationCacheTTL:
@@ -1042,3 +1152,240 @@ class TestGroupMessagesEnabledField:
             group_messages_enabled=False,
         )
         assert config.group_messages_enabled is False
+
+
+class TestConversationLock:
+    @pytest.fixture
+    def config(self):
+        return ChatwootConfig(
+            enabled=True,
+            url="https://chatwoot.example.com",
+            token="test_token",
+            account_id="1",
+            inbox_id=1,
+            conversation_lock_enabled=True,
+        )
+
+    @pytest.fixture
+    def mock_tenant(self):
+        tenant = Mock()
+        tenant.name = "test_tenant"
+        tenant.api_key_hash = "test_hash"
+        return tenant
+
+    def test_conversation_lock_default(self):
+        config = ChatwootConfig(
+            url="https://chatwoot.example.com",
+            token="test_token",
+            account_id="1",
+        )
+        assert config.conversation_lock_enabled is True
+
+    def test_conversation_lock_disabled(self):
+        config = ChatwootConfig(
+            url="https://chatwoot.example.com",
+            token="test_token",
+            account_id="1",
+            conversation_lock_enabled=False,
+        )
+        assert config.conversation_lock_enabled is False
+
+    @pytest.mark.asyncio
+    async def test_get_conversation_lock(self, config, mock_tenant):
+        integration = ChatwootIntegration(config, mock_tenant)
+
+        lock1 = integration._get_conversation_lock("test_jid_1")
+        lock2 = integration._get_conversation_lock("test_jid_2")
+        lock1_again = integration._get_conversation_lock("test_jid_1")
+
+        assert lock1 is lock1_again
+        assert lock1 is not lock2
+        assert isinstance(lock1, asyncio.Lock)
+
+
+class TestLidContactHandling:
+    @pytest.fixture
+    def config(self):
+        return ChatwootConfig(
+            enabled=True,
+            url="https://chatwoot.example.com",
+            token="test_token",
+            account_id="1",
+            inbox_id=1,
+            lid_contact_handling_enabled=True,
+        )
+
+    @pytest.fixture
+    def mock_tenant(self):
+        tenant = Mock()
+        tenant.name = "test_tenant"
+        tenant.api_key_hash = "test_hash"
+        return tenant
+
+    def test_lid_handling_default(self):
+        config = ChatwootConfig(
+            url="https://chatwoot.example.com",
+            token="test_token",
+            account_id="1",
+        )
+        assert config.lid_contact_handling_enabled is True
+
+    def test_lid_handling_disabled(self):
+        config = ChatwootConfig(
+            url="https://chatwoot.example.com",
+            token="test_token",
+            account_id="1",
+            lid_contact_handling_enabled=False,
+        )
+        assert config.lid_contact_handling_enabled is False
+
+    @pytest.mark.asyncio
+    async def test_handle_lid_contact_update_with_lid(self, config, mock_tenant):
+        integration = ChatwootIntegration(config, mock_tenant)
+
+        with patch.object(
+            integration._client,
+            "find_contact_by_phone",
+            new_callable=AsyncMock,
+        ) as mock_find:
+            with patch.object(
+                integration._client,
+                "update_contact",
+                new_callable=AsyncMock,
+            ) as mock_update:
+                mock_find.return_value = ChatwootContact(
+                    id=123,
+                    phone_number="+1234567890",
+                    name="Test",
+                    identifier="old@s.whatsapp.net",
+                )
+
+                await integration._handle_lid_contact_update("+1234567890", "test@lid")
+
+                mock_update.assert_called_once_with(
+                    contact_id=123,
+                    identifier="test@lid",
+                )
+
+    @pytest.mark.asyncio
+    async def test_handle_lid_contact_update_without_lid(self, config, mock_tenant):
+        integration = ChatwootIntegration(config, mock_tenant)
+
+        with patch.object(
+            integration._client,
+            "find_contact_by_phone",
+            new_callable=AsyncMock,
+        ) as mock_find:
+            await integration._handle_lid_contact_update(
+                "+1234567890", "test@s.whatsapp.net"
+            )
+
+            mock_find.assert_not_called()
+
+
+class TestStatusInstance:
+    @pytest.fixture
+    def config(self):
+        return ChatwootConfig(
+            enabled=True,
+            url="https://chatwoot.example.com",
+            token="test_token",
+            account_id="1",
+            inbox_id=1,
+            status_instance_enabled=True,
+            bot_contact_enabled=True,
+        )
+
+    @pytest.fixture
+    def mock_tenant(self):
+        tenant = Mock()
+        tenant.name = "test_tenant"
+        tenant.api_key_hash = "test_hash"
+        return tenant
+
+    @pytest.mark.asyncio
+    async def test_status_instance_disabled(self, config, mock_tenant):
+        config.enabled = False
+        integration = ChatwootIntegration(config, mock_tenant)
+        result = await integration.handle_status_instance({"status": "connected"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_status_instance_feature_disabled(self, config, mock_tenant):
+        config.status_instance_enabled = False
+        integration = ChatwootIntegration(config, mock_tenant)
+        result = await integration.handle_status_instance({"status": "connected"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_status_instance_bot_contact_disabled(self, config, mock_tenant):
+        config.bot_contact_enabled = False
+        integration = ChatwootIntegration(config, mock_tenant)
+        result = await integration.handle_status_instance({"status": "connected"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_status_instance_cooldown(self, config, mock_tenant):
+        integration = ChatwootIntegration(config, mock_tenant)
+        integration._last_connection_notification = time.time()
+
+        result = await integration.handle_status_instance({"status": "connected"})
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_status_instance_success(self, config, mock_tenant):
+        integration = ChatwootIntegration(config, mock_tenant)
+
+        with patch.object(
+            integration._client,
+            "find_or_create_bot_contact",
+            new_callable=AsyncMock,
+        ) as mock_bot:
+            with patch.object(
+                integration._client,
+                "get_or_create_bot_conversation",
+                new_callable=AsyncMock,
+            ) as mock_conv:
+                with patch.object(
+                    integration._client,
+                    "create_message",
+                    new_callable=AsyncMock,
+                ) as mock_msg:
+                    mock_bot.return_value = ChatwootContact(
+                        id=999,
+                        phone_number="+123456",
+                        name="Bot",
+                    )
+                    mock_conv.return_value = ChatwootConversation(
+                        id=888,
+                        account_id=1,
+                        inbox_id=1,
+                        contact_id=999,
+                    )
+
+                    result = await integration.handle_status_instance(
+                        {"status": "connected"}
+                    )
+
+                    assert result is True
+                    mock_msg.assert_called_once()
+                    call_args = mock_msg.call_args
+                    assert call_args[1]["content"] == "WhatsApp status: connected"
+                    assert call_args[1]["message_type"] == "incoming"
+
+    def test_status_instance_enabled_default(self):
+        config = ChatwootConfig(
+            url="https://chatwoot.example.com",
+            token="test_token",
+            account_id="1",
+        )
+        assert config.status_instance_enabled is True
+
+    def test_status_instance_enabled_false(self):
+        config = ChatwootConfig(
+            url="https://chatwoot.example.com",
+            token="test_token",
+            account_id="1",
+            status_instance_enabled=False,
+        )
+        assert config.status_instance_enabled is False

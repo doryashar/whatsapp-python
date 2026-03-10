@@ -23,6 +23,7 @@ class ChatwootConfig(BaseModel):
     import_messages: bool = False
     days_limit_import: int = 3
     merge_brazil_contacts: bool = True
+    group_messages_enabled: bool = True
 
     bot_contact_enabled: bool = True
     bot_name: str = "Bot"
@@ -36,7 +37,15 @@ class ChatwootConfig(BaseModel):
     logo: Optional[str] = None
     message_delete_enabled: bool = True
     mark_read_on_reply: bool = True
-    group_messages_enabled: bool = True
+    message_delete_enabled: bool = True
+    mark_read_on_reply: bool = True
+    reaction_messages_enabled: bool = True
+    sticker_messages_enabled: bool = True
+    conversation_lock_enabled: bool = True
+    lid_contact_handling_enabled: bool = True
+    status_instance_enabled: bool = True
+
+    ignored: List[str] = Field(default_factory=list)
 
 
 class ChatwootContact(BaseModel):
