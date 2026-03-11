@@ -540,7 +540,7 @@ class Database:
         logger.debug(
             f"Updating session state for tenant: hash={api_key_hash[:16]}..., state={connection_state}"
         )
-        now = datetime.now(UTC)
+        now = datetime.now()
 
         if self._is_postgres:
             async with self._pool.acquire() as conn:
@@ -1072,7 +1072,7 @@ class Database:
         Updates name only if the new name is not empty/None.
         """
         if message_time is None:
-            message_time = datetime.now(UTC)
+            message_time = datetime.now()
 
         if self._is_postgres:
             async with self._pool.acquire() as conn:

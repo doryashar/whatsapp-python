@@ -1,7 +1,7 @@
 import secrets
 import hashlib
 import hmac
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import Request, HTTPException, Cookie
 from fastapi.responses import RedirectResponse
@@ -39,7 +39,7 @@ class AdminSession:
             return None
 
         session_id = secrets.token_urlsafe(32)
-        expires_at = datetime.now(UTC) + timedelta(hours=24)
+        expires_at = datetime.now() + timedelta(hours=24)
 
         await self._db.create_admin_session(
             session_id=session_id,
