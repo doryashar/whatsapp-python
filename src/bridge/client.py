@@ -437,6 +437,137 @@ class BaileysBridge:
         logger.debug(f"Bridge get_profile: jid={jid}")
         return await self.call("get_profile", {"jid": jid})
 
+    async def send_sticker(
+        self, to: str, sticker: str, gif_playback: bool = False
+    ) -> dict:
+        logger.info(f"Bridge send_sticker: to={to}")
+        return await self.call(
+            "send_sticker",
+            {"to": to, "sticker": sticker, "gif_playback": gif_playback},
+        )
+
+    async def send_buttons(
+        self,
+        to: str,
+        title: str,
+        description: str,
+        buttons: list[dict],
+        footer: str | None = None,
+        thumbnail_url: str | None = None,
+    ) -> dict:
+        logger.info(f"Bridge send_buttons: to={to}")
+        return await self.call(
+            "send_buttons",
+            {
+                "to": to,
+                "title": title,
+                "description": description,
+                "footer": footer,
+                "buttons": buttons,
+                "thumbnail_url": thumbnail_url,
+            },
+        )
+
+    async def send_list(
+        self,
+        to: str,
+        title: str,
+        description: str,
+        button_text: str,
+        sections: list[dict],
+        footer: str | None = None,
+    ) -> dict:
+        logger.info(f"Bridge send_list: to={to}")
+        return await self.call(
+            "send_list",
+            {
+                "to": to,
+                "title": title,
+                "description": description,
+                "button_text": button_text,
+                "sections": sections,
+                "footer": footer,
+            },
+        )
+
+    async def send_status(
+        self,
+        type: str,
+        content: str,
+        caption: str | None = None,
+        background_color: str | None = None,
+        font: int | None = None,
+        status_jid_list: list[str] | None = None,
+        all_contacts: bool = False,
+    ) -> dict:
+        logger.info(f"Bridge send_status: type={type}")
+        return await self.call(
+            "send_status",
+            {
+                "type": type,
+                "content": content,
+                "caption": caption,
+                "background_color": background_color,
+                "font": font,
+                "status_jid_list": status_jid_list,
+                "all_contacts": all_contacts,
+            },
+        )
+
+    async def fetch_privacy_settings(self) -> dict:
+        logger.info("Bridge fetch_privacy_settings")
+        return await self.call("fetch_privacy_settings")
+
+    async def update_privacy_settings(
+        self,
+        readreceipts: str | None = None,
+        profile: str | None = None,
+        status: str | None = None,
+        online: str | None = None,
+        last: str | None = None,
+        groupadd: str | None = None,
+    ) -> dict:
+        logger.info("Bridge update_privacy_settings")
+        return await self.call(
+            "update_privacy_settings",
+            {
+                "readreceipts": readreceipts,
+                "profile": profile,
+                "status": status,
+                "online": online,
+                "last": last,
+                "groupadd": groupadd,
+            },
+        )
+
+    async def get_settings(self) -> dict:
+        logger.info("Bridge get_settings")
+        return await self.call("get_settings")
+
+    async def update_settings(
+        self,
+        reject_call: bool | None = None,
+        msg_call: str | None = None,
+        groups_ignore: bool | None = None,
+        always_online: bool | None = None,
+        read_messages: bool | None = None,
+        read_status: bool | None = None,
+        sync_full_history: bool | None = None,
+    ) -> dict:
+        logger.info("Bridge update_settings")
+        return await self.call(
+            "update_settings",
+            {
+                "reject_call": reject_call,
+                "msg_call": msg_call,
+                "groups_ignore": groups_ignore,
+                "always_online": always_online,
+                "read_messages": read_messages,
+                "read_status": read_status,
+                "sync_full_history": sync_full_history,
+            },
+        )
+
     def is_alive(self) -> bool:
         if not self._process or not self._running:
             return False

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query, Depends
-from typing import Optional
+from typing import Optional, Literal
 from ..bridge import BridgeError
 from ..tenant import Tenant, tenant_manager
 from ..telemetry import get_logger
@@ -70,6 +70,32 @@ from ..models import (
     UpdateProfilePictureResponse,
     RemoveProfilePictureResponse,
     GetProfileResponse,
+    DeleteMessageRequest,
+    DeleteMessageResponse,
+    MarkReadRequest,
+    MarkReadResponse,
+    ContactInfo,
+    ContactsListResponse,
+    FetchProfilePictureRequest,
+    FetchProfilePictureResponse,
+    SendStickerRequest,
+    SendStickerResponse,
+    ButtonItem,
+    SendButtonsRequest,
+    SendButtonsResponse,
+    ListSectionRow,
+    ListSection,
+    SendListRequest,
+    SendListResponse,
+    SendStatusRequest,
+    SendStatusResponse,
+    PrivacySettings,
+    FetchPrivacySettingsResponse,
+    UpdatePrivacySettingsRequest,
+    UpdatePrivacySettingsResponse,
+    InstanceSettings,
+    InstanceSettingsRequest,
+    InstanceSettingsResponse,
 )
 from .auth import get_tenant, get_admin_key
 
@@ -890,7 +916,9 @@ async def check_whatsapp_numbers(
     request: CheckWhatsAppRequest,
     tenant: Tenant = Depends(get_tenant),
 ):
-    logger.info(f"Check WhatsApp numbers: tenant={tenant.name}, count={len(request.numbers)}")
+    logger.info(
+        f"Check WhatsApp numbers: tenant={tenant.name}, count={len(request.numbers)}"
+    )
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
         result = await bridge.check_whatsapp(request.numbers)
@@ -978,4 +1006,307 @@ async def get_profile(
         )
     except BridgeError as e:
         logger.error(f"Get profile failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/message/delete")
+async def delete_message(
+    request: DeleteMessageRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(
+        f"Delete message: tenant={tenant.name}, chat={request.chat_jid}, id={request.message_id}"
+    )
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.delete_message(
+            to=request.chat_jid,
+            message_id=request.message_id,
+            from_me=request.from_me,
+        )
+        return DeleteMessageResponse(
+            status=result.get("status"),
+            chat_jid=result.get("chat_jid"),
+            message_id=result.get("message_id"),
+        )
+    except BridgeError as e:
+        logger.error(f"Delete message failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat/markRead")
+async def mark_messages_read(
+    request: MarkReadRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(
+        f"Mark read: tenant={tenant.name}, chat={request.chat_jid}, count={len(request.message_ids)}"
+    )
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.mark_read(
+            to=request.chat_jid,
+            message_ids=request.message_ids,
+        )
+        return MarkReadResponse(
+            status=result.get("status"),
+            chat_jid=request.chat_jid,
+        )
+    except BridgeError as e:
+        logger.error(f"Mark read failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/contacts", response_model=ContactsListResponse)
+async def get_contacts(tenant: Tenant = Depends(get_tenant)):
+    logger.info(f"Get contacts: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.get_contacts()
+        contacts = [
+            ContactInfo(
+                jid=c.get("jid"),
+                name=c.get("name"),
+                phone=c.get("phone"),
+                is_group=c.get("is_group"),
+            )
+            for c in result.get("contacts", [])
+        ]
+        return ContactsListResponse(contacts=contacts)
+    except BridgeError as e:
+        logger.error(f"Get contacts failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat/fetchProfilePicture")
+async def fetch_profile_picture(
+    request: FetchProfilePictureRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.debug(f"Fetch profile picture: tenant={tenant.name}, jid={request.jid}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.get_profile_picture(request.jid)
+        return FetchProfilePictureResponse(
+            jid=result.get("jid"),
+            url=result.get("url"),
+        )
+    except BridgeError as e:
+        logger.error(f"Fetch profile picture failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sticker", response_model=SendStickerResponse)
+async def send_sticker(
+    request: SendStickerRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Send sticker: tenant={tenant.name}, to={request.number}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.send_sticker(
+            to=request.number,
+            sticker=request.sticker,
+            gif_playback=request.gif_playback,
+        )
+        return SendStickerResponse(
+            message_id=result.get("message_id"),
+            to=result.get("to"),
+        )
+    except BridgeError as e:
+        logger.error(f"Send sticker failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/buttons", response_model=SendButtonsResponse)
+async def send_buttons(
+    request: SendButtonsRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Send buttons: tenant={tenant.name}, to={request.number}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        buttons_data = [
+            {
+                "type": btn.type,
+                "display_text": btn.display_text,
+                "id": btn.id,
+                "url": btn.url,
+                "phone_number": btn.phone_number,
+                "copy_code": btn.copy_code,
+            }
+            for btn in request.buttons
+        ]
+        result = await bridge.send_buttons(
+            to=request.number,
+            title=request.title,
+            description=request.description,
+            footer=request.footer,
+            buttons=buttons_data,
+            thumbnail_url=request.thumbnail_url,
+        )
+        return SendButtonsResponse(
+            message_id=result.get("message_id"),
+            to=result.get("to"),
+        )
+    except BridgeError as e:
+        logger.error(f"Send buttons failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/list", response_model=SendListResponse)
+async def send_list(
+    request: SendListRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Send list: tenant={tenant.name}, to={request.number}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        sections_data = [
+            {
+                "title": section.title,
+                "rows": [
+                    {
+                        "title": row.title,
+                        "description": row.description,
+                        "row_id": row.row_id,
+                    }
+                    for row in section.rows
+                ],
+            }
+            for section in request.sections
+        ]
+        result = await bridge.send_list(
+            to=request.number,
+            title=request.title,
+            description=request.description,
+            footer=request.footer,
+            button_text=request.button_text,
+            sections=sections_data,
+        )
+        return SendListResponse(
+            message_id=result.get("message_id"),
+            to=result.get("to"),
+        )
+    except BridgeError as e:
+        logger.error(f"Send list failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/status", response_model=SendStatusResponse)
+async def send_status(
+    request: SendStatusRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Send status: tenant={tenant.name}, type={request.type}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.send_status(
+            type=request.type,
+            content=request.content,
+            caption=request.caption,
+            background_color=request.background_color,
+            font=request.font,
+            status_jid_list=request.status_jid_list,
+            all_contacts=request.all_contacts,
+        )
+        return SendStatusResponse(
+            message_id=result.get("message_id"),
+            to=result.get("to"),
+            recipient_count=result.get("recipient_count"),
+        )
+    except BridgeError as e:
+        logger.error(f"Send status failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/privacy", response_model=FetchPrivacySettingsResponse)
+async def fetch_privacy_settings(tenant: Tenant = Depends(get_tenant)):
+    logger.info(f"Fetch privacy settings: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.fetch_privacy_settings()
+        return FetchPrivacySettingsResponse(
+            readreceipts=result.get("readreceipts"),
+            profile=result.get("profile"),
+            status=result.get("status"),
+            online=result.get("online"),
+            last=result.get("last"),
+            groupadd=result.get("groupadd"),
+        )
+    except BridgeError as e:
+        logger.error(f"Fetch privacy settings failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/privacy", response_model=UpdatePrivacySettingsResponse)
+async def update_privacy_settings(
+    request: UpdatePrivacySettingsRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Update privacy settings: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.update_privacy_settings(
+            readreceipts=request.readreceipts,
+            profile=request.profile,
+            status=request.status,
+            online=request.online,
+            last=request.last,
+            groupadd=request.groupadd,
+        )
+        return UpdatePrivacySettingsResponse(status=result.get("status"))
+    except BridgeError as e:
+        logger.error(f"Update privacy settings failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/settings", response_model=InstanceSettingsResponse)
+async def get_settings(tenant: Tenant = Depends(get_tenant)):
+    logger.info(f"Get settings: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.get_settings()
+        return InstanceSettingsResponse(
+            reject_call=result.get("reject_call"),
+            msg_call=result.get("msg_call"),
+            groups_ignore=result.get("groups_ignore"),
+            always_online=result.get("always_online"),
+            read_messages=result.get("read_messages"),
+            read_status=result.get("read_status"),
+            sync_full_history=result.get("sync_full_history"),
+        )
+    except BridgeError as e:
+        logger.error(f"Get settings failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/settings", response_model=InstanceSettingsResponse)
+async def update_settings(
+    request: InstanceSettingsRequest,
+    tenant: Tenant = Depends(get_tenant),
+):
+    logger.info(f"Update settings: tenant={tenant.name}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.update_settings(
+            reject_call=request.reject_call,
+            msg_call=request.msg_call,
+            groups_ignore=request.groups_ignore,
+            always_online=request.always_online,
+            read_messages=request.read_messages,
+            read_status=request.read_status,
+            sync_full_history=request.sync_full_history,
+        )
+        return InstanceSettingsResponse(
+            reject_call=result.get("reject_call"),
+            msg_call=result.get("msg_call"),
+            groups_ignore=result.get("groups_ignore"),
+            always_online=result.get("always_online"),
+            read_messages=result.get("read_messages"),
+            read_status=result.get("read_status"),
+            sync_full_history=result.get("sync_full_history"),
+        )
+    except BridgeError as e:
+        logger.error(f"Update settings failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

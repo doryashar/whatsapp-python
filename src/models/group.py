@@ -36,10 +36,10 @@ class CreateGroupRequest(BaseModel):
 
 
 class CreateGroupResponse(BaseModel):
-    status: str
-    group_jid: str
-    subject: str
-    participants: list[str]
+    status: Optional[str] = None
+    group_jid: Optional[str] = None
+    subject: Optional[str] = None
+    participants: Optional[list[str]] = None
 
 
 class UpdateGroupSubjectRequest(BaseModel):
@@ -48,9 +48,9 @@ class UpdateGroupSubjectRequest(BaseModel):
 
 
 class UpdateGroupSubjectResponse(BaseModel):
-    status: str
-    group_jid: str
-    subject: str
+    status: Optional[str] = None
+    group_jid: Optional[str] = None
+    subject: Optional[str] = None
 
 
 class UpdateGroupDescriptionRequest(BaseModel):
@@ -59,8 +59,8 @@ class UpdateGroupDescriptionRequest(BaseModel):
 
 
 class UpdateGroupDescriptionResponse(BaseModel):
-    status: str
-    group_jid: str
+    status: Optional[str] = None
+    group_jid: Optional[str] = None
 
 
 class UpdateGroupPictureRequest(BaseModel):
@@ -69,13 +69,13 @@ class UpdateGroupPictureRequest(BaseModel):
 
 
 class UpdateGroupPictureResponse(BaseModel):
-    status: str
-    group_jid: str
+    status: Optional[str] = None
+    group_jid: Optional[str] = None
 
 
 class GroupInfoResponse(BaseModel):
-    group_jid: str
-    subject: str
+    group_jid: Optional[str] = None
+    subject: Optional[str] = None
     subject_owner: Optional[str] = None
     subject_time: Optional[int] = None
     creation: Optional[int] = None
@@ -93,18 +93,18 @@ class GroupListResponse(BaseModel):
 
 
 class GroupParticipantsResponse(BaseModel):
-    group_jid: str
-    participants: list[GroupParticipant]
+    group_jid: Optional[str] = None
+    participants: list[GroupParticipant] = Field(default_factory=list)
 
 
 class InviteCodeResponse(BaseModel):
-    group_jid: str
-    invite_code: str
+    group_jid: Optional[str] = None
+    invite_code: Optional[str] = None
 
 
 class RevokeInviteResponse(BaseModel):
-    group_jid: str
-    new_invite_code: str
+    group_jid: Optional[str] = None
+    new_invite_code: Optional[str] = None
 
 
 class AcceptInviteRequest(BaseModel):
@@ -112,13 +112,13 @@ class AcceptInviteRequest(BaseModel):
 
 
 class AcceptInviteResponse(BaseModel):
-    status: str
-    group_jid: str
+    status: Optional[str] = None
+    group_jid: Optional[str] = None
 
 
 class InviteInfoResponse(BaseModel):
-    group_jid: str
-    subject: str
+    group_jid: Optional[str] = None
+    subject: Optional[str] = None
     creation: Optional[int] = None
     owner: Optional[str] = None
     desc: Optional[str] = None
@@ -132,16 +132,16 @@ class UpdateGroupParticipantRequest(BaseModel):
 
 
 class ParticipantUpdateResult(BaseModel):
-    status: str
-    jid: str
+    status: Optional[str] = None
+    jid: Optional[str] = None
     content: Optional[str] = None
 
 
 class UpdateGroupParticipantResponse(BaseModel):
-    status: str
-    group_jid: str
-    action: str
-    results: list[ParticipantUpdateResult]
+    status: Optional[str] = None
+    group_jid: Optional[str] = None
+    action: Optional[str] = None
+    results: list[ParticipantUpdateResult] = Field(default_factory=list)
 
 
 class UpdateGroupSettingRequest(BaseModel):
@@ -150,9 +150,9 @@ class UpdateGroupSettingRequest(BaseModel):
 
 
 class UpdateGroupSettingResponse(BaseModel):
-    status: str
-    group_jid: str
-    setting: str
+    status: Optional[str] = None
+    group_jid: Optional[str] = None
+    setting: Optional[str] = None
 
 
 class ToggleEphemeralRequest(BaseModel):
@@ -161,17 +161,18 @@ class ToggleEphemeralRequest(BaseModel):
 
 
 class ToggleEphemeralResponse(BaseModel):
-    status: str
-    group_jid: str
-    expiration: int
+    status: Optional[str] = None
+    group_jid: Optional[str] = None
+    expiration: Optional[int] = None
 
 
 class LeaveGroupResponse(BaseModel):
-    status: str
-    group_jid: str
+    status: Optional[str] = None
+    group_jid: Optional[str] = None
 
 
 # Advanced Messaging Models
+
 
 class SendLocationRequest(BaseModel):
     number: str
@@ -182,8 +183,8 @@ class SendLocationRequest(BaseModel):
 
 
 class SendLocationResponse(BaseModel):
-    message_id: str
-    to: str
+    message_id: Optional[str] = None
+    to: Optional[str] = None
 
 
 class ContactCard(BaseModel):
@@ -197,8 +198,8 @@ class SendContactRequest(BaseModel):
 
 
 class SendContactResponse(BaseModel):
-    message_id: str
-    to: str
+    message_id: Optional[str] = None
+    to: Optional[str] = None
 
 
 class ArchiveChatRequest(BaseModel):
@@ -207,9 +208,9 @@ class ArchiveChatRequest(BaseModel):
 
 
 class ArchiveChatResponse(BaseModel):
-    status: str
-    chat_jid: str
-    archived: bool
+    status: Optional[str] = None
+    chat_jid: Optional[str] = None
+    archived: Optional[bool] = None
 
 
 class BlockUserRequest(BaseModel):
@@ -218,8 +219,8 @@ class BlockUserRequest(BaseModel):
 
 
 class BlockUserResponse(BaseModel):
-    status: str
-    jid: str
+    status: Optional[str] = None
+    jid: Optional[str] = None
 
 
 class EditMessageRequest(BaseModel):
@@ -230,8 +231,8 @@ class EditMessageRequest(BaseModel):
 
 
 class EditMessageResponse(BaseModel):
-    message_id: str
-    to: str
+    message_id: Optional[str] = None
+    to: Optional[str] = None
 
 
 class CheckWhatsAppRequest(BaseModel):
@@ -253,8 +254,8 @@ class UpdateProfileNameRequest(BaseModel):
 
 
 class UpdateProfileNameResponse(BaseModel):
-    status: str
-    name: str
+    status: Optional[str] = None
+    name: Optional[str] = None
 
 
 class UpdateProfileStatusRequest(BaseModel):
@@ -262,7 +263,7 @@ class UpdateProfileStatusRequest(BaseModel):
 
 
 class UpdateProfileStatusResponse(BaseModel):
-    status: str
+    status: Optional[str] = None
 
 
 class UpdateProfilePictureRequest(BaseModel):
@@ -270,13 +271,191 @@ class UpdateProfilePictureRequest(BaseModel):
 
 
 class UpdateProfilePictureResponse(BaseModel):
-    status: str
+    status: Optional[str] = None
 
 
 class RemoveProfilePictureResponse(BaseModel):
-    status: str
+    status: Optional[str] = None
 
 
 class GetProfileResponse(BaseModel):
+    jid: Optional[str] = None
+    exists: Optional[bool] = None
+
+
+class DeleteMessageRequest(BaseModel):
+    chat_jid: str
+    message_id: str
+    from_me: bool = True
+
+
+class DeleteMessageResponse(BaseModel):
+    status: Optional[str] = None
+    chat_jid: Optional[str] = None
+    message_id: Optional[str] = None
+
+
+class MarkReadRequest(BaseModel):
+    chat_jid: str
+    message_ids: list[str]
+
+
+class MarkReadResponse(BaseModel):
+    status: Optional[str] = None
+    chat_jid: Optional[str] = None
+
+
+class ContactInfo(BaseModel):
+    jid: Optional[str] = None
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    is_group: Optional[bool] = None
+
+
+class ContactsListResponse(BaseModel):
+    contacts: list[ContactInfo] = Field(default_factory=list)
+
+
+class FetchProfilePictureRequest(BaseModel):
     jid: str
-    exists: bool
+
+
+class FetchProfilePictureResponse(BaseModel):
+    jid: Optional[str] = None
+    url: Optional[str] = None
+
+
+class SendStickerRequest(BaseModel):
+    number: str
+    sticker: str
+    gif_playback: bool = False
+
+
+class SendStickerResponse(BaseModel):
+    message_id: Optional[str] = None
+    to: Optional[str] = None
+
+
+class ButtonItem(BaseModel):
+    type: Literal["reply", "url", "call", "copy"]
+    display_text: str
+    id: Optional[str] = None
+    url: Optional[str] = None
+    phone_number: Optional[str] = None
+    copy_code: Optional[str] = None
+
+
+class SendButtonsRequest(BaseModel):
+    number: str
+    title: str
+    description: str
+    footer: Optional[str] = None
+    buttons: list[ButtonItem] = Field(..., min_length=1)
+    thumbnail_url: Optional[str] = None
+
+
+class SendButtonsResponse(BaseModel):
+    message_id: Optional[str] = None
+    to: Optional[str] = None
+
+
+class ListSectionRow(BaseModel):
+    title: str
+    description: Optional[str] = None
+    row_id: str
+
+
+class ListSection(BaseModel):
+    title: str
+    rows: list[ListSectionRow] = Field(..., min_length=1)
+
+
+class SendListRequest(BaseModel):
+    number: str
+    title: str
+    description: str
+    footer: Optional[str] = None
+    button_text: str
+    sections: list[ListSection] = Field(..., min_length=1)
+
+
+class SendListResponse(BaseModel):
+    message_id: Optional[str] = None
+    to: Optional[str] = None
+
+
+class SendStatusRequest(BaseModel):
+    type: Literal["text", "image", "video"]
+    content: str
+    caption: Optional[str] = None
+    background_color: Optional[str] = "#25D366"
+    font: Optional[int] = 1
+    status_jid_list: Optional[list[str]] = None
+    all_contacts: bool = False
+
+
+class SendStatusResponse(BaseModel):
+    message_id: Optional[str] = None
+    to: Optional[str] = None
+    recipient_count: Optional[int] = None
+
+
+class PrivacySettings(BaseModel):
+    readreceipts: Optional[str] = None
+    profile: Optional[str] = None
+    status: Optional[str] = None
+    online: Optional[str] = None
+    last: Optional[str] = None
+    groupadd: Optional[str] = None
+
+
+class FetchPrivacySettingsResponse(BaseModel):
+    readreceipts: Optional[str] = None
+    profile: Optional[str] = None
+    status: Optional[str] = None
+    online: Optional[str] = None
+    last: Optional[str] = None
+    groupadd: Optional[str] = None
+
+
+class UpdatePrivacySettingsRequest(BaseModel):
+    readreceipts: Optional[str] = None
+    profile: Optional[str] = None
+    status: Optional[str] = None
+    online: Optional[str] = None
+    last: Optional[str] = None
+    groupadd: Optional[str] = None
+
+
+class UpdatePrivacySettingsResponse(BaseModel):
+    status: Optional[str] = None
+
+
+class InstanceSettings(BaseModel):
+    reject_call: bool = False
+    msg_call: str = ""
+    groups_ignore: bool = False
+    always_online: bool = False
+    read_messages: bool = False
+    read_status: bool = False
+    sync_full_history: bool = False
+
+
+class InstanceSettingsRequest(BaseModel):
+    reject_call: Optional[bool] = None
+    msg_call: Optional[str] = None
+    groups_ignore: Optional[bool] = None
+    always_online: Optional[bool] = None
+    read_messages: Optional[bool] = None
+    read_status: Optional[bool] = None
+    sync_full_history: Optional[bool] = None
+
+
+class InstanceSettingsResponse(BaseModel):
+    reject_call: Optional[bool] = None
+    msg_call: Optional[str] = None
+    groups_ignore: Optional[bool] = None
+    always_online: Optional[bool] = None
+    read_messages: Optional[bool] = None
+    read_status: Optional[bool] = None
+    sync_full_history: Optional[bool] = None

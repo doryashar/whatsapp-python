@@ -11,6 +11,7 @@ import {
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   isJidGroup,
+  generateWAMessageFromContent,
 } from "@whiskeysockets/baileys";
 import pino from "pino";
 import fs from "fs";
@@ -27,6 +28,15 @@ let sock = null;
 let currentQr = null;
 let connectionState = "disconnected";
 let selfInfo = null;
+let instanceSettings = {
+  reject_call: false,
+  msg_call: "",
+  groups_ignore: false,
+  always_online: false,
+  read_messages: false,
+  read_status: false,
+  sync_full_history: false,
+};
 
 const DISCONNECT_REASONS = {
   401: "loggedOut",
@@ -398,8 +408,7 @@ async function createSocket() {
         logger.debug({ err: err.message, remoteJid, messageId: msg.key.id }, "Failed to mark message as read");
       }
     }
-  }
-});
+  });
 
 // Message delete event
 sock.ev.on("messages.delete", async ({ key }) => {
@@ -430,10 +439,6 @@ sock.ev.on("messages.read", async ({ key }) => {
     timestamp: Date.now(),
   });
 });
-
-sock.ev.on("messages.upsert", async ({ messages, type }) => {
-
-  return sock;
 }
 
 const methods = {
@@ -1349,7 +1354,254 @@ const methods = {
       throw err;
     }
   },
+
+  async send_sticker(params) {
+    const { to, sticker, gif_playback } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(to);
+
+    try {
+      const buffer = fs.readFileSync(sticker);
+      const result = await sock.sendMessage(jid, {
+        sticker: buffer,
+        gifPlayback: gif_playback || false,
+      });
+
+      const messageId = result?.key?.id || "unknown";
+      logger.info({ jid, messageId }, "Sticker sent");
+      sendEvent("sent", { message_id: messageId, to: jid, type: "sticker", timestamp: Date.now() });
+
+      return { message_id: messageId, to: jid };
+    } catch (err) {
+      logger.error({ err: err.message, jid }, "Failed to send sticker");
+      throw err;
+    }
+  },
+
+  async send_buttons(params) {
+    const { to, title, description, buttons, footer, thumbnail_url } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(to);
+
+    try {
+      const buttonMessage = {
+        text: description || title,
+        footer: footer || undefined,
+        buttons: buttons.map((btn, idx) => ({
+          buttonId: btn.id || `btn_${idx}`,
+          buttonText: { displayText: btn.text },
+          type: 1,
+        })),
+        headerType: 1,
+      };
+
+      if (thumbnail_url) {
+        buttonMessage.image = { url: thumbnail_url };
+        buttonMessage.caption = description || title;
+        buttonMessage.headerType = 4;
+      }
+
+      const result = await sock.sendMessage(jid, buttonMessage);
+      const messageId = result?.key?.id || "unknown";
+      logger.info({ jid, messageId, buttonCount: buttons.length }, "Buttons sent");
+      sendEvent("sent", { message_id: messageId, to: jid, type: "buttons", timestamp: Date.now() });
+
+      return { message_id: messageId, to: jid };
+    } catch (err) {
+      logger.error({ err: err.message, jid }, "Failed to send buttons");
+      throw err;
+    }
+  },
+
+  async send_list(params) {
+    const { to, title, description, button_text, sections, footer } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    const jid = toJid(to);
+
+    try {
+      const listMessage = {
+        text: description || title,
+        footer: footer || undefined,
+        title: title,
+        buttonText: button_text || "Options",
+        sections: sections.map((section) => ({
+          title: section.title,
+          rows: section.rows.map((row, idx) => ({
+            title: row.title,
+            description: row.description || "",
+            rowId: row.id || `row_${idx}`,
+          })),
+        })),
+      };
+
+      const result = await sock.sendMessage(jid, {
+        listMessage,
+      });
+
+      const messageId = result?.key?.id || "unknown";
+      logger.info({ jid, messageId, sectionCount: sections.length }, "List sent");
+      sendEvent("sent", { message_id: messageId, to: jid, type: "list", timestamp: Date.now() });
+
+      return { message_id: messageId, to: jid };
+    } catch (err) {
+      logger.error({ err: err.message, jid }, "Failed to send list");
+      throw err;
+    }
+  },
+
+  async send_status(params) {
+    const { type, content, caption, background_color, font, status_jid_list, all_contacts } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      let message = {};
+      const targetJids = all_contacts ? await getAllContactJids() : (status_jid_list || []);
+
+      if (type === "text") {
+        message = {
+          text: content,
+          backgroundColor: background_color || "#25D366",
+          font: font || 0,
+        };
+      } else if (type === "image" || type === "video") {
+        const buffer = fs.readFileSync(content);
+        message = {
+          [type]: buffer,
+          caption: caption || undefined,
+        };
+      } else if (type === "audio") {
+        const buffer = fs.readFileSync(content);
+        message = {
+          audio: buffer,
+          ptt: true,
+        };
+      }
+
+      const result = await sock.sendMessage("status@broadcast", message, {
+        statusJidList: targetJids.length > 0 ? targetJids : undefined,
+      });
+
+      const messageId = result?.key?.id || "unknown";
+      logger.info({ messageId, type, recipientCount: targetJids.length }, "Status sent");
+      sendEvent("sent", { message_id: messageId, to: "status@broadcast", type: "status", timestamp: Date.now() });
+
+      return { message_id: messageId, type, recipients: targetJids.length };
+    } catch (err) {
+      logger.error({ err: err.message, type }, "Failed to send status");
+      throw err;
+    }
+  },
+
+  async fetch_privacy_settings() {
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const privacy = await sock.fetchPrivacySettings();
+      logger.info("Fetched privacy settings");
+      return {
+        readreceipts: privacy?.readreceipts || "all",
+        profile: privacy?.profile || "all",
+        status: privacy?.status || "all",
+        online: privacy?.online || "all",
+        last: privacy?.last || "all",
+        groupadd: privacy?.groupadd || "all",
+      };
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to fetch privacy settings");
+      throw err;
+    }
+  },
+
+  async update_privacy_settings(params) {
+    const { readreceipts, profile, status, online, last, groupadd } = params;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const updates = {};
+      if (readreceipts) updates.readreceipts = readreceipts;
+      if (profile) updates.profile = profile;
+      if (status) updates.status = status;
+      if (online) updates.online = online;
+      if (last) updates.last = last;
+      if (groupadd) updates.groupadd = groupadd;
+
+      await sock.updatePrivacySettings(updates);
+      logger.info({ updates }, "Updated privacy settings");
+      return { status: "updated", ...updates };
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to update privacy settings");
+      throw err;
+    }
+  },
+
+  async get_settings() {
+    return {
+      reject_call: instanceSettings.reject_call || false,
+      msg_call: instanceSettings.msg_call || "",
+      groups_ignore: instanceSettings.groups_ignore || false,
+      always_online: instanceSettings.always_online || false,
+      read_messages: instanceSettings.read_messages || false,
+      read_status: instanceSettings.read_status || false,
+      sync_full_history: instanceSettings.sync_full_history || false,
+    };
+  },
+
+  async update_settings(params) {
+    const { reject_call, msg_call, groups_ignore, always_online, read_messages, read_status, sync_full_history } = params;
+
+    if (reject_call !== undefined) instanceSettings.reject_call = reject_call;
+    if (msg_call !== undefined) instanceSettings.msg_call = msg_call;
+    if (groups_ignore !== undefined) instanceSettings.groups_ignore = groups_ignore;
+    if (always_online !== undefined) instanceSettings.always_online = always_online;
+    if (read_messages !== undefined) instanceSettings.read_messages = read_messages;
+    if (read_status !== undefined) instanceSettings.read_status = read_status;
+    if (sync_full_history !== undefined) instanceSettings.sync_full_history = sync_full_history;
+
+    logger.info({ settings: instanceSettings }, "Updated instance settings");
+
+    return {
+      reject_call: instanceSettings.reject_call || false,
+      msg_call: instanceSettings.msg_call || "",
+      groups_ignore: instanceSettings.groups_ignore || false,
+      always_online: instanceSettings.always_online || false,
+      read_messages: instanceSettings.read_messages || false,
+      read_status: instanceSettings.read_status || false,
+      sync_full_history: instanceSettings.sync_full_history || false,
+    };
+  },
 };
+
+async function getAllContactJids() {
+  const jids = [];
+  if (sock.store && sock.store.contacts) {
+    for (const [jid] of sock.store.contacts) {
+      if (jid && !jid.endsWith("@broadcast") && jid !== "status@broadcast" && !isJidGroup(jid)) {
+        jids.push(jid);
+      }
+    }
+  }
+  return jids;
+}
 
 async function handleRequest(line) {
   let request;

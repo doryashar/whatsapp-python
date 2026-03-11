@@ -49,8 +49,8 @@ class SendMessageRequest(BaseModel):
 
 
 class SendMessageResponse(BaseModel):
-    message_id: str
-    to: str
+    message_id: Optional[str] = None
+    to: Optional[str] = None
 
 
 class SendReactionRequest(BaseModel):
@@ -61,14 +61,14 @@ class SendReactionRequest(BaseModel):
 
 
 class SendReactionResponse(BaseModel):
-    status: str
-    chat: str
-    message_id: str
-    emoji: str
+    status: Optional[str] = None
+    chat: Optional[str] = None
+    message_id: Optional[str] = None
+    emoji: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
-    status: str
+    status: Optional[str] = None
     qr: Optional[str] = None
     qr_data_url: Optional[str] = None
     connection_state: Optional[str] = None
@@ -78,13 +78,13 @@ class LoginResponse(BaseModel):
 
 
 class StatusResponse(BaseModel):
-    connection_state: str
+    connection_state: Optional[str] = None
     self_info: Optional[SelfInfo] = None
     has_qr: bool = False
 
 
 class LogoutResponse(BaseModel):
-    status: str
+    status: Optional[str] = None
 
 
 class MessageListResponse(BaseModel):
@@ -103,7 +103,7 @@ class WebhookListResponse(BaseModel):
 
 
 class WebhookOperationResponse(BaseModel):
-    status: str
+    status: Optional[str] = None
     url: Optional[str] = None
 
 
@@ -115,17 +115,17 @@ class SendPollRequest(BaseModel):
 
 
 class SendPollResponse(BaseModel):
-    message_id: str
-    to: str
+    message_id: Optional[str] = None
+    to: Optional[str] = None
 
 
 class SendTypingResponse(BaseModel):
-    status: str
-    to: str
+    status: Optional[str] = None
+    to: Optional[str] = None
 
 
 class AuthExistsResponse(BaseModel):
-    exists: bool
+    exists: Optional[bool] = None
 
 
 class AuthAgeResponse(BaseModel):
