@@ -2914,10 +2914,10 @@ async def list_tenants_api(session_id: str = Depends(require_admin_session)):
 
 @api_router.post("/tenants")
 async def create_tenant_api(
-    data: TenantCreate,
+    name: str = Form(...),
     session_id: str = Depends(require_admin_session),
 ):
-    tenant, api_key = await tenant_manager.create_tenant(data.name)
+    tenant, api_key = await tenant_manager.create_tenant(name)
     return {
         "status": "created",
         "tenant": {

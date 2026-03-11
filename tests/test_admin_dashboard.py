@@ -177,3 +177,27 @@ async def test_tenant_panel_has_send_form(setup_tenant_manager):
         assert "Send" in content
     finally:
         await tenant_manager.delete_tenant(api_key)
+
+
+@pytest.mark.asyncio
+async def test_create_tenant_with_form_data(setup_tenant_manager):
+    from src.main import app
+    from src.tenant import tenant_manager
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+
+        response = await client.post(
+            "/admin/api/tenants",
+            data={"name": "Form Test Tenant"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "created"
+        assert data["tenant"]["name"] == "Form Test Tenant"
+        assert "api_key" in data["tenant"]
+
+        await tenant_manager.delete_tenant(data["tenant"]["api_key"])
