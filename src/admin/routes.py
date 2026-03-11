@@ -151,7 +151,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
             }}
         }}
     </script>
-    <script src="/admin/static/websocket.js?v=3"></script>
+    <script src="/admin/static/websocket.js?v=4"></script>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
     <div class="flex h-screen">

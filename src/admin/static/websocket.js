@@ -70,7 +70,6 @@ class AdminWebSocket {
 
         switch (message.type) {
             case 'tenant_state_changed':
-                // Close QR modal if tenant connected
                 if (message.data.event === 'connected') {
                     const qrModal = document.getElementById('qr-modal');
                     if (qrModal) {
@@ -79,13 +78,12 @@ class AdminWebSocket {
                     }
                 }
                 
-                // Refresh tenant list
                 if (typeof htmx !== 'undefined') {
-                    htmx.trigger('#tenants-list', 'load');
-                    // Also refresh stats if on dashboard
-                    htmx.trigger('.grid', 'load');
+                    const tenantsList = document.querySelector('#tenants-list');
+                    if (tenantsList) htmx.trigger(tenantsList, 'load');
+                    const statsGrid = document.querySelector('.grid');
+                    if (statsGrid) htmx.trigger(statsGrid, 'load');
                 }
-                // Show notification
                 this.showNotification(
                     `Tenant ${message.data.tenant_name}: ${message.data.event}`,
                     'info'
@@ -93,13 +91,12 @@ class AdminWebSocket {
                 break;
 
             case 'new_message':
-                // Refresh message list
                 if (typeof htmx !== 'undefined') {
-                    htmx.trigger('#messages-list', 'load');
-                    // Also refresh stats
-                    htmx.trigger('.grid', 'load');
+                    const messagesList = document.querySelector('#messages-list');
+                    if (messagesList) htmx.trigger(messagesList, 'load');
+                    const statsGrid = document.querySelector('.grid');
+                    if (statsGrid) htmx.trigger(statsGrid, 'load');
                 }
-                // Show notification with message preview
                 const preview = message.data.message.text ?
                     message.data.message.text.substring(0, 50) :
                     'Media message';
@@ -110,11 +107,10 @@ class AdminWebSocket {
                 break;
 
             case 'webhook_attempt':
-                // Refresh webhook history
                 if (typeof htmx !== 'undefined') {
-                    htmx.trigger('#webhook-history', 'load');
+                    const webhookHistory = document.querySelector('#webhook-history');
+                    if (webhookHistory) htmx.trigger(webhookHistory, 'load');
                 }
-                // Show notification for failed webhooks
                 if (!message.data.success) {
                     this.showNotification(
                         `Webhook failed: ${message.data.url}`,
@@ -124,12 +120,12 @@ class AdminWebSocket {
                 break;
 
             case 'security_event':
-                // Refresh security lists
                 if (typeof htmx !== 'undefined') {
-                    htmx.trigger('#blocked-ips', 'load');
-                    htmx.trigger('#failed-auth', 'load');
+                    const blockedIps = document.querySelector('#blocked-ips');
+                    if (blockedIps) htmx.trigger(blockedIps, 'load');
+                    const failedAuth = document.querySelector('#failed-auth');
+                    if (failedAuth) htmx.trigger(failedAuth, 'load');
                 }
-                // Show security alert
                 this.showNotification(
                     `Security event: ${message.data.event} - ${message.data.ip}`,
                     'warning'
