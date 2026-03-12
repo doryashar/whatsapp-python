@@ -20,8 +20,8 @@ from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from scripts.sample_integration.session_manager import SessionManager
+sys.path.insert(0, str(Path(__file__).parent))
+from session_manager import SessionManager
 
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO")),

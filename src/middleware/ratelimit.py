@@ -52,7 +52,7 @@ class RateLimiter:
         try:
             import asyncio
             from ..admin import admin_ws_manager
-            
+
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 asyncio.create_task(
@@ -62,7 +62,7 @@ class RateLimiter:
                             "event": "ip_blocked",
                             "ip": ip,
                             "reason": reason,
-                        }
+                        },
                     )
                 )
         except Exception as e:
@@ -238,8 +238,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return request.client.host if request.client else "unknown"
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        if request.url.path in ["/health", "/ready"] or request.url.path.startswith(
-            "/admin/"
+        if (
+            request.url.path in ["/health", "/ready"]
+            or request.url.path.startswith("/admin/")
+            or request.url.path.startswith("/webhooks/")
         ):
             return await call_next(request)
 

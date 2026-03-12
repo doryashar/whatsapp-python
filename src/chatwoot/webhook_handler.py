@@ -71,23 +71,27 @@ class ChatwootWebhookHandler:
     async def _handle_message_created(self, payload: dict) -> dict:
         message_data = payload.get("message", {})
         conversation_data = payload.get("conversation", {})
-        contact_data = payload.get("sender", {}) or payload.get("contact", {})
-        sender_data = message_data.get("sender", {})
+        meta = conversation_data.get("meta", {})
+        meta_sender = meta.get("sender", {})
+        contact_data = meta_sender or payload.get("contact", {})
+        sender_data = message_data.get("sender", {}) or payload.get("sender", {})
 
-        message_type = message_data.get("message_type", "incoming")
+        message_type = message_data.get("message_type") or payload.get(
+            "message_type", "incoming"
+        )
 
-        if message_type not in ("outgoing", 1):
+        if message_type not in ("outgoing", 1, "outgoing"):
             logger.debug(
                 f"Ignoring non-outgoing message from Chatwoot (type={message_type})"
             )
             return {"status": "ignored", "reason": "not outgoing"}
 
-        private = message_data.get("private", False)
+        private = message_data.get("private", False) or payload.get("private", False)
         if private:
             logger.debug("Ignoring private message from Chatwoot")
             return {"status": "ignored", "reason": "private"}
 
-        content = message_data.get("content", "")
+        content = message_data.get("content", "") or payload.get("content", "")
         attachments = message_data.get("attachments", [])
 
         contact_phone = contact_data.get("phone_number", "")
