@@ -4,21 +4,7 @@ from typing import Optional
 from ..config import settings
 from ..tenant import tenant_manager, Tenant
 from ..middleware import rate_limiter
-
-
-def get_client_ip(request: Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip
-
-    if request.client:
-        return request.client.host
-
-    return "unknown"
+from ..utils import get_client_ip
 
 
 def get_api_key(

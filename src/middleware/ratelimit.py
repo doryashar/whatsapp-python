@@ -6,6 +6,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from ..telemetry import get_logger
+from ..utils.network import get_client_ip
 
 logger = get_logger("whatsapp.ratelimit")
 
@@ -52,7 +53,7 @@ class RateLimiter:
         try:
             import asyncio
             from ..admin import admin_ws_manager
-            
+
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 asyncio.create_task(
@@ -62,7 +63,7 @@ class RateLimiter:
                             "event": "ip_blocked",
                             "ip": ip,
                             "reason": reason,
-                        }
+                        },
                     )
                 )
         except Exception as e:
@@ -231,19 +232,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.rate_limiter = rate_limiter
 
-    def get_client_ip(self, request: Request) -> str:
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        return request.client.host if request.client else "unknown"
-
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         if request.url.path in ["/health", "/ready"] or request.url.path.startswith(
             "/admin/"
         ):
             return await call_next(request)
 
-        ip = self.get_client_ip(request)
+        ip = get_client_ip(request)
 
         if self.rate_limiter.is_blocked(ip):
             logger.warning(

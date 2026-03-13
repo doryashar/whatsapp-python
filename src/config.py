@@ -1,6 +1,11 @@
-from pydantic_settings import BaseSettings
-from pydantic import Field
+import logging
+import os
 from pathlib import Path
+from pydantic_settings import BaseSettings
+from pydantic import Field, model_validator
+
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -58,7 +63,40 @@ class Settings(BaseSettings):
     restart_window_seconds: int = Field(default=300, alias="RESTART_WINDOW_SECONDS")
     restart_cooldown_seconds: int = Field(default=10, alias="RESTART_COOLDOWN_SECONDS")
 
-    cors_origins: list[str] = Field(default_factory=lambda: ["*"], alias="CORS_ORIGINS")
+    cors_origins: list[str] = Field(default_factory=list, alias="CORS_ORIGINS")
+    trusted_proxies: list[str] = Field(
+        default_factory=lambda: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+        alias="TRUSTED_PROXIES",
+    )
+
+    @model_validator(mode="after")
+    def validate_security_settings(self):
+        is_production = os.getenv("ENVIRONMENT", "development").lower() in (
+            "production",
+            "prod",
+            "staging",
+        )
+
+        warnings = []
+
+        if not self.database_url:
+            msg = "DATABASE_URL is not configured"
+            if is_production:
+                raise ValueError(msg)
+            warnings.append(msg)
+
+        if not self.admin_password:
+            msg = "ADMIN_PASSWORD is not configured - admin dashboard will be disabled"
+            warnings.append(msg)
+
+        if not self.cors_origins:
+            msg = "CORS_ORIGINS is empty - CORS will block all cross-origin requests"
+            warnings.append(msg)
+
+        for warning in warnings:
+            logger.warning(f"Configuration: {warning}")
+
+        return self
 
     model_config = {"env_prefix": "", "populate_by_name": True}
 

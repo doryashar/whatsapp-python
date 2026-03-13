@@ -356,10 +356,69 @@ async function createSocket() {
 
           logger.info({ contactCount: contacts.length }, "Fetched contacts on connection");
           sendEvent("contacts", { contacts });
+
+          setTimeout(async () => {
+            try {
+              const chats = [];
+              let totalMessages = 0;
+
+              if (sock.store && sock.store.chats) {
+                for (const [jid, chat] of sock.store.chats) {
+                  if (jid.endsWith('@broadcast') || jid === 'status@broadcast') {
+                    continue;
+                  }
+
+                  const isGroup = isJidGroup(jid);
+                  const chatData = {
+                    jid: jid,
+                    name: chat.name || chat.subject || null,
+                    is_group: isGroup,
+                    unread_count: chat.unreadCount || 0,
+                    timestamp: chat.conversationTimestamp || 0,
+                    messages: [],
+                  };
+
+                  if (sock.store.messages) {
+                    const chatMessages = sock.store.messages.get(jid);
+                    if (chatMessages && chatMessages.length > 0) {
+                      const messagesToFetch = chatMessages.slice(-50);
+                      
+                      for (const msg of messagesToFetch) {
+                        if (!msg || !msg.key) continue;
+
+                        const content = extractMessageContent(msg);
+                        const messageData = {
+                          id: msg.key.id,
+                          from_me: msg.key.fromMe || false,
+                          from: msg.key.fromMe ? selfInfo?.jid : (isGroup ? msg.key.participant : jid),
+                          chat_jid: jid,
+                          is_group: isGroup,
+                          push_name: msg.pushName || null,
+                          text: content.text || "",
+                          type: content.type || "text",
+                          timestamp: msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now(),
+                        };
+
+                        chatData.messages.push(messageData);
+                        totalMessages++;
+                      }
+                    }
+                  }
+
+                  chats.push(chatData);
+                }
+              }
+
+              logger.info({ chatCount: chats.length, messageCount: totalMessages }, "Fetched chats history on connection");
+              sendEvent("chats_history", { chats, total_messages: totalMessages });
+            } catch (err) {
+              logger.error({ err: err.message }, "Failed to fetch chats history on connection");
+            }
+          }, 3000);
         } catch (err) {
           logger.error({ err: err.message }, "Failed to fetch contacts on connection");
         }
-      }, 2000); // Wait 2 seconds for contacts to sync
+      }, 2000);
     }
 
     if (receivedPendingNotifications) {
@@ -655,6 +714,72 @@ const methods = {
       return { contacts };
     } catch (err) {
       logger.error({ err: err.message }, "Failed to fetch contacts");
+      throw err;
+    }
+  },
+
+  async get_chats_with_messages(params) {
+    const { limit = 50 } = params || {};
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const chats = [];
+      let totalMessages = 0;
+
+      if (sock.store && sock.store.chats) {
+        for (const [jid, chat] of sock.store.chats) {
+          if (jid.endsWith('@broadcast') || jid === 'status@broadcast') {
+            continue;
+          }
+
+          const isGroup = isJidGroup(jid);
+          const chatData = {
+            jid: jid,
+            name: chat.name || chat.subject || null,
+            is_group: isGroup,
+            unread_count: chat.unreadCount || 0,
+            timestamp: chat.conversationTimestamp || 0,
+            messages: [],
+          };
+
+          if (sock.store.messages) {
+            const chatMessages = sock.store.messages.get(jid);
+            if (chatMessages && chatMessages.length > 0) {
+              const messagesToFetch = chatMessages.slice(-limit);
+              
+              for (const msg of messagesToFetch) {
+                if (!msg || !msg.key) continue;
+
+                const content = extractMessageContent(msg);
+                const messageData = {
+                  id: msg.key.id,
+                  from_me: msg.key.fromMe || false,
+                  from: msg.key.fromMe ? selfInfo?.jid : (isGroup ? msg.key.participant : jid),
+                  chat_jid: jid,
+                  is_group: isGroup,
+                  push_name: msg.pushName || null,
+                  text: content.text || "",
+                  type: content.type || "text",
+                  timestamp: msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now(),
+                };
+
+                chatData.messages.push(messageData);
+                totalMessages++;
+              }
+            }
+          }
+
+          chats.push(chatData);
+        }
+      }
+
+      logger.info({ chatCount: chats.length, messageCount: totalMessages }, "Fetched chats with messages");
+      return { chats, total_messages: totalMessages };
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to fetch chats with messages");
       throw err;
     }
   },

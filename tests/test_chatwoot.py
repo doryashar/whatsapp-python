@@ -144,15 +144,15 @@ class TestChatwootIntegration:
         )
 
     def test_extract_phone(self, config, mock_tenant):
-        integration = ChatwootIntegration(config, mock_tenant)
+        from src.utils import extract_and_validate_phone_from_jid
 
-        phone = integration._extract_phone("1234567890@s.whatsapp.net")
+        phone = extract_and_validate_phone_from_jid("1234567890@s.whatsapp.net")
         assert phone == "+1234567890"
 
-        phone = integration._extract_phone("1234567890:12@s.whatsapp.net")
+        phone = extract_and_validate_phone_from_jid("1234567890:12@s.whatsapp.net")
         assert phone == "+1234567890"
 
-        phone = integration._extract_phone("invalid")
+        phone = extract_and_validate_phone_from_jid("invalid")
         assert phone is None
 
     def test_is_ignored(self, mock_tenant):
@@ -243,7 +243,7 @@ class TestChatwootWebhookHandler:
     def test_verify_signature_no_token(self, mock_tenant, mock_bridge, config):
         handler = ChatwootWebhookHandler(mock_tenant, mock_bridge, config)
 
-        assert handler.verify_signature(b"{}", "any") is True
+        assert handler.verify_signature(b"{}", "any") is False
 
     @pytest.mark.asyncio
     async def test_handle_webhook_ignores_non_outgoing(
@@ -1194,9 +1194,9 @@ class TestConversationLock:
     async def test_get_conversation_lock(self, config, mock_tenant):
         integration = ChatwootIntegration(config, mock_tenant)
 
-        lock1 = integration._get_conversation_lock("test_jid_1")
-        lock2 = integration._get_conversation_lock("test_jid_2")
-        lock1_again = integration._get_conversation_lock("test_jid_1")
+        lock1 = await integration._get_conversation_lock("test_jid_1")
+        lock2 = await integration._get_conversation_lock("test_jid_2")
+        lock1_again = await integration._get_conversation_lock("test_jid_1")
 
         assert lock1 is lock1_again
         assert lock1 is not lock2

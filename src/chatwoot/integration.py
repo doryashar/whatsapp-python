@@ -1,7 +1,6 @@
 import asyncio
 import re
 from typing import Optional, TYPE_CHECKING
-from dataclasses import dataclass, field
 from datetime import datetime
 import time
 
@@ -13,6 +12,7 @@ from .models import (
 )
 from .client import ChatwootClient, ChatwootAPIError
 from ..telemetry import get_logger
+from ..utils import extract_and_validate_phone_from_jid, is_group_jid
 
 if TYPE_CHECKING:
     from ..tenant import Tenant
@@ -43,6 +43,7 @@ class ChatwootIntegration:
         self._conversation_cache: dict[int, ChatwootConversation] = {}
         self._profile_picture_cache: dict[str, str] = {}
         self._conversation_locks: dict[str, asyncio.Lock] = {}
+        self._lock_creation_mutex: asyncio.Lock = asyncio.Lock()
         self._last_connection_notification: float = 0
 
     @property
@@ -56,9 +57,11 @@ class ChatwootIntegration:
     async def close(self):
         await self._client.close()
 
-    def _get_conversation_lock(self, jid: str) -> asyncio.Lock:
+    async def _get_conversation_lock(self, jid: str) -> asyncio.Lock:
         if jid not in self._conversation_locks:
-            self._conversation_locks[jid] = asyncio.Lock()
+            async with self._lock_creation_mutex:
+                if jid not in self._conversation_locks:
+                    self._conversation_locks[jid] = asyncio.Lock()
         return self._conversation_locks[jid]
 
     async def handle_message(self, event_data: dict, is_outgoing: bool = False) -> bool:
@@ -129,19 +132,19 @@ class ChatwootIntegration:
         is_edited = event_data.get("is_edited", False)
 
         if is_outgoing:
-            phone_number = self._extract_phone(to_jid)
+            phone_number = extract_and_validate_phone_from_jid(to_jid)
             if not phone_number:
                 logger.debug(
                     f"Could not extract phone from 'to' jid: {to_jid}, trying chat_jid"
                 )
-                phone_number = self._extract_phone(chat_jid)
+                phone_number = extract_and_validate_phone_from_jid(chat_jid)
         else:
-            phone_number = self._extract_phone(from_jid)
+            phone_number = extract_and_validate_phone_from_jid(from_jid)
             if not phone_number:
                 logger.debug(
                     f"Could not extract phone from 'from' jid: {from_jid}, trying chat_jid"
                 )
-                phone_number = self._extract_phone(chat_jid)
+                phone_number = extract_and_validate_phone_from_jid(chat_jid)
 
         if not phone_number:
             logger.warning(
@@ -281,7 +284,9 @@ class ChatwootIntegration:
         content = self._prepare_message_content(event_data, is_edited)
 
         participant_name = (
-            push_name or self._extract_phone(participant_jid) or "Unknown"
+            push_name
+            or extract_and_validate_phone_from_jid(participant_jid)
+            or "Unknown"
         )
         if content:
             content = f"[{participant_name}]: {content}"
@@ -518,29 +523,6 @@ class ChatwootIntegration:
             logger.error(f"Error sending QR code to Chatwoot: {e}")
             return False
 
-    def _extract_phone(self, jid: str) -> Optional[str]:
-        if not jid:
-            return None
-
-        if "@lid" in jid:
-            logger.debug(f"Skipping LID address: {jid}")
-            return None
-
-        if "@g.us" in jid:
-            return None
-
-        phone = jid.split("@")[0]
-        phone = phone.split(":")[0]
-
-        if not phone.isdigit():
-            return None
-
-        if len(phone) < 10 or len(phone) > 15:
-            logger.debug(f"Invalid phone number length: {phone}")
-            return None
-
-        return "+" + phone if not phone.startswith("+") else phone
-
     async def _prepare_attachments(self, event_data: dict) -> list:
         attachments = []
 
@@ -628,8 +610,8 @@ class ChatwootIntegration:
                 logger.debug(f"Message {message_id} not found in database")
                 return False
 
-            chatwoot_message_id = getattr(msg, "chatwoot_message_id", None)
-            chatwoot_conversation_id = getattr(msg, "chatwoot_conversation_id", None)
+            chatwoot_message_id = msg.get("chatwoot_message_id")
+            chatwoot_conversation_id = msg.get("chatwoot_conversation_id")
 
             if not chatwoot_message_id or not chatwoot_conversation_id:
                 logger.debug(f"Message {message_id} has no Chatwoot IDs stored")
@@ -662,7 +644,7 @@ class ChatwootIntegration:
                 logger.warning("No chat_jid in read event")
                 return False
 
-            phone_number = self._extract_phone(chat_jid)
+            phone_number = extract_and_validate_phone_from_jid(chat_jid)
             if not phone_number:
                 logger.debug(f"Could not extract phone from jid: {chat_jid}")
                 return False
@@ -741,63 +723,11 @@ class ChatwootIntegration:
             logger.error(f"Error handling status instance: {e}", exc_info=True)
             return False
 
-        if not self._config.status_instance_enabled:
-            return False
-
-        if not self._config.bot_contact_enabled:
-            return False
-
-        try:
-            status = event_data.get("status", "unknown")
-
-            now = time.time()
-            time_since_last = now - self._last_connection_notification
-            if time_since_last < self.CONNECTION_NOTIFICATION_COOLDOWN:
-                logger.debug(
-                    f"Skipping status notification, cooldown active "
-                    f"({time_since_last:.0f}s < {self.CONNECTION_NOTIFICATION_COOLDOWN}s)"
-                )
-                return False
-
-            inbox = await self._client.get_inbox()
-            if not inbox:
-                logger.warning("Could not find inbox for status notification")
-                return False
-
-            inbox_name = inbox.get("name", "WhatsApp")
-            msg_status = f"{inbox_name} status: {status}"
-
-            bot_contact = await self._client.find_or_create_bot_contact(
-                bot_name=self._config.bot_name,
-                bot_avatar_url=self._config.bot_avatar_url,
-            )
-            conversation = await self._client.get_or_create_bot_conversation(
-                bot_contact
-            )
-
-            await self._client.create_message(
-                conversation_id=conversation.id,
-                content=msg_status,
-                message_type="incoming",
-            )
-
-            self._last_connection_notification = now
-            logger.info(
-                f"Status notification sent to Chatwoot: tenant={self._tenant.name}, "
-                f"status={status}"
-            )
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Error handling status instance: {e}", exc_info=True)
-            return False
-
     async def _get_or_create_conversation_with_lock(
         self, contact: ChatwootContact, source_id: str
     ) -> ChatwootConversation:
         jid = source_id or str(contact.id)
-        lock = self._get_conversation_lock(jid)
+        lock = await self._get_conversation_lock(jid)
 
         acquired = False
         try:

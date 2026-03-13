@@ -7,6 +7,7 @@ from typing import Optional, TYPE_CHECKING
 from .models import ChatwootWebhookPayload, ChatwootMessage, ChatwootConfig
 from .client import ChatwootAPIError, ChatwootClient
 from ..telemetry import get_logger
+from ..utils import format_phone_with_plus
 
 if TYPE_CHECKING:
     from ..tenant import Tenant
@@ -33,7 +34,11 @@ class ChatwootWebhookHandler:
 
     def verify_signature(self, payload: bytes, signature: str) -> bool:
         if not self._hmac_token:
-            return True
+            logger.error(
+                "HMAC token not configured for Chatwoot webhook - rejecting request. "
+                "Set CHATWOOT_HMAC_TOKEN environment variable to enable webhooks."
+            )
+            return False
 
         expected = hmac.new(
             self._hmac_token.encode("utf-8"),
@@ -368,10 +373,7 @@ class ChatwootWebhookHandler:
             logger.warning(f"Failed to create error private note: {e}")
 
     def _normalize_phone(self, phone: str) -> str:
-        cleaned = "".join(c for c in phone if c.isdigit() or c == "+")
-        if not cleaned.startswith("+"):
-            cleaned = "+" + cleaned
-        return cleaned
+        return format_phone_with_plus(phone)
 
     async def close(self) -> None:
         """Clean up resources."""

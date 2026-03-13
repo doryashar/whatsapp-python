@@ -61,3 +61,58 @@ def format_phone_display(phone: str, name: Optional[str] = None) -> str:
     if name:
         return f"{name} ({phone})"
     return phone
+
+
+def format_phone_with_plus(phone: str) -> str:
+    """
+    Format a phone number with a + prefix.
+
+    Used for Chatwoot contact creation.
+    Examples:
+        "972548826569" -> "+972548826569"
+        "+972548826569" -> "+972548826569"
+        "972-548-826-569" -> "+972548826569"
+    """
+    if not phone:
+        return ""
+
+    cleaned = "".join(c for c in phone if c.isdigit() or c == "+")
+
+    if not cleaned.startswith("+"):
+        cleaned = "+" + cleaned
+
+    return cleaned
+
+
+def extract_and_validate_phone_from_jid(jid: Optional[str]) -> Optional[str]:
+    """
+    Extract phone from JID and validate it.
+
+    Returns phone with + prefix if valid, None otherwise.
+    Used for Chatwoot contact handling.
+
+    Validation:
+    - Must be from a non-group JID
+    - Must be a digit-only phone number
+    - Must be 10-15 digits
+    - Must not be a @lid address
+    """
+    if not jid:
+        return None
+
+    if "@lid" in jid:
+        return None
+
+    if "@g.us" in jid:
+        return None
+
+    phone = jid.split("@")[0]
+    phone = phone.split(":")[0]
+
+    if not phone.isdigit():
+        return None
+
+    if len(phone) < 10 or len(phone) > 15:
+        return None
+
+    return "+" + phone

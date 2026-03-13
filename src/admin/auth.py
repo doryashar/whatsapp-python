@@ -4,7 +4,6 @@ import hmac
 from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import Request, HTTPException, Cookie
-from fastapi.responses import RedirectResponse
 
 from ..config import settings
 from ..telemetry import get_logger
@@ -17,9 +16,6 @@ class AdminSession:
     def __init__(self, db: Database):
         self._db = db
         self._session_cookie_name = "admin_session"
-
-    def _hash_password(self, password: str) -> str:
-        return hashlib.sha256(password.encode()).hexdigest()
 
     def verify_password(self, password: str) -> bool:
         if not settings.admin_password:

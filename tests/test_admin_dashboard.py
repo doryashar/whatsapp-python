@@ -201,3 +201,34 @@ async def test_create_tenant_with_form_data(setup_tenant_manager):
         assert "api_key" in data["tenant"]
 
         await tenant_manager.delete_tenant(data["tenant"]["api_key"])
+
+
+@pytest.mark.asyncio
+async def test_delete_tenant_without_raw_key(setup_tenant_manager):
+    from src.main import app
+    from src.tenant import tenant_manager
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+
+        response = await client.post(
+            "/admin/api/tenants",
+            data={"name": "Delete Test Tenant"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        tenant_hash = data["tenant"]["api_key_hash"]
+
+        tenant = tenant_manager._tenants.get(tenant_hash)
+        assert tenant is not None
+
+        tenant._raw_api_key = None
+
+        delete_response = await client.delete(f"/admin/api/tenants/{tenant_hash}")
+        assert delete_response.status_code == 200
+        assert delete_response.json()["status"] == "deleted"
+
+        assert tenant_manager._tenants.get(tenant_hash) is None

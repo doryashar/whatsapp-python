@@ -262,6 +262,9 @@ class TenantManager:
 
     async def delete_tenant(self, api_key: str) -> bool:
         key_hash = self.hash_api_key(api_key)
+        return await self.delete_tenant_by_hash(key_hash)
+
+    async def delete_tenant_by_hash(self, key_hash: str) -> bool:
         tenant = self._tenants.get(key_hash)
         if tenant:
             logger.info(f"Deleting tenant: {tenant.name}")

@@ -159,7 +159,7 @@ async def test_admin_create_tenant():
         # Now make the authenticated request
         response = await client.post(
             "/admin/api/tenants",
-            json={"name": "new_user"},
+            data={"name": "new_user"},
         )
         if response.status_code != 200:
             print(f"Status: {response.status_code}, Body: {response.text}")

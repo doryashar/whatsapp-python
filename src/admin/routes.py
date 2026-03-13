@@ -9,6 +9,7 @@ from ..config import settings
 from ..telemetry import get_logger
 from ..tenant import tenant_manager
 from ..middleware import rate_limiter
+from ..utils import is_safe_webhook_url
 from .auth import AdminSession, require_admin_session, get_session_id
 from .websocket import admin_ws_manager
 
@@ -240,6 +241,7 @@ async def admin_login(
         key="admin_session",
         value=session_id,
         httponly=True,
+        secure=not settings.debug,
         max_age=86400,
         samesite="lax",
     )
@@ -2923,6 +2925,7 @@ async def create_tenant_api(
         "tenant": {
             "name": tenant.name,
             "api_key": api_key,
+            "api_key_hash": tenant.api_key_hash,
             "created_at": tenant.created_at.isoformat(),
         },
     }
@@ -2974,12 +2977,8 @@ async def delete_tenant_api(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    if tenant._raw_api_key:
-        deleted = await tenant_manager.delete_tenant(tenant._raw_api_key)
-        return {"status": "deleted" if deleted else "not_found"}
-    raise HTTPException(
-        status_code=400, detail="Cannot delete tenant without raw API key"
-    )
+    deleted = await tenant_manager.delete_tenant_by_hash(tenant_hash)
+    return {"status": "deleted" if deleted else "not_found"}
 
 
 @api_router.post("/tenants/{tenant_hash}/reconnect")
@@ -3157,6 +3156,12 @@ async def add_tenant_webhook_api(
     if not data.url.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid webhook URL")
 
+    if not is_safe_webhook_url(data.url):
+        raise HTTPException(
+            status_code=400,
+            detail="Webhook URL points to internal or blocked address",
+        )
+
     await tenant_manager.add_webhook(tenant, data.url)
     return {"status": "added", "url": data.url}
 
@@ -3312,16 +3317,8 @@ async def bulk_delete_tenants(
                 results.append({"hash": hash, "status": "not_found"})
                 continue
 
-            # Need raw API key for deletion
-            if tenant._raw_api_key:
-                deleted = await tenant_manager.delete_tenant(tenant._raw_api_key)
-                results.append(
-                    {"hash": hash, "status": "deleted" if deleted else "failed"}
-                )
-            else:
-                results.append(
-                    {"hash": hash, "status": "error", "error": "No raw API key"}
-                )
+            deleted = await tenant_manager.delete_tenant_by_hash(hash)
+            results.append({"hash": hash, "status": "deleted" if deleted else "failed"})
         except Exception as e:
             results.append({"hash": hash, "status": "error", "error": str(e)})
 

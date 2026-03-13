@@ -85,6 +85,9 @@ class Database:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_jid, created_at DESC)"
             )
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_tenant_msg_id ON messages(tenant_hash, message_id)"
+            )
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS webhook_attempts (
                     id SERIAL PRIMARY KEY,
@@ -238,6 +241,9 @@ class Database:
         )
         await self._pool.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_jid, created_at DESC)"
+        )
+        await self._pool.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_tenant_msg_id ON messages(tenant_hash, message_id)"
         )
         await self._pool.execute("""
             CREATE TABLE IF NOT EXISTS webhook_attempts (
@@ -474,6 +480,9 @@ class Database:
 
     async def delete_tenant(self, api_key_hash: str) -> bool:
         logger.debug(f"Deleting tenant: hash={api_key_hash[:16]}...")
+
+        await self.delete_tenant_data(api_key_hash)
+
         if self._is_postgres:
             async with self._pool.acquire() as conn:
                 result = await conn.execute(
@@ -489,6 +498,56 @@ class Database:
             deleted = cursor.rowcount > 0
         logger.debug(f"Tenant deleted: {deleted}")
         return deleted
+
+    async def delete_tenant_data(self, tenant_hash: str) -> dict:
+        """
+        Delete all data associated with a tenant (messages, contacts, webhook_attempts).
+        Returns count of deleted records.
+        """
+        logger.debug(f"Deleting tenant data: hash={tenant_hash[:16]}...")
+        deleted_counts = {"messages": 0, "contacts": 0, "webhook_attempts": 0}
+
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM messages WHERE tenant_hash = $1", tenant_hash
+                )
+                deleted_counts["messages"] = int(result.split()[-1])
+
+                result = await conn.execute(
+                    "DELETE FROM contacts WHERE tenant_hash = $1", tenant_hash
+                )
+                deleted_counts["contacts"] = int(result.split()[-1])
+
+                result = await conn.execute(
+                    "DELETE FROM webhook_attempts WHERE tenant_hash = $1", tenant_hash
+                )
+                deleted_counts["webhook_attempts"] = int(result.split()[-1])
+        else:
+            cursor = await self._pool.execute(
+                "DELETE FROM messages WHERE tenant_hash = ?", (tenant_hash,)
+            )
+            deleted_counts["messages"] = cursor.rowcount
+
+            cursor = await self._pool.execute(
+                "DELETE FROM contacts WHERE tenant_hash = ?", (tenant_hash,)
+            )
+            deleted_counts["contacts"] = cursor.rowcount
+
+            cursor = await self._pool.execute(
+                "DELETE FROM webhook_attempts WHERE tenant_hash = ?", (tenant_hash,)
+            )
+            deleted_counts["webhook_attempts"] = cursor.rowcount
+
+            await self._pool.commit()
+
+        logger.info(
+            f"Deleted tenant data: hash={tenant_hash[:16]}..., "
+            f"messages={deleted_counts['messages']}, "
+            f"contacts={deleted_counts['contacts']}, "
+            f"webhook_attempts={deleted_counts['webhook_attempts']}"
+        )
+        return deleted_counts
 
     async def update_webhooks(self, api_key_hash: str, webhook_urls: list[str]) -> None:
         logger.debug(
@@ -775,7 +834,7 @@ class Database:
         timestamp: int = 0,
         direction: str = "inbound",
         media_url: Optional[str] = None,
-    ) -> int:
+    ) -> Optional[int]:
         from ..utils.phone import normalize_phone, extract_phone_from_jid
 
         if self._is_postgres:
@@ -784,6 +843,7 @@ class Database:
                     """
                     INSERT INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, media_url)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    ON CONFLICT (tenant_hash, message_id) DO NOTHING
                     RETURNING id
                     """,
                     tenant_hash,
@@ -798,11 +858,11 @@ class Database:
                     direction,
                     media_url,
                 )
-                msg_id = row["id"]
+                msg_id = row["id"] if row else None
         else:
             cursor = await self._pool.execute(
                 """
-                INSERT INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, media_url)
+                INSERT OR IGNORE INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, media_url)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -820,7 +880,10 @@ class Database:
                 ),
             )
             await self._pool.commit()
-            msg_id = cursor.lastrowid
+            msg_id = cursor.lastrowid if cursor.lastrowid > 0 else None
+
+        if msg_id is None:
+            return None
 
         phone = extract_phone_from_jid(chat_jid)
         normalized_phone = normalize_phone(phone)

@@ -300,6 +300,87 @@ async def handle_contacts_sync(tenant: "Tenant", contacts: list[dict]):
     )
 
 
+async def handle_history_sync(tenant: "Tenant", chats_data: dict[str, Any]):
+    """Sync chat history from WhatsApp to database"""
+    if not tenant_manager._db:
+        logger.debug(f"No database available for history sync: tenant={tenant.name}")
+        return
+
+    if not tenant.message_store:
+        logger.warning(f"No message store for tenant {tenant.name}")
+        return
+
+    chats = chats_data.get("chats", [])
+    total_messages = chats_data.get("total_messages", 0)
+
+    logger.info(
+        f"Starting history sync for tenant {tenant.name}: {len(chats)} chats, {total_messages} messages"
+    )
+
+    stored_count = 0
+    duplicate_count = 0
+    error_count = 0
+
+    for chat in chats:
+        chat_jid = chat.get("jid", "")
+        is_group = chat.get("is_group", False)
+        messages = chat.get("messages", [])
+
+        for msg in messages:
+            try:
+                msg_id = msg.get("id", "")
+                if not msg_id:
+                    continue
+
+                from_me = msg.get("from_me", False)
+                from_jid = msg.get("from", "")
+                text = msg.get("text", "")
+                msg_type = msg.get("type", "text")
+                timestamp = msg.get("timestamp", 0)
+                push_name = msg.get("push_name")
+
+                direction = "outbound" if from_me else "inbound"
+
+                stored_msg = StoredMessage(
+                    id=msg_id,
+                    from_jid=from_jid,
+                    chat_jid=chat_jid,
+                    is_group=is_group,
+                    push_name=push_name,
+                    text=text,
+                    msg_type=msg_type,
+                    timestamp=timestamp,
+                    direction=direction,
+                )
+
+                if hasattr(tenant.message_store, "add_with_persist"):
+                    db_id = await tenant.message_store.add_with_persist(stored_msg)
+                    if db_id:
+                        stored_count += 1
+                    else:
+                        duplicate_count += 1
+                else:
+                    tenant.message_store.add(stored_msg)
+                    stored_count += 1
+
+            except Exception as e:
+                error_count += 1
+                logger.error(
+                    f"Failed to sync message for tenant {tenant.name}: {e}",
+                    exc_info=True,
+                )
+
+    logger.info(
+        f"History sync complete for tenant {tenant.name}: stored={stored_count}, duplicates={duplicate_count}, errors={error_count}",
+        extra={
+            "tenant": tenant.name,
+            "stored": stored_count,
+            "duplicates": duplicate_count,
+            "errors": error_count,
+        },
+    )
+
+
 async def handle_chatwoot_event(
     tenant: "Tenant", event_type: str, params: dict[str, Any]
 ):
@@ -429,6 +510,11 @@ def handle_bridge_event(
             f"Received contacts for tenant {tenant.name}: count={len(params.get('contacts', []))}"
         )
         asyncio.create_task(handle_contacts_sync(tenant, params.get("contacts", [])))
+    elif event_type == "chats_history":
+        logger.info(
+            f"Received chat history for tenant {tenant.name}: chats={len(params.get('chats', []))}, messages={params.get('total_messages', 0)}"
+        )
+        asyncio.create_task(handle_history_sync(tenant, params))
     elif event_type == "disconnected":
         reason = params.get("reason")
         reason_name = params.get("reason_name", "unknown")
@@ -587,8 +673,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key", "Cookie"],
 )
 
 app.add_middleware(RateLimitMiddleware, rate_limiter=rate_limiter)

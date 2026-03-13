@@ -245,6 +245,10 @@ class BaileysBridge:
         logger.info("Bridge get_contacts requested")
         return await self.call("get_contacts")
 
+    async def get_chats_with_messages(self, limit_per_chat: int = 50) -> dict:
+        logger.info(f"Bridge get_chats_with_messages: limit={limit_per_chat}")
+        return await self.call("get_chats_with_messages", {"limit": limit_per_chat})
+
     async def get_profile_picture(self, jid: str) -> dict:
         logger.debug(f"Bridge get_profile_picture: jid={jid}")
         return await self.call("get_profile_picture", {"jid": jid})

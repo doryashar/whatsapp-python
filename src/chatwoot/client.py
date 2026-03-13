@@ -14,6 +14,7 @@ from .models import (
     CreateMessageRequest,
 )
 from ..telemetry import get_logger
+from ..utils import format_phone_with_plus
 
 logger = get_logger("whatsapp.chatwoot.client")
 
@@ -491,10 +492,7 @@ class ChatwootClient:
         )
 
     def _normalize_phone(self, phone: str) -> str:
-        cleaned = "".join(c for c in phone if c.isdigit() or c == "+")
-        if not cleaned.startswith("+") and len(cleaned) >= 10:
-            cleaned = "+" + cleaned
-        return cleaned
+        return format_phone_with_plus(phone)
 
     def _try_brazil_number_variants(self, phone: str) -> Optional[str]:
         phone = phone.replace("+", "")

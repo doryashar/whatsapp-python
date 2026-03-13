@@ -6,6 +6,7 @@ from typing import Optional, TYPE_CHECKING
 from .models import ChatwootConfig, ChatwootContact, ChatwootConversation
 from .client import ChatwootClient, ChatwootAPIError
 from ..telemetry import get_logger
+from ..utils import extract_and_validate_phone_from_jid
 
 if TYPE_CHECKING:
     from ..tenant import Tenant
@@ -234,13 +235,4 @@ class ChatwootSyncService:
         return [{"file_type": mimetype, "file_url": media_url}]
 
     def _extract_phone(self, jid: str) -> Optional[str]:
-        if not jid:
-            return None
-
-        phone = jid.split("@")[0]
-        phone = phone.split(":")[0]
-
-        if not phone.isdigit():
-            return None
-
-        return "+" + phone if not phone.startswith("+") else phone
+        return extract_and_validate_phone_from_jid(jid)

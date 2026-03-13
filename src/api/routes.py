@@ -4,6 +4,7 @@ from ..bridge import BridgeError
 from ..tenant import Tenant, tenant_manager
 from ..telemetry import get_logger
 from ..middleware import rate_limiter
+from ..utils import is_safe_webhook_url
 from ..models import (
     SendMessageRequest,
     SendMessageResponse,
@@ -342,6 +343,11 @@ async def add_webhook(
         raise HTTPException(
             status_code=400, detail="URL must start with http:// or https://"
         )
+    if not is_safe_webhook_url(request.url):
+        raise HTTPException(
+            status_code=400,
+            detail="Webhook URL points to internal or blocked address",
+        )
     await tenant_manager.add_webhook(tenant, request.url)
     return WebhookOperationResponse(status="added", url=request.url)
 
@@ -354,23 +360,6 @@ async def remove_webhook(
     if await tenant_manager.remove_webhook(tenant, url):
         return WebhookOperationResponse(status="removed", url=url)
     raise HTTPException(status_code=404, detail="Webhook URL not found")
-
-
-class CreateTenantRequest:
-    def __init__(self, name: str):
-        self.name = name
-
-
-class TenantResponse:
-    def __init__(self, name: str, api_key: str, created_at: str):
-        self.name = name
-        self.api_key = api_key
-        self.created_at = created_at
-
-
-class TenantListResponse:
-    def __init__(self, tenants: list[dict]):
-        self.tenants = tenants
 
 
 @admin_router.post("/tenants")
@@ -1075,6 +1064,82 @@ async def get_contacts(tenant: Tenant = Depends(get_tenant)):
         return ContactsListResponse(contacts=contacts)
     except BridgeError as e:
         logger.error(f"Get contacts failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sync-history")
+async def sync_history(
+    tenant: Tenant = Depends(get_tenant),
+    limit: int = Query(default=50, ge=1, le=200, description="Messages per chat"),
+):
+    logger.info(f"Manual history sync: tenant={tenant.name}, limit={limit}")
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.get_chats_with_messages(limit_per_chat=limit)
+
+        chats = result.get("chats", [])
+        total_messages = result.get("total_messages", 0)
+
+        stored_count = 0
+        duplicate_count = 0
+
+        if tenant.message_store:
+            from ..store.messages import StoredMessage
+
+            for chat in chats:
+                chat_jid = chat.get("jid", "")
+                is_group = chat.get("is_group", False)
+                messages = chat.get("messages", [])
+
+                for msg in messages:
+                    try:
+                        msg_id = msg.get("id", "")
+                        if not msg_id:
+                            continue
+
+                        from_me = msg.get("from_me", False)
+                        from_jid = msg.get("from", "")
+                        text = msg.get("text", "")
+                        msg_type = msg.get("type", "text")
+                        timestamp = msg.get("timestamp", 0)
+                        push_name = msg.get("push_name")
+
+                        direction = "outbound" if from_me else "inbound"
+
+                        stored_msg = StoredMessage(
+                            id=msg_id,
+                            from_jid=from_jid,
+                            chat_jid=chat_jid,
+                            is_group=is_group,
+                            push_name=push_name,
+                            text=text,
+                            msg_type=msg_type,
+                            timestamp=timestamp,
+                            direction=direction,
+                        )
+
+                        db_id = await tenant.message_store.add_with_persist(stored_msg)
+                        if db_id:
+                            stored_count += 1
+                        else:
+                            duplicate_count += 1
+
+                    except Exception as e:
+                        logger.error(f"Failed to sync message: {e}")
+
+        logger.info(
+            f"History sync complete for tenant {tenant.name}: stored={stored_count}, duplicates={duplicate_count}"
+        )
+
+        return {
+            "status": "synced",
+            "chats_count": len(chats),
+            "total_messages": total_messages,
+            "stored": stored_count,
+            "duplicates": duplicate_count,
+        }
+    except BridgeError as e:
+        logger.error(f"History sync failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

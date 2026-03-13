@@ -37,8 +37,6 @@ class ChatwootConfig(BaseModel):
     logo: Optional[str] = None
     message_delete_enabled: bool = True
     mark_read_on_reply: bool = True
-    message_delete_enabled: bool = True
-    mark_read_on_reply: bool = True
     reaction_messages_enabled: bool = True
     sticker_messages_enabled: bool = True
     conversation_lock_enabled: bool = True
