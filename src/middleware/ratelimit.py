@@ -233,8 +233,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.rate_limiter = rate_limiter
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        if request.url.path in ["/health", "/ready"] or request.url.path.startswith(
-            "/admin/"
+        if (
+            request.url.path in ["/health", "/ready"]
+            or request.url.path.startswith("/admin/")
+            or request.url.path.startswith("/webhooks/")
         ):
             return await call_next(request)
 

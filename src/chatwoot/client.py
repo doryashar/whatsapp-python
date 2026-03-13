@@ -46,7 +46,7 @@ class ChatwootClient:
 
     def _get_headers(self) -> dict:
         return {
-            "api-access-token": self._token,
+            "api_access_token": self._token,
             "Content-Type": "application/json",
         }
 

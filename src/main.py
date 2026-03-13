@@ -114,6 +114,67 @@ async def handle_bridge_crash(tenant):
         await tenant_manager.update_session_state(tenant, "disconnected")
 
 
+async def trigger_bridge_reconnect(tenant):
+    logger.info(
+        f"Triggering bridge reconnection for {tenant.name}",
+        extra={"tenant": tenant.name},
+    )
+
+    if tenant.bridge:
+        try:
+            await tenant.bridge.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping bridge for {tenant.name}: {e}")
+
+    if not tenant.has_valid_auth():
+        logger.warning(
+            f"No valid auth for {tenant.name}, cannot reconnect",
+            extra={"tenant": tenant.name},
+        )
+        return
+
+    if not tenant_manager.can_restart(tenant):
+        logger.error(
+            f"Cannot reconnect bridge for {tenant.name} - rate limit exceeded",
+            extra={"tenant": tenant.name},
+        )
+        return
+
+    try:
+        await asyncio.sleep(settings.restart_cooldown_seconds)
+
+        auth_dir = tenant.get_auth_dir(settings.auth_dir)
+        new_bridge = BaileysBridge(
+            auth_dir=auth_dir,
+            auto_login=True,
+            tenant_id=tenant.api_key_hash,
+        )
+
+        if tenant_manager._event_handler:
+            new_bridge.on_event(tenant_manager._event_handler)
+
+        await new_bridge.start()
+
+        tenant.bridge = new_bridge
+        tenant_manager.record_restart(tenant, "disconnect_reconnect")
+        tenant_manager.reset_health_failures(tenant)
+
+        logger.info(
+            f"Bridge reconnected successfully for {tenant.name}",
+            extra={
+                "tenant": tenant.name,
+                "new_pid": new_bridge._process.pid if new_bridge._process else None,
+            },
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Failed to reconnect bridge for {tenant.name}: {e}",
+            extra={"tenant": tenant.name},
+            exc_info=True,
+        )
+
+
 async def connection_health_check():
     while True:
         try:
@@ -426,11 +487,10 @@ async def handle_chatwoot_event(
             result = await integration.handle_message(params, is_outgoing=False)
             logger.info(f"Chatwoot message result: {result}")
         elif event_type == "sent":
-            logger.info(
-                f"Processing Chatwoot outgoing message for tenant {tenant.name}: to={params.get('to')}, text={params.get('text', '')[:50]}"
+            logger.debug(
+                f"Skipping 'sent' event sync to Chatwoot for tenant {tenant.name} - message already exists in Chatwoot"
             )
-            result = await integration.handle_message(params, is_outgoing=True)
-            logger.info(f"Chatwoot outgoing message result: {result}")
+            result = True
         elif event_type == "connected":
             await integration.handle_connected(params)
         elif event_type == "disconnected":
@@ -532,10 +592,18 @@ def handle_bridge_event(
             )
             asyncio.create_task(tenant_manager.clear_creds(tenant))
             logger.info(f"Cleared credentials for logged out tenant: {tenant.name}")
+        elif reason_name == "banned":
+            asyncio.create_task(
+                tenant_manager.update_session_state(tenant, "disconnected")
+            )
+            logger.error(f"Tenant {tenant.name} is banned from WhatsApp")
         else:
             asyncio.create_task(
                 tenant_manager.update_session_state(tenant, "disconnected")
             )
+            if should_reconnect:
+                logger.info(f"Scheduling reconnection for tenant {tenant.name}")
+                asyncio.create_task(trigger_bridge_reconnect(tenant))
     elif event_type == "reconnecting":
         logger.info(f"Tenant {tenant.name} reconnecting: reason={params.get('reason')}")
         asyncio.create_task(tenant_manager.update_session_state(tenant, "connecting"))

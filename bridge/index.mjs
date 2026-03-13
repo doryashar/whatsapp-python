@@ -286,7 +286,7 @@ async function createSocket() {
       });
 
       // Auto-reconnect for certain errors
-      const reconnectableCodes = [408, 409, 428, 429, 430, 431, 432, 436, 504, 515, 516, 518, 519, 520];
+      const reconnectableCodes = [408, 409, 428, 429, 430, 431, 432, 436, 440, 500, 504, 515, 516, 518, 519, 520];
       if (reconnectableCodes.includes(statusCode)) {
         const delay = statusCode === 515 ? 5000 : 3000; // Longer delay for timeout
         logger.info({ statusCode, delay }, "Scheduling auto-reconnect");
@@ -506,9 +506,16 @@ const methods = {
       return { status: "already_connected", ...selfInfo };
     }
 
-    if (!sock) {
-      await createSocket();
+    if (sock) {
+      try {
+        sock.ev.removeAllListeners();
+        sock.ws?.close();
+      } catch {}
+      sock = null;
+      currentQr = null;
     }
+
+    await createSocket();
 
     if (currentQr) {
       const qrDataUrl = await QRCode.toDataURL(currentQr);

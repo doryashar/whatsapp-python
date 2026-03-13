@@ -14,9 +14,7 @@ RUN curl -fsSL https://get.opencode.ai/install.sh | sh
 COPY requirements-webhook.txt .
 RUN pip install --no-cache-dir -r requirements-webhook.txt
 
-COPY scripts/opencode_webhook_handler.py .
-COPY scripts/session_manager.py .
-COPY PROMPT.md .
+COPY scripts/sample_integration/ ./scripts/sample_integration/
 
 RUN mkdir -p /app/data
 
@@ -30,5 +28,8 @@ ENV WEBHOOK_HOST=0.0.0.0
 ENV WEBHOOK_PORT=5556
 ENV LOG_LEVEL=INFO
 ENV SESSION_DB_PATH=/app/data/sessions.db
+ENV PYTHONPATH=/app/scripts/sample_integration
+
+WORKDIR /app/scripts/sample_integration
 
 CMD ["python", "opencode_webhook_handler.py"]
