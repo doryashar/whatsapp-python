@@ -43,6 +43,7 @@ def setup_admin_api_key(monkeypatch, mock_db):
     # Patch in both places
     monkeypatch.setattr(config.settings, "admin_password", "test_admin_key")
     monkeypatch.setattr(admin_auth.settings, "admin_password", "test_admin_key")
+    monkeypatch.setattr(config.settings, "debug", True)
 
     # Setup mock database
     original_db = tenant_manager._db
@@ -52,6 +53,7 @@ def setup_admin_api_key(monkeypatch, mock_db):
 
     monkeypatch.setattr(config.settings, "admin_password", None)
     monkeypatch.setattr(admin_auth.settings, "admin_password", None)
+    monkeypatch.setattr(config.settings, "debug", False)
     tenant_manager._db = original_db
 
 

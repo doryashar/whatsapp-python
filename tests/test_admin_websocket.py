@@ -17,8 +17,10 @@ def setup_admin_password(monkeypatch):
     from src import config
 
     monkeypatch.setattr(config.settings, "admin_password", ADMIN_PASSWORD)
+    monkeypatch.setattr(config.settings, "debug", True)
     yield
     monkeypatch.setattr(config.settings, "admin_password", None)
+    monkeypatch.setattr(config.settings, "debug", False)
 
 
 @pytest.fixture
