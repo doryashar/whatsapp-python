@@ -256,7 +256,7 @@ async def handle_outgoing(
 ):
     tenant = None
     for t in tenant_manager.list_tenants():
-        if t.api_key_hash == tenant_hash:
+        if t.api_key_hash[:16] == tenant_hash:
             tenant = t
             break
 
@@ -282,10 +282,11 @@ async def handle_outgoing(
     )
 
     try:
-        if x_webhook_signature and not handler.verify_signature(
-            body, x_webhook_signature
-        ):
-            raise HTTPException(status_code=401, detail="Invalid signature")
+        if chatwoot_config.hmac_token:
+            if not x_webhook_signature:
+                raise HTTPException(status_code=401, detail="Missing signature")
+            if not handler.verify_signature(body, x_webhook_signature):
+                raise HTTPException(status_code=401, detail="Invalid signature")
 
         result = await handler.handle_webhook(payload)
 

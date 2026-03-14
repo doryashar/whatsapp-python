@@ -74,6 +74,11 @@ class BaileysBridge:
         logger.info("Stopping bridge")
         self._running = False
 
+        for future in self._pending.values():
+            if not future.done():
+                future.cancel("Bridge stopping")
+        self._pending.clear()
+
         if self._reader_task:
             self._reader_task.cancel()
             try:
@@ -85,10 +90,23 @@ class BaileysBridge:
             try:
                 if self._process.stdin:
                     self._process.stdin.close()
-                await self._process.wait()
+
+                if self._process.returncode is None:
+                    try:
+                        self._process.terminate()
+                        await asyncio.wait_for(self._process.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            f"Bridge process did not terminate, killing pid={self._process.pid}"
+                        )
+                        self._process.kill()
+                        await self._process.wait()
+                    except ProcessLookupError:
+                        pass
+
                 logger.info(f"Bridge stopped (pid={self._process.pid})")
             except Exception as e:
-                logger.debug(f"Error stopping bridge: {e}")
+                logger.warning(f"Error stopping bridge: {e}")
 
     async def _read_loop(self) -> None:
         if not self._process or not self._process.stdout:

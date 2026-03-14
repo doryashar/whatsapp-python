@@ -134,21 +134,21 @@ class TestTenantDeletion:
     """Tests for tenant deletion and cleanup."""
 
     @pytest.mark.asyncio
-    async def test_delete_tenant_data_exists(self):
-        """Test that delete_tenant_data method exists."""
+    async def test_delete_tenant_exists(self):
+        """Test that delete_tenant method exists."""
         from src.store.database import Database
 
-        assert hasattr(Database, "delete_tenant_data")
+        assert hasattr(Database, "delete_tenant")
 
-    def test_delete_tenant_data_signature(self):
-        """Test delete_tenant_data has correct signature."""
+    def test_delete_tenant_signature(self):
+        """Test delete_tenant has correct signature."""
         import inspect
         from src.store.database import Database
 
-        sig = inspect.signature(Database.delete_tenant_data)
+        sig = inspect.signature(Database.delete_tenant)
         params = list(sig.parameters)
         assert "self" in params
-        assert "tenant_hash" in params
+        assert "api_key_hash" in params
 
 
 class TestMessageDeduplication:

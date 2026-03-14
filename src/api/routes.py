@@ -196,6 +196,8 @@ async def send_message(
     tenant: Tenant = Depends(get_tenant),
 ):
     logger.info(f"Send message requested: tenant={tenant.name}, to={request.to}")
+    if request.media_url and not is_safe_webhook_url(request.media_url):
+        raise HTTPException(status_code=400, detail="Invalid media_url: potential SSRF")
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
         result = await bridge.send_message(
@@ -529,6 +531,8 @@ async def update_group_picture(
     tenant: Tenant = Depends(get_tenant),
 ):
     logger.debug(f"Update group picture: tenant={tenant.name}, group={group_jid}")
+    if image_url and not is_safe_webhook_url(image_url):
+        raise HTTPException(status_code=400, detail="Invalid image_url: potential SSRF")
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
         result = await bridge.group_update_picture(

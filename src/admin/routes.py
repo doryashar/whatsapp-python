@@ -462,6 +462,10 @@ function updateBulkUI() {
 }
 
 function showBulkActions() {
+    if (selectedTenants.size === 0) {
+        alert('No tenants selected');
+        return;
+    }
     const modal = document.getElementById('bulk-actions-modal');
     if (modal) {
         modal.classList.remove('hidden');
@@ -475,20 +479,6 @@ function hideBulkActions() {
         modal.classList.add('hidden');
         modal.classList.remove('flex');
     }
-}
-
-function showBulkActions() {
-    if (selectedTenants.size === 0) {
-        alert('No tenants selected');
-        return;
-    }
-    document.getElementById('bulk-actions-modal').classList.remove('hidden');
-    document.getElementById('bulk-actions-modal').classList.add('flex');
-}
-
-function hideBulkActions() {
-    document.getElementById('bulk-actions-modal').classList.add('hidden');
-    document.getElementById('bulk-actions-modal').classList.remove('flex');
 }
 
 async function bulkReconnect() {
@@ -887,6 +877,10 @@ function updateBulkUI() {
 }
 
 function showBulkActions() {
+    if (selectedTenants.size === 0) {
+        alert('No tenants selected');
+        return;
+    }
     const modal = document.getElementById('bulk-actions-modal');
     if (modal) {
         modal.classList.remove('hidden');
@@ -900,20 +894,6 @@ function hideBulkActions() {
         modal.classList.add('hidden');
         modal.classList.remove('flex');
     }
-}
-
-function showBulkActions() {
-    if (selectedTenants.size === 0) {
-        alert('No tenants selected');
-        return;
-    }
-    document.getElementById('bulk-actions-modal').classList.remove('hidden');
-    document.getElementById('bulk-actions-modal').classList.add('flex');
-}
-
-function hideBulkActions() {
-    document.getElementById('bulk-actions-modal').classList.add('hidden');
-    document.getElementById('bulk-actions-modal').classList.remove('flex');
 }
 
 async function bulkReconnect() {

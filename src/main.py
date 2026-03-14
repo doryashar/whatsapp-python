@@ -38,6 +38,64 @@ setup_telemetry(
 logger = get_logger()
 
 
+async def _restart_bridge(tenant, reason: str = "restart") -> bool:
+    if not tenant.has_valid_auth():
+        logger.warning(
+            f"No valid auth for {tenant.name}, cannot restart",
+            extra={"tenant": tenant.name},
+        )
+        return False
+
+    if not tenant_manager.can_restart(tenant):
+        logger.error(
+            f"Cannot restart bridge for {tenant.name} - rate limit exceeded",
+            extra={"tenant": tenant.name},
+        )
+        return False
+
+    if tenant.bridge:
+        try:
+            await tenant.bridge.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping bridge for {tenant.name}: {e}")
+
+    try:
+        await asyncio.sleep(settings.restart_cooldown_seconds)
+
+        auth_dir = tenant.get_auth_dir(settings.auth_dir)
+        new_bridge = BaileysBridge(
+            auth_dir=auth_dir,
+            auto_login=True,
+            tenant_id=tenant.api_key_hash,
+        )
+
+        if tenant_manager._event_handler:
+            new_bridge.on_event(tenant_manager._event_handler)
+
+        await new_bridge.start()
+
+        tenant.bridge = new_bridge
+        tenant_manager.record_restart(tenant, reason)
+        tenant_manager.reset_health_failures(tenant)
+
+        logger.info(
+            f"Bridge restarted successfully for {tenant.name}",
+            extra={
+                "tenant": tenant.name,
+                "new_pid": new_bridge._process.pid if new_bridge._process else None,
+            },
+        )
+        return True
+
+    except Exception as e:
+        logger.error(
+            f"Failed to restart bridge for {tenant.name}: {e}",
+            extra={"tenant": tenant.name},
+            exc_info=True,
+        )
+        return False
+
+
 async def handle_bridge_crash(tenant):
     logger.error(
         f"Bridge process crashed for {tenant.name}",
@@ -51,66 +109,10 @@ async def handle_bridge_crash(tenant):
 
     await tenant_manager.update_session_state(tenant, "connecting")
 
-    if tenant.bridge:
-        try:
-            await tenant.bridge.stop()
-        except Exception as e:
-            logger.debug(f"Error stopping dead bridge for {tenant.name}: {e}")
-
-    if not tenant.has_valid_auth():
-        logger.warning(
-            f"No valid auth for {tenant.name}, cannot auto-restart",
-            extra={"tenant": tenant.name},
-        )
-        await tenant_manager.update_session_state(
-            tenant, "disconnected", has_auth=False
-        )
-        return
-
-    if not tenant_manager.can_restart(tenant):
-        logger.error(
-            f"Cannot restart bridge for {tenant.name} - rate limit exceeded",
-            extra={"tenant": tenant.name},
-        )
-        await tenant_manager.update_session_state(tenant, "disconnected")
-        return
-
-    try:
-        logger.info(f"Auto-restarting bridge for {tenant.name}")
-        await asyncio.sleep(settings.restart_cooldown_seconds)
-
-        auth_dir = tenant.get_auth_dir(settings.auth_dir)
-        new_bridge = BaileysBridge(
-            auth_dir=auth_dir,
-            auto_login=True,
-            tenant_id=tenant.api_key_hash,
-        )
-
-        if tenant_manager._event_handler:
-            new_bridge.on_event(tenant_manager._event_handler)
-
-        await new_bridge.start()
-
-        tenant.bridge = new_bridge
-        tenant_manager.record_restart(tenant, "process_crash")
-        tenant_manager.reset_health_failures(tenant)
-
-        logger.info(
-            f"Bridge auto-restarted successfully for {tenant.name}",
-            extra={
-                "tenant": tenant.name,
-                "new_pid": new_bridge._process.pid if new_bridge._process else None,
-            },
-        )
-
+    success = await _restart_bridge(tenant, "process_crash")
+    if success:
         await tenant_manager.update_session_state(tenant, "connecting")
-
-    except Exception as e:
-        logger.error(
-            f"Failed to auto-restart bridge for {tenant.name}: {e}",
-            extra={"tenant": tenant.name},
-            exc_info=True,
-        )
+    else:
         await tenant_manager.update_session_state(tenant, "disconnected")
 
 
@@ -119,60 +121,7 @@ async def trigger_bridge_reconnect(tenant):
         f"Triggering bridge reconnection for {tenant.name}",
         extra={"tenant": tenant.name},
     )
-
-    if tenant.bridge:
-        try:
-            await tenant.bridge.stop()
-        except Exception as e:
-            logger.debug(f"Error stopping bridge for {tenant.name}: {e}")
-
-    if not tenant.has_valid_auth():
-        logger.warning(
-            f"No valid auth for {tenant.name}, cannot reconnect",
-            extra={"tenant": tenant.name},
-        )
-        return
-
-    if not tenant_manager.can_restart(tenant):
-        logger.error(
-            f"Cannot reconnect bridge for {tenant.name} - rate limit exceeded",
-            extra={"tenant": tenant.name},
-        )
-        return
-
-    try:
-        await asyncio.sleep(settings.restart_cooldown_seconds)
-
-        auth_dir = tenant.get_auth_dir(settings.auth_dir)
-        new_bridge = BaileysBridge(
-            auth_dir=auth_dir,
-            auto_login=True,
-            tenant_id=tenant.api_key_hash,
-        )
-
-        if tenant_manager._event_handler:
-            new_bridge.on_event(tenant_manager._event_handler)
-
-        await new_bridge.start()
-
-        tenant.bridge = new_bridge
-        tenant_manager.record_restart(tenant, "disconnect_reconnect")
-        tenant_manager.reset_health_failures(tenant)
-
-        logger.info(
-            f"Bridge reconnected successfully for {tenant.name}",
-            extra={
-                "tenant": tenant.name,
-                "new_pid": new_bridge._process.pid if new_bridge._process else None,
-            },
-        )
-
-    except Exception as e:
-        logger.error(
-            f"Failed to reconnect bridge for {tenant.name}: {e}",
-            extra={"tenant": tenant.name},
-            exc_info=True,
-        )
+    await _restart_bridge(tenant, "disconnect_reconnect")
 
 
 async def connection_health_check():

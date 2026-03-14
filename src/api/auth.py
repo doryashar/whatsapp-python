@@ -1,3 +1,4 @@
+import hmac
 from fastapi import Depends, HTTPException, Header, status, Request
 from typing import Optional
 
@@ -83,7 +84,7 @@ def get_admin_key(
             detail="Admin API key not configured",
         )
 
-    if api_key != settings.admin_api_key:
+    if not hmac.compare_digest(api_key, settings.admin_api_key):
         attempts, blocked = rate_limiter.record_failed_auth(ip)
         detail = f"Invalid admin API key. Attempt {attempts}/{rate_limiter.max_failed_auth_attempts}"
         if blocked:

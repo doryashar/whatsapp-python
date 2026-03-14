@@ -481,72 +481,82 @@ class Database:
     async def delete_tenant(self, api_key_hash: str) -> bool:
         logger.debug(f"Deleting tenant: hash={api_key_hash[:16]}...")
 
-        await self.delete_tenant_data(api_key_hash)
-
         if self._is_postgres:
             async with self._pool.acquire() as conn:
-                result = await conn.execute(
-                    "DELETE FROM tenants WHERE api_key_hash = $1", api_key_hash
-                )
-                deleted = result.split()[-1] != "0"
+                async with conn.transaction():
+                    deleted_counts = await self._delete_tenant_data_in_transaction(
+                        conn, api_key_hash
+                    )
+                    result = await conn.execute(
+                        "DELETE FROM tenants WHERE api_key_hash = $1", api_key_hash
+                    )
+                    deleted = result.split()[-1] != "0"
+                    logger.info(
+                        f"Deleted tenant: hash={api_key_hash[:16]}..., "
+                        f"messages={deleted_counts['messages']}, "
+                        f"contacts={deleted_counts['contacts']}, "
+                        f"webhook_attempts={deleted_counts['webhook_attempts']}"
+                    )
+                    return deleted
         else:
-            cursor = await self._pool.execute(
-                "DELETE FROM tenants WHERE api_key_hash = ?",
-                (api_key_hash,),
-            )
-            await self._pool.commit()
-            deleted = cursor.rowcount > 0
-        logger.debug(f"Tenant deleted: {deleted}")
-        return deleted
+            await self._pool.execute("BEGIN TRANSACTION")
+            try:
+                deleted_counts = await self._delete_tenant_data_sqlite(api_key_hash)
+                cursor = await self._pool.execute(
+                    "DELETE FROM tenants WHERE api_key_hash = ?",
+                    (api_key_hash,),
+                )
+                await self._pool.commit()
+                deleted = cursor.rowcount > 0
+                logger.info(
+                    f"Deleted tenant: hash={api_key_hash[:16]}..., "
+                    f"messages={deleted_counts['messages']}, "
+                    f"contacts={deleted_counts['contacts']}, "
+                    f"webhook_attempts={deleted_counts['webhook_attempts']}"
+                )
+                return deleted
+            except Exception as e:
+                await self._pool.execute("ROLLBACK")
+                raise e
 
-    async def delete_tenant_data(self, tenant_hash: str) -> dict:
-        """
-        Delete all data associated with a tenant (messages, contacts, webhook_attempts).
-        Returns count of deleted records.
-        """
-        logger.debug(f"Deleting tenant data: hash={tenant_hash[:16]}...")
+    async def _delete_tenant_data_in_transaction(self, conn, tenant_hash: str) -> dict:
         deleted_counts = {"messages": 0, "contacts": 0, "webhook_attempts": 0}
 
-        if self._is_postgres:
-            async with self._pool.acquire() as conn:
-                result = await conn.execute(
-                    "DELETE FROM messages WHERE tenant_hash = $1", tenant_hash
-                )
-                deleted_counts["messages"] = int(result.split()[-1])
-
-                result = await conn.execute(
-                    "DELETE FROM contacts WHERE tenant_hash = $1", tenant_hash
-                )
-                deleted_counts["contacts"] = int(result.split()[-1])
-
-                result = await conn.execute(
-                    "DELETE FROM webhook_attempts WHERE tenant_hash = $1", tenant_hash
-                )
-                deleted_counts["webhook_attempts"] = int(result.split()[-1])
-        else:
-            cursor = await self._pool.execute(
-                "DELETE FROM messages WHERE tenant_hash = ?", (tenant_hash,)
-            )
-            deleted_counts["messages"] = cursor.rowcount
-
-            cursor = await self._pool.execute(
-                "DELETE FROM contacts WHERE tenant_hash = ?", (tenant_hash,)
-            )
-            deleted_counts["contacts"] = cursor.rowcount
-
-            cursor = await self._pool.execute(
-                "DELETE FROM webhook_attempts WHERE tenant_hash = ?", (tenant_hash,)
-            )
-            deleted_counts["webhook_attempts"] = cursor.rowcount
-
-            await self._pool.commit()
-
-        logger.info(
-            f"Deleted tenant data: hash={tenant_hash[:16]}..., "
-            f"messages={deleted_counts['messages']}, "
-            f"contacts={deleted_counts['contacts']}, "
-            f"webhook_attempts={deleted_counts['webhook_attempts']}"
+        result = await conn.execute(
+            "DELETE FROM messages WHERE tenant_hash = $1", tenant_hash
         )
+        deleted_counts["messages"] = int(result.split()[-1])
+
+        result = await conn.execute(
+            "DELETE FROM contacts WHERE tenant_hash = $1", tenant_hash
+        )
+        deleted_counts["contacts"] = int(result.split()[-1])
+
+        result = await conn.execute(
+            "DELETE FROM webhook_attempts WHERE tenant_hash = $1", tenant_hash
+        )
+        deleted_counts["webhook_attempts"] = int(result.split()[-1])
+
+        return deleted_counts
+
+    async def _delete_tenant_data_sqlite(self, tenant_hash: str) -> dict:
+        deleted_counts = {"messages": 0, "contacts": 0, "webhook_attempts": 0}
+
+        cursor = await self._pool.execute(
+            "DELETE FROM messages WHERE tenant_hash = ?", (tenant_hash,)
+        )
+        deleted_counts["messages"] = cursor.rowcount
+
+        cursor = await self._pool.execute(
+            "DELETE FROM contacts WHERE tenant_hash = ?", (tenant_hash,)
+        )
+        deleted_counts["contacts"] = cursor.rowcount
+
+        cursor = await self._pool.execute(
+            "DELETE FROM webhook_attempts WHERE tenant_hash = ?", (tenant_hash,)
+        )
+        deleted_counts["webhook_attempts"] = cursor.rowcount
+
         return deleted_counts
 
     async def update_webhooks(self, api_key_hash: str, webhook_urls: list[str]) -> None:

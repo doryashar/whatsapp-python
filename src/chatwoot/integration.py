@@ -56,6 +56,10 @@ class ChatwootIntegration:
 
     async def close(self):
         await self._client.close()
+        self._conversation_locks.clear()
+        self._contact_cache.clear()
+        self._conversation_cache.clear()
+        self._profile_picture_cache.clear()
 
     async def _get_conversation_lock(self, jid: str) -> asyncio.Lock:
         if jid not in self._conversation_locks:

@@ -227,7 +227,6 @@ class TenantManager:
             ),
         )
         tenant._raw_api_key = raw_key
-        self._tenants[key_hash] = tenant
 
         if self._db:
             await self._db.save_tenant(
@@ -236,6 +235,8 @@ class TenantManager:
                 tenant.created_at,
                 tenant.webhook_urls,
             )
+
+        self._tenants[key_hash] = tenant
 
         logger.info(
             f"Tenant created: {name}, api_key_hash={tenant.api_key_hash[:16]}..."
