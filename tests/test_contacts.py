@@ -33,17 +33,17 @@ async def test_upsert_contact_creates_new():
 
         await db.upsert_contact(
             tenant_hash="hash1",
-            phone="972548826569",
+            phone="1234567890",
             name="Dor",
-            chat_jid="972548826569@s.whatsapp.net",
+            chat_jid="1234567890@s.whatsapp.net",
             is_group=False,
         )
 
-        contact = await db.get_contact_by_phone("hash1", "972548826569")
+        contact = await db.get_contact_by_phone("hash1", "1234567890")
         assert contact is not None
-        assert contact["phone"] == "972548826569"
+        assert contact["phone"] == "1234567890"
         assert contact["name"] == "Dor"
-        assert contact["chat_jid"] == "972548826569@s.whatsapp.net"
+        assert contact["chat_jid"] == "1234567890@s.whatsapp.net"
         assert contact["is_group"] is False
         assert contact["message_count"] == 1
 
@@ -61,21 +61,21 @@ async def test_upsert_contact_updates_existing():
 
         await db.upsert_contact(
             tenant_hash="hash1",
-            phone="972548826569",
+            phone="1234567890",
             name="Dor",
-            chat_jid="972548826569@s.whatsapp.net",
+            chat_jid="1234567890@s.whatsapp.net",
             is_group=False,
         )
 
         await db.upsert_contact(
             tenant_hash="hash1",
-            phone="972548826569",
+            phone="1234567890",
             name="Dor Updated",
-            chat_jid="972548826569@s.whatsapp.net",
+            chat_jid="1234567890@s.whatsapp.net",
             is_group=False,
         )
 
-        contact = await db.get_contact_by_phone("hash1", "972548826569")
+        contact = await db.get_contact_by_phone("hash1", "1234567890")
         assert contact is not None
         assert contact["name"] == "Dor Updated"
         assert contact["message_count"] == 2
@@ -94,21 +94,21 @@ async def test_upsert_contact_keeps_name_if_new_is_empty():
 
         await db.upsert_contact(
             tenant_hash="hash1",
-            phone="972548826569",
+            phone="1234567890",
             name="Dor",
-            chat_jid="972548826569@s.whatsapp.net",
+            chat_jid="1234567890@s.whatsapp.net",
             is_group=False,
         )
 
         await db.upsert_contact(
             tenant_hash="hash1",
-            phone="972548826569",
+            phone="1234567890",
             name=None,
-            chat_jid="972548826569@s.whatsapp.net",
+            chat_jid="1234567890@s.whatsapp.net",
             is_group=False,
         )
 
-        contact = await db.get_contact_by_phone("hash1", "972548826569")
+        contact = await db.get_contact_by_phone("hash1", "1234567890")
         assert contact is not None
         assert contact["name"] == "Dor"
 
@@ -127,8 +127,8 @@ async def test_save_message_creates_contact():
         await db.save_message(
             tenant_hash="hash1",
             message_id="msg1",
-            from_jid="972548826569@s.whatsapp.net",
-            chat_jid="972548826569@s.whatsapp.net",
+            from_jid="1234567890@s.whatsapp.net",
+            chat_jid="1234567890@s.whatsapp.net",
             is_group=False,
             push_name="Dor",
             text="Hello",
@@ -136,9 +136,9 @@ async def test_save_message_creates_contact():
             direction="inbound",
         )
 
-        contact = await db.get_contact_by_phone("hash1", "972548826569")
+        contact = await db.get_contact_by_phone("hash1", "1234567890")
         assert contact is not None
-        assert contact["phone"] == "972548826569"
+        assert contact["phone"] == "1234567890"
         assert contact["name"] == "Dor"
 
         await db.close()
@@ -156,8 +156,8 @@ async def test_contacts_deduplicated_by_phone():
         await db.save_message(
             tenant_hash="hash1",
             message_id="msg1",
-            from_jid="972548826569@s.whatsapp.net",
-            chat_jid="972548826569@s.whatsapp.net",
+            from_jid="1234567890@s.whatsapp.net",
+            chat_jid="1234567890@s.whatsapp.net",
             is_group=False,
             push_name="Dor",
             text="Hello",
@@ -168,8 +168,8 @@ async def test_contacts_deduplicated_by_phone():
         await db.save_message(
             tenant_hash="hash1",
             message_id="msg2",
-            from_jid="972548826569@s.whatsapp.net",
-            chat_jid="972548826569@s.whatsapp.net",
+            from_jid="1234567890@s.whatsapp.net",
+            chat_jid="1234567890@s.whatsapp.net",
             is_group=False,
             push_name="",
             text="World",
@@ -179,7 +179,7 @@ async def test_contacts_deduplicated_by_phone():
 
         chats = await db.get_recent_chats("hash1")
         assert len(chats) == 1
-        assert chats[0]["phone"] == "972548826569"
+        assert chats[0]["phone"] == "1234567890"
         assert chats[0]["push_name"] == "Dor"
         assert chats[0]["message_count"] == 2
 
@@ -198,8 +198,8 @@ async def test_different_phones_create_separate_contacts():
         await db.save_message(
             tenant_hash="hash1",
             message_id="msg1",
-            from_jid="972548826569@s.whatsapp.net",
-            chat_jid="972548826569@s.whatsapp.net",
+            from_jid="1234567890@s.whatsapp.net",
+            chat_jid="1234567890@s.whatsapp.net",
             is_group=False,
             push_name="Dor",
             text="Hello",
@@ -242,8 +242,8 @@ async def test_populate_contacts_from_messages():
             (
                 "hash1",
                 "msg1",
-                "972548826569@s.whatsapp.net",
-                "972548826569@s.whatsapp.net",
+                "1234567890@s.whatsapp.net",
+                "1234567890@s.whatsapp.net",
                 0,
                 "Dor",
                 "Hello",
@@ -256,7 +256,7 @@ async def test_populate_contacts_from_messages():
         count = await db.populate_contacts_from_messages("hash1")
         assert count >= 1
 
-        contact = await db.get_contact_by_phone("hash1", "972548826569")
+        contact = await db.get_contact_by_phone("hash1", "1234567890")
         assert contact is not None
         assert contact["name"] == "Dor"
 
@@ -287,8 +287,8 @@ async def test_groups_vs_individuals():
         await db.save_message(
             tenant_hash="hash1",
             message_id="msg2",
-            from_jid="972548826569@s.whatsapp.net",
-            chat_jid="972548826569@s.whatsapp.net",
+            from_jid="1234567890@s.whatsapp.net",
+            chat_jid="1234567890@s.whatsapp.net",
             is_group=False,
             push_name="Dor",
             text="Hello",
@@ -321,9 +321,9 @@ async def test_contacts_sync_on_connection():
         # Simulate contacts received from WhatsApp
         contacts = [
             {
-                "jid": "972548826569@s.whatsapp.net",
+                "jid": "1234567890@s.whatsapp.net",
                 "name": "John Doe",
-                "phone": "972548826569",
+                "phone": "1234567890",
                 "is_group": False,
             },
             {
@@ -362,7 +362,7 @@ async def test_contacts_sync_on_connection():
             )
 
         # Verify contacts were saved
-        contact1 = await db.get_contact_by_phone("hash1", "972548826569")
+        contact1 = await db.get_contact_by_phone("hash1", "1234567890")
         assert contact1 is not None
         assert contact1["name"] == "John Doe"
         assert contact1["is_group"] is False

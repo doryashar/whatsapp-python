@@ -28,11 +28,11 @@ async def test_sent_event_creates_outbound_message():
 
     params = {
         "id": "sent_msg_123",
-        "to": "972548826569@s.whatsapp.net",
+        "to": "1234567890@s.whatsapp.net",
         "text": "היי",
         "type": "text",
         "timestamp": 1234567890,
-        "chat_jid": "972548826569@s.whatsapp.net",
+        "chat_jid": "1234567890@s.whatsapp.net",
     }
 
     handle_bridge_event("sent", params, "test_hash_sent")
@@ -43,7 +43,7 @@ async def test_sent_event_creates_outbound_message():
     assert total == 1
     assert messages[0]["direction"] == "outbound"
     assert messages[0]["text"] == "היי"
-    assert messages[0]["from_jid"] == "972548826569@s.whatsapp.net"
+    assert messages[0]["from_jid"] == "1234567890@s.whatsapp.net"
 
     del tenant_manager._tenants["test_hash_sent"]
 
@@ -72,8 +72,8 @@ async def test_message_event_inbound_direction():
 
     params = {
         "id": "inbound_msg_456",
-        "from": "972548826569@s.whatsapp.net",
-        "chat_jid": "972548826569@s.whatsapp.net",
+        "from": "1234567890@s.whatsapp.net",
+        "chat_jid": "1234567890@s.whatsapp.net",
         "text": "Hello",
         "type": "text",
         "timestamp": 1234567890,
@@ -116,7 +116,7 @@ async def test_message_event_outbound_when_from_self():
     params = {
         "id": "outbound_msg_789",
         "from": "972555077668:11@s.whatsapp.net",
-        "chat_jid": "972548826569@s.whatsapp.net",
+        "chat_jid": "1234567890@s.whatsapp.net",
         "text": "Reply",
         "type": "text",
         "timestamp": 1234567890,

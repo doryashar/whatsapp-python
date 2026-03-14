@@ -8,8 +8,8 @@ def normalize_phone(phone: Optional[str]) -> str:
 
     Returns digits only with country code (no + prefix).
     Examples:
-        "+972548826569" -> "972548826569"
-        "972-548-826-569" -> "972548826569"
+        "+1234567890" -> "1234567890"
+        "123-456-7890" -> "1234567890"
         "0548826569" -> "0548826569" (no country code, kept as-is)
     """
     if not phone:
@@ -25,8 +25,8 @@ def extract_phone_from_jid(jid: Optional[str]) -> str:
     Extract and normalize phone number from a WhatsApp JID.
 
     Examples:
-        "972548826569@s.whatsapp.net" -> "972548826569"
-        "972548826569:10@s.whatsapp.net" -> "972548826569"
+        "1234567890@s.whatsapp.net" -> "1234567890"
+        "1234567890:10@s.whatsapp.net" -> "1234567890"
         "120363123456789012@g.us" -> "120363123456789012" (group)
     """
     if not jid:
@@ -54,9 +54,9 @@ def format_phone_display(phone: str, name: Optional[str] = None) -> str:
     Format a phone number for display, optionally with a name.
 
     Examples:
-        format_phone_display("972548826569", "Dor") -> "Dor (972548826569)"
-        format_phone_display("972548826569", None) -> "972548826569"
-        format_phone_display("972548826569", "") -> "972548826569"
+        format_phone_display("1234567890", "Dor") -> "Dor (1234567890)"
+        format_phone_display("1234567890", None) -> "1234567890"
+        format_phone_display("1234567890", "") -> "1234567890"
     """
     if name:
         return f"{name} ({phone})"
@@ -69,9 +69,9 @@ def format_phone_with_plus(phone: str) -> str:
 
     Used for Chatwoot contact creation.
     Examples:
-        "972548826569" -> "+972548826569"
-        "+972548826569" -> "+972548826569"
-        "972-548-826-569" -> "+972548826569"
+        "1234567890" -> "+1234567890"
+        "+1234567890" -> "+1234567890"
+        "123-456-7890" -> "+1234567890"
     """
     if not phone:
         return ""

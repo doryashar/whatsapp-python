@@ -24,9 +24,9 @@ This plan addresses issues identified in comprehensive codebase review:
 ### 1.1 Secure .env and Create Example
 - [ ] Add warning comment to top of `.env` about credential security
 - [ ] Rotate ALL exposed credentials (user action):
-  - Database password: `postgres://postgres:grft465vrdfcwe3frc4@10.147.17.33:5432/postgres`
-  - API Key: `wa_rRRTpFyByW_ktn6MP55_PHh17YkirrlqZATbDzRmaMs`
-  - Admin Password: `grkhjsgdrhJJuj4359784fdsHkladw`
+  - Database password: `postgres://postgres:YOUR_PASSWORD@YOUR_HOST:5432/postgres`
+  - API Key: `wa_YOUR_API_KEY_HERE`
+  - Admin Password: `YOUR_SECURE_ADMIN_PASSWORD`
 - [ ] Verify `.env` is in `.gitignore`
 - [ ] Create `.env.example` with placeholder values (no real secrets)
 

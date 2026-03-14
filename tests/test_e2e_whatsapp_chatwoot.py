@@ -5,10 +5,10 @@ from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock, patch, MagicMock
 
 
-E2E_TEST_PHONE = os.environ.get("E2E_TEST_PHONE", "972548826569")
-E2E_API_KEY = os.environ.get(
-    "E2E_API_KEY", "wa_rRRTpFyByW_ktn6MP55_PHh17YkirrlqZATbDzRmaMs"
-)
+E2E_TEST_PHONE = os.environ.get("E2E_TEST_PHONE", "1234567890")
+E2E_API_KEY = os.environ.get("E2E_API_KEY", "")
+if not E2E_API_KEY:
+    pytest.skip("E2E_API_KEY environment variable not set", allow_module_level=True)
 
 
 def get_tenant_hash(api_key: str) -> str:

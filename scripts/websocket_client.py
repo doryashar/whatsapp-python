@@ -7,6 +7,7 @@ Connects to the WebSocket endpoint and prints all received events.
 import argparse
 import asyncio
 import json
+import os
 import signal
 import sys
 from datetime import datetime
@@ -166,8 +167,8 @@ def main():
     )
     parser.add_argument(
         "--test-to",
-        default="972548826569",
-        help="Phone number to send test message to (default: 972548826569)",
+        default=os.environ.get("E2E_TEST_PHONE", "1234567890"),
+        help="Phone number to send test message to (set E2E_TEST_PHONE env or pass --test-to)",
     )
     parser.add_argument(
         "--max-retries",

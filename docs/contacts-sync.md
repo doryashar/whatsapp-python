@@ -19,9 +19,9 @@ When a tenant scans a QR code and connects to WhatsApp:
 
 Contacts are stored in the `contacts` table with the following information:
 
-- `phone`: Normalized phone number (e.g., "972548826569")
+- `phone`: Normalized phone number (e.g., "1234567890")
 - `name`: Contact name from WhatsApp
-- `chat_jid`: WhatsApp JID (e.g., "972548826569@s.whatsapp.net")
+- `chat_jid`: WhatsApp JID (e.g., "1234567890@s.whatsapp.net")
 - `is_group`: Boolean indicating if it's a group chat
 - `message_count`: Number of messages exchanged with this contact
 - `last_message_at`: Timestamp of the last message
@@ -116,9 +116,9 @@ Returns the list of contacts for a specific tenant.
 {
   "contacts": [
     {
-      "phone": "972548826569",
+      "phone": "1234567890",
       "name": "John Doe",
-      "chat_jid": "972548826569@s.whatsapp.net",
+      "chat_jid": "1234567890@s.whatsapp.net",
       "is_group": false,
       "message_count": 5,
       "last_message_at": "2024-01-15T10:30:00"
