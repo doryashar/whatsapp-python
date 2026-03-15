@@ -406,10 +406,11 @@ async def handle_chatwoot_event(
             result = await integration.handle_message(params, is_outgoing=False)
             logger.info(f"Chatwoot message result: {result}")
         elif event_type == "sent":
-            logger.debug(
-                f"Skipping 'sent' event sync to Chatwoot for tenant {tenant.name} - message already exists in Chatwoot"
+            logger.info(
+                f"Processing Chatwoot sent message for tenant {tenant.name}: to={params.get('to')}, text={params.get('text', '')[:50]}"
             )
-            result = True
+            result = await integration.handle_message(params, is_outgoing=True)
+            logger.info(f"Chatwoot sent message result: {result}")
         elif event_type == "connected":
             await integration.handle_connected(params)
         elif event_type == "disconnected":

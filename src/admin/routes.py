@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Depends, HTTPException, Query, Form
+from fastapi import APIRouter, Request, Depends, HTTPException, Query, Form, Cookie
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -222,6 +222,7 @@ async def admin_login_page(request: Request):
 async def admin_login(
     request: Request,
     password: str = Form(...),
+    existing_session: Optional[str] = Cookie(None, alias="admin_session"),
 ):
     if not settings.admin_password:
         raise HTTPException(status_code=503, detail="Admin interface not configured")
@@ -231,7 +232,7 @@ async def admin_login(
         raise HTTPException(status_code=503, detail="Database not available")
 
     admin_session = AdminSession(db)
-    session_id = await admin_session.create_session(request, password)
+    session_id = await admin_session.create_session(request, password, existing_session)
 
     if not session_id:
         raise HTTPException(status_code=401, detail="Invalid password")

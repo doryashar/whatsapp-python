@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from itertools import islice
 from typing import Optional, TYPE_CHECKING
 
 from ..config import settings
@@ -97,9 +98,9 @@ class MessageStore:
 
     def list(self, limit: int = 100, offset: int = 0) -> tuple[list[dict], int]:
         total = len(self._messages)
-        messages = list(self._messages)
         end = offset + limit
-        return [m.to_dict() for m in messages[offset:end]], total
+        sliced = islice(self._messages, offset, end)
+        return [m.to_dict() for m in sliced], total
 
     async def list_from_db(
         self,

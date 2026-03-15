@@ -1,5 +1,5 @@
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Callable, Optional
 from fastapi import Request, Response, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -29,11 +29,18 @@ class RateLimiter:
         self.max_failed_auth_attempts = max_failed_auth_attempts
         self.failed_auth_window_seconds = failed_auth_window_minutes * 60
 
-        self._minute_requests: dict[str, list[float]] = defaultdict(list)
-        self._hour_requests: dict[str, list[float]] = defaultdict(list)
+        self._minute_requests: dict[str, deque] = defaultdict(deque)
+        self._hour_requests: dict[str, deque] = defaultdict(deque)
         self._blocked_ips: dict[str, dict] = {}
-        self._failed_auth_attempts: dict[str, list[float]] = defaultdict(list)
+        self._failed_auth_attempts: dict[str, deque] = defaultdict(deque)
         self._request_count = 0
+
+    def _prune_deque(self, dq: deque, cutoff: float) -> int:
+        pruned = 0
+        while dq and dq[0] <= cutoff:
+            dq.popleft()
+            pruned += 1
+        return pruned
 
     def is_blocked(self, ip: str) -> bool:
         if ip in self._blocked_ips:
@@ -100,9 +107,7 @@ class RateLimiter:
         now = time.time()
         window_start = now - self.failed_auth_window_seconds
 
-        self._failed_auth_attempts[ip] = [
-            t for t in self._failed_auth_attempts[ip] if t > window_start
-        ]
+        self._prune_deque(self._failed_auth_attempts[ip], window_start)
         self._failed_auth_attempts[ip].append(now)
 
         attempt_count = len(self._failed_auth_attempts[ip])
@@ -140,9 +145,12 @@ class RateLimiter:
         window_start = now - self.failed_auth_window_seconds
 
         if ip:
-            attempts = len(
-                [t for t in self._failed_auth_attempts.get(ip, []) if t > window_start]
-            )
+            dq = self._failed_auth_attempts.get(ip)
+            if dq:
+                self._prune_deque(dq, window_start)
+                attempts = len(dq)
+            else:
+                attempts = 0
             return {
                 "ip": ip,
                 "attempts": attempts,
@@ -150,14 +158,15 @@ class RateLimiter:
                 "blocked": self.is_blocked(ip),
             }
 
-        return {
-            "ips_with_failures": {
-                ip: len([t for t in times if t > window_start])
-                for ip, times in self._failed_auth_attempts.items()
-                if any(t > window_start for t in times)
-            },
+        result = {
+            "ips_with_failures": {},
             "max_attempts": self.max_failed_auth_attempts,
         }
+        for ip, dq in list(self._failed_auth_attempts.items()):
+            self._prune_deque(dq, window_start)
+            if dq:
+                result["ips_with_failures"][ip] = len(dq)
+        return result
 
     def check_rate_limit(self, ip: str) -> tuple[bool, Optional[str]]:
         if self.is_blocked(ip):
@@ -167,10 +176,8 @@ class RateLimiter:
         minute_ago = now - 60
         hour_ago = now - 3600
 
-        self._minute_requests[ip] = [
-            t for t in self._minute_requests[ip] if t > minute_ago
-        ]
-        self._hour_requests[ip] = [t for t in self._hour_requests[ip] if t > hour_ago]
+        self._prune_deque(self._minute_requests[ip], minute_ago)
+        self._prune_deque(self._hour_requests[ip], hour_ago)
 
         if len(self._minute_requests[ip]) >= self.requests_per_minute:
             self.block_ip(ip, "minute_limit")
@@ -200,14 +207,15 @@ class RateLimiter:
         cleaned = 0
 
         for ip in list(self._minute_requests.keys()):
-            if not any(t > cutoff for t in self._minute_requests[ip]):
+            self._prune_deque(self._minute_requests[ip], cutoff)
+            if not self._minute_requests[ip]:
                 del self._minute_requests[ip]
                 cleaned += 1
 
         for ip in list(self._hour_requests.keys()):
-            if not any(t > cutoff for t in self._hour_requests[ip]):
-                if ip not in self._minute_requests:
-                    del self._hour_requests[ip]
+            self._prune_deque(self._hour_requests[ip], cutoff)
+            if not self._hour_requests[ip] and ip not in self._minute_requests:
+                del self._hour_requests[ip]
 
         if cleaned > 0:
             logger.debug(f"Rate limiter cleanup: removed {cleaned} inactive IPs")
@@ -218,12 +226,18 @@ class RateLimiter:
         hour_ago = now - 3600
 
         if ip:
-            minute_count = len(
-                [t for t in self._minute_requests.get(ip, []) if t > minute_ago]
-            )
-            hour_count = len(
-                [t for t in self._hour_requests.get(ip, []) if t > hour_ago]
-            )
+            minute_dq = self._minute_requests.get(ip)
+            hour_dq = self._hour_requests.get(ip)
+            if minute_dq:
+                self._prune_deque(minute_dq, minute_ago)
+                minute_count = len(minute_dq)
+            else:
+                minute_count = 0
+            if hour_dq:
+                self._prune_deque(hour_dq, hour_ago)
+                hour_count = len(hour_dq)
+            else:
+                hour_count = 0
             return {
                 "ip": ip,
                 "requests_last_minute": minute_count,
@@ -233,21 +247,20 @@ class RateLimiter:
                 "hour_limit": self.requests_per_hour,
             }
 
+        unique_minute = 0
+        unique_hour = 0
+        for ip_addr, dq in self._minute_requests.items():
+            self._prune_deque(dq, minute_ago)
+            if dq:
+                unique_minute += 1
+        for ip_addr, dq in self._hour_requests.items():
+            self._prune_deque(dq, hour_ago)
+            if dq:
+                unique_hour += 1
+
         return {
-            "unique_ips_minute": len(
-                [
-                    ip
-                    for ip, times in self._minute_requests.items()
-                    if any(t > minute_ago for t in times)
-                ]
-            ),
-            "unique_ips_hour": len(
-                [
-                    ip
-                    for ip, times in self._hour_requests.items()
-                    if any(t > hour_ago for t in times)
-                ]
-            ),
+            "unique_ips_minute": unique_minute,
+            "unique_ips_hour": unique_hour,
             "blocked_ips_count": len(self.get_blocked_ips()),
         }
 

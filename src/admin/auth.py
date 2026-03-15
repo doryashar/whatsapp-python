@@ -30,11 +30,15 @@ class AdminSession:
         self,
         request: Request,
         password: str,
+        existing_session_id: Optional[str] = None,
     ) -> Optional[str]:
         if not self.verify_password(password):
             ip = get_client_ip(request)
             logger.warning(f"Failed admin login attempt from {ip}")
             return None
+
+        if existing_session_id:
+            await self._db.delete_admin_session(existing_session_id)
 
         session_id = secrets.token_urlsafe(32)
         expires_at = datetime.now() + timedelta(hours=self.SESSION_DURATION_HOURS)
