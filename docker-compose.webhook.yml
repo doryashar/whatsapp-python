@@ -9,8 +9,9 @@ services:
       - whatsapp-data:/app/data
     environment:
       - ADMIN_API_KEY=${ADMIN_API_KEY:-admin_secret_key}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - DATABASE_URL=${DATABASE_URL:-}
-      - DEBUG=${DEBUG:-false}
+      - DEBUG=${DEBUG:-true}
     networks:
       - whatsapp-net
     healthcheck:
