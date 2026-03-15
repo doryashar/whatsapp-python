@@ -8,6 +8,7 @@ from fastapi import Request, HTTPException, Cookie
 from ..config import settings
 from ..telemetry import get_logger
 from ..store.database import Database
+from ..utils import get_client_ip
 
 logger = get_logger("whatsapp.admin")
 
@@ -31,24 +32,22 @@ class AdminSession:
         password: str,
     ) -> Optional[str]:
         if not self.verify_password(password):
-            logger.warning(
-                f"Failed admin login attempt from {request.client.host if request.client else 'unknown'}"
-            )
+            ip = get_client_ip(request)
+            logger.warning(f"Failed admin login attempt from {ip}")
             return None
 
         session_id = secrets.token_urlsafe(32)
         expires_at = datetime.now() + timedelta(hours=self.SESSION_DURATION_HOURS)
 
+        ip = get_client_ip(request)
         await self._db.create_admin_session(
             session_id=session_id,
             expires_at=expires_at,
             user_agent=request.headers.get("user-agent"),
-            ip_address=request.client.host if request.client else None,
+            ip_address=ip,
         )
 
-        logger.info(
-            f"Admin session created for {request.client.host if request.client else 'unknown'}"
-        )
+        logger.info(f"Admin session created for {ip}")
         return session_id
 
     async def validate_session(

@@ -242,7 +242,7 @@ async def admin_login(
         value=session_id,
         httponly=True,
         secure=not settings.debug,
-        max_age=86400,
+        max_age=AdminSession.SESSION_DURATION_HOURS * 3600,
         samesite="lax",
     )
     return response
@@ -2136,7 +2136,9 @@ async def get_messages_fragment(
 
             pattern = re.compile(re.escape(search), re.IGNORECASE)
             text = pattern.sub(
-                lambda m: f'<mark class="bg-yellow-500/30 text-yellow-200">{m.group(0)}</mark>',
+                lambda m: (
+                    f'<mark class="bg-yellow-500/30 text-yellow-200">{m.group(0)}</mark>'
+                ),
                 text,
             )
         ts = msg.get("timestamp")

@@ -92,14 +92,14 @@ class Database:
                 CREATE TABLE IF NOT EXISTS tenants (
                     api_key_hash TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
-                    created_at TIMESTAMP NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL,
                     webhook_urls JSONB DEFAULT '[]',
                     connection_state TEXT DEFAULT 'disconnected',
                     self_jid TEXT,
                     self_phone TEXT,
                     self_name TEXT,
-                    last_connected_at TIMESTAMP,
-                    last_disconnected_at TIMESTAMP,
+                    last_connected_at TIMESTAMPTZ,
+                    last_disconnected_at TIMESTAMPTZ,
                     has_auth BOOLEAN DEFAULT FALSE,
                     creds_json JSONB
                 )
@@ -117,7 +117,7 @@ class Database:
                     msg_type TEXT DEFAULT 'text',
                     timestamp BIGINT NOT NULL,
                     direction TEXT DEFAULT 'inbound',
-                    created_at TIMESTAMP DEFAULT NOW()
+                    created_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
             await conn.execute(
@@ -141,7 +141,7 @@ class Database:
                     attempt_number INTEGER DEFAULT 1,
                     latency_ms INTEGER,
                     payload_preview TEXT,
-                    created_at TIMESTAMP DEFAULT NOW()
+                    created_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
             await conn.execute(
@@ -153,8 +153,8 @@ class Database:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS admin_sessions (
                     id TEXT PRIMARY KEY,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    expires_at TIMESTAMP NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    expires_at TIMESTAMPTZ NOT NULL,
                     user_agent TEXT,
                     ip_address TEXT
                 )
@@ -163,7 +163,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS global_config (
                     key TEXT PRIMARY KEY,
                     value JSONB NOT NULL,
-                    updated_at TIMESTAMP DEFAULT NOW()
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
                 )
             """)
             await conn.execute("""
@@ -179,10 +179,10 @@ class Database:
                 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS self_name TEXT
             """)
             await conn.execute("""
-                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_connected_at TIMESTAMP
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_connected_at TIMESTAMPTZ
             """)
             await conn.execute("""
-                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_disconnected_at TIMESTAMP
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_disconnected_at TIMESTAMPTZ
             """)
             await conn.execute("""
                 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS has_auth BOOLEAN DEFAULT FALSE
@@ -197,7 +197,7 @@ class Database:
                 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE
             """)
             await conn.execute("""
-                ALTER TABLE messages ADD COLUMN IF NOT EXISTS chatwoot_synced_at TIMESTAMP
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS chatwoot_synced_at TIMESTAMPTZ
             """)
             await conn.execute("""
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_url TEXT
@@ -220,6 +220,81 @@ class Database:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_chatwoot_sync ON messages(tenant_hash, chatwoot_synced_at, created_at DESC)"
             )
+
+            # Migrate existing TIMESTAMP columns to TIMESTAMPTZ for timezone-aware datetime support
+            try:
+                await conn.execute(
+                    "ALTER TABLE tenants ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC'"
+                )
+            except Exception:
+                pass  # Column already TIMESTAMPTZ
+            try:
+                await conn.execute(
+                    "ALTER TABLE tenants ALTER COLUMN last_connected_at TYPE TIMESTAMPTZ USING last_connected_at AT TIME ZONE 'UTC'"
+                )
+            except Exception:
+                pass
+            try:
+                await conn.execute(
+                    "ALTER TABLE tenants ALTER COLUMN last_disconnected_at TYPE TIMESTAMPTZ USING last_disconnected_at AT TIME ZONE 'UTC'"
+                )
+            except Exception:
+                pass
+            try:
+                await conn.execute(
+                    "ALTER TABLE messages ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC'"
+                )
+            except Exception:
+                pass
+            try:
+                await conn.execute(
+                    "ALTER TABLE messages ALTER COLUMN chatwoot_synced_at TYPE TIMESTAMPTZ USING chatwoot_synced_at AT TIME ZONE 'UTC'"
+                )
+            except Exception:
+                pass
+            try:
+                await conn.execute(
+                    "ALTER TABLE webhook_attempts ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC'"
+                )
+            except Exception:
+                pass
+            try:
+                await conn.execute(
+                    "ALTER TABLE admin_sessions ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC'"
+                )
+            except Exception:
+                pass
+            try:
+                await conn.execute(
+                    "ALTER TABLE admin_sessions ALTER COLUMN expires_at TYPE TIMESTAMPTZ USING expires_at AT TIME ZONE 'UTC'"
+                )
+            except Exception:
+                pass
+            try:
+                await conn.execute(
+                    "ALTER TABLE global_config ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING updated_at AT TIME ZONE 'UTC'"
+                )
+            except Exception:
+                pass
+            try:
+                await conn.execute(
+                    "ALTER TABLE contacts ALTER COLUMN last_message_at TYPE TIMESTAMPTZ USING last_message_at AT TIME ZONE 'UTC'"
+                )
+            except Exception:
+                pass
+            try:
+                await conn.execute(
+                    "ALTER TABLE contacts ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC'"
+                )
+            except Exception:
+                pass
+            try:
+                await conn.execute(
+                    "ALTER TABLE contacts ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING updated_at AT TIME ZONE 'UTC'"
+                )
+            except Exception:
+                pass
+
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS contacts (
                     id SERIAL PRIMARY KEY,
@@ -228,10 +303,10 @@ class Database:
                     name TEXT,
                     chat_jid TEXT NOT NULL,
                     is_group BOOLEAN DEFAULT FALSE,
-                    last_message_at TIMESTAMP,
+                    last_message_at TIMESTAMPTZ,
                     message_count INTEGER DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW(),
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW(),
                     UNIQUE(tenant_hash, phone)
                 )
             """)
@@ -655,7 +730,7 @@ class Database:
         logger.debug(
             f"Updating session state for tenant: hash={api_key_hash[:16]}..., state={connection_state}"
         )
-        now = datetime.now()
+        now = datetime.now(UTC)
 
         if self._is_postgres:
             async with self._pool.acquire() as conn:
@@ -1195,7 +1270,7 @@ class Database:
         Updates name only if the new name is not empty/None.
         """
         if message_time is None:
-            message_time = datetime.now()
+            message_time = datetime.now(UTC)
 
         if self._is_postgres:
             async with self._pool.acquire() as conn:

@@ -431,60 +431,117 @@ async def handle_chatwoot_event(
             await integration.close()
 
 
-def handle_bridge_event(
-    event_type: str, params: dict[str, Any], tenant_id: Optional[str] = None
-):
-    logger.debug(
-        f"Bridge event received: type={event_type}, tenant={tenant_id[:16] if tenant_id else 'none'}..."
+def _handle_qr_event(
+    event_type: str, tenant: "Tenant", tenant_id: str, params: dict[str, Any]
+) -> None:
+    logger.info(f"QR code generated for tenant {tenant.name}")
+    create_task_with_logging(
+        admin_ws_manager.broadcast(
+            "qr_generated",
+            {
+                "tenant_hash": tenant_id,
+                "tenant_name": tenant.name,
+                "qr": params.get("qr"),
+                "qr_data_url": params.get("qr_data_url"),
+            },
+        ),
+        name="broadcast_qr",
+    )
+    config = getattr(tenant, "chatwoot_config", None)
+    if config and config.get("enabled"):
+        create_task_with_logging(
+            handle_chatwoot_event(tenant, "qr", params), name="chatwoot_qr"
+        )
+
+
+def _handle_connected_event(
+    event_type: str, tenant: "Tenant", tenant_id: str, params: dict[str, Any]
+) -> None:
+    logger.info(
+        f"Tenant {tenant.name} connected: jid={params.get('jid')}, phone={params.get('phone')}"
+    )
+    create_task_with_logging(
+        tenant_manager.update_session_state(
+            tenant,
+            "connected",
+            self_jid=params.get("jid"),
+            self_phone=params.get("phone"),
+            self_name=params.get("name"),
+            has_auth=True,
+        ),
+        name="update_session_connected",
     )
 
-    if not tenant_id:
-        logger.debug("Event has no tenant_id, ignoring")
-        return
 
-    tenant = tenant_manager.get_tenant_by_hash(tenant_id)
+def _handle_disconnected_event(
+    event_type: str, tenant: "Tenant", tenant_id: str, params: dict[str, Any]
+) -> None:
+    reason = params.get("reason")
+    reason_name = params.get("reason_name", "unknown")
+    error = params.get("error", "")
+    should_reconnect = params.get("should_reconnect", True)
 
-    if not tenant:
-        logger.debug(f"Tenant not found for event: {tenant_id[:16]}...")
-        return
+    logger.warning(
+        f"Tenant {tenant.name} disconnected: reason={reason} ({reason_name}), "
+        f"error={error}, should_reconnect={should_reconnect}"
+    )
 
-    logger.info(f"Bridge event for tenant {tenant.name}: type={event_type}")
-
-    if event_type == "qr":
-        logger.info(f"QR code generated for tenant {tenant.name}")
+    if reason_name == "loggedOut":
         create_task_with_logging(
-            admin_ws_manager.broadcast(
-                "qr_generated",
-                {
-                    "tenant_hash": tenant_id,
-                    "tenant_name": tenant.name,
-                    "qr": params.get("qr"),
-                    "qr_data_url": params.get("qr_data_url"),
-                },
-            ),
-            name="broadcast_qr",
+            tenant_manager.update_session_state(tenant, "disconnected", has_auth=False),
+            name="update_session_disconnected",
         )
-        config = getattr(tenant, "chatwoot_config", None)
-        if config and config.get("enabled"):
+        create_task_with_logging(tenant_manager.clear_creds(tenant), name="clear_creds")
+        logger.info(f"Cleared credentials for logged out tenant: {tenant.name}")
+    elif reason_name == "banned":
+        create_task_with_logging(
+            tenant_manager.update_session_state(tenant, "disconnected"),
+            name="update_session_banned",
+        )
+        logger.error(f"Tenant {tenant.name} is banned from WhatsApp")
+    else:
+        create_task_with_logging(
+            tenant_manager.update_session_state(tenant, "disconnected"),
+            name="update_session_disconnected",
+        )
+        if should_reconnect:
+            logger.info(f"Scheduling reconnection for tenant {tenant.name}")
             create_task_with_logging(
-                handle_chatwoot_event(tenant, "qr", params), name="chatwoot_qr"
+                trigger_bridge_reconnect(tenant), name="trigger_reconnect"
             )
-    elif event_type == "connected":
-        logger.info(
-            f"Tenant {tenant.name} connected: jid={params.get('jid')}, phone={params.get('phone')}"
-        )
+
+
+def _handle_state_event(
+    event_type: str, tenant: "Tenant", tenant_id: str, params: dict[str, Any]
+) -> None:
+    if event_type == "reconnecting":
+        logger.info(f"Tenant {tenant.name} reconnecting: reason={params.get('reason')}")
+    elif event_type == "reconnect_failed":
+        logger.error(f"Tenant {tenant.name} reconnect failed: {params.get('error')}")
+        return
+    elif event_type == "connecting":
+        logger.info(f"Tenant {tenant.name} connecting to WhatsApp...")
+
+    create_task_with_logging(
+        tenant_manager.update_session_state(tenant, "connecting"),
+        name=f"update_session_{event_type}",
+    )
+
+
+def _handle_auth_update_event(
+    event_type: str, tenant: "Tenant", tenant_id: str, params: dict[str, Any]
+) -> None:
+    if params:
         create_task_with_logging(
-            tenant_manager.update_session_state(
-                tenant,
-                "connected",
-                self_jid=params.get("jid"),
-                self_phone=params.get("phone"),
-                self_name=params.get("name"),
-                has_auth=True,
-            ),
-            name="update_session_connected",
+            tenant_manager.save_auth_state(tenant, params),
+            name="save_auth_state",
         )
-    elif event_type == "contacts":
+
+
+def _handle_sync_event(
+    event_type: str, tenant: "Tenant", tenant_id: str, params: dict[str, Any]
+) -> None:
+    if event_type == "contacts":
         logger.info(
             f"Received contacts for tenant {tenant.name}: count={len(params.get('contacts', []))}"
         )
@@ -499,64 +556,12 @@ def handle_bridge_event(
         create_task_with_logging(
             handle_history_sync(tenant, params), name="history_sync"
         )
-    elif event_type == "disconnected":
-        reason = params.get("reason")
-        reason_name = params.get("reason_name", "unknown")
-        error = params.get("error", "")
-        should_reconnect = params.get("should_reconnect", True)
-        logger.warning(
-            f"Tenant {tenant.name} disconnected: reason={reason} ({reason_name}), "
-            f"error={error}, should_reconnect={should_reconnect}"
-        )
-        if reason_name == "loggedOut":
-            create_task_with_logging(
-                tenant_manager.update_session_state(
-                    tenant, "disconnected", has_auth=False
-                ),
-                name="update_session_disconnected",
-            )
-            create_task_with_logging(
-                tenant_manager.clear_creds(tenant), name="clear_creds"
-            )
-            logger.info(f"Cleared credentials for logged out tenant: {tenant.name}")
-        elif reason_name == "banned":
-            create_task_with_logging(
-                tenant_manager.update_session_state(tenant, "disconnected"),
-                name="update_session_banned",
-            )
-            logger.error(f"Tenant {tenant.name} is banned from WhatsApp")
-        else:
-            create_task_with_logging(
-                tenant_manager.update_session_state(tenant, "disconnected"),
-                name="update_session_disconnected",
-            )
-            if should_reconnect:
-                logger.info(f"Scheduling reconnection for tenant {tenant.name}")
-                create_task_with_logging(
-                    trigger_bridge_reconnect(tenant), name="trigger_reconnect"
-                )
-    elif event_type == "reconnecting":
-        logger.info(f"Tenant {tenant.name} reconnecting: reason={params.get('reason')}")
-        create_task_with_logging(
-            tenant_manager.update_session_state(tenant, "connecting"),
-            name="update_session_reconnecting",
-        )
-    elif event_type == "reconnect_failed":
-        logger.error(f"Tenant {tenant.name} reconnect failed: {params.get('error')}")
-    elif event_type == "connecting":
-        logger.info(f"Tenant {tenant.name} connecting to WhatsApp...")
-        create_task_with_logging(
-            tenant_manager.update_session_state(tenant, "connecting"),
-            name="update_session_connecting",
-        )
-    elif event_type == "auth.update":
-        auth_data = params
-        if auth_data:
-            create_task_with_logging(
-                tenant_manager.save_auth_state(tenant, auth_data),
-                name="save_auth_state",
-            )
-    elif event_type == "message":
+
+
+def _handle_message_log_event(
+    event_type: str, tenant: "Tenant", tenant_id: str, params: dict[str, Any]
+) -> None:
+    if event_type == "message":
         logger.debug(
             f"Message received for tenant {tenant.name}: from={params.get('from')}"
         )
@@ -564,67 +569,72 @@ def handle_bridge_event(
         logger.debug(
             f"Message sent by tenant {tenant.name}: to={params.get('to')}, params={params}"
         )
-    elif event_type == "message_deleted":
+
+
+def _handle_chatwoot_message_event(
+    event_type: str, tenant: "Tenant", tenant_id: str, params: dict[str, Any]
+) -> None:
+    chatwoot_config = getattr(tenant, "chatwoot_config", None)
+    if not chatwoot_config or not chatwoot_config.get("enabled"):
+        return
+
+    if event_type == "message_deleted":
         logger.info(
             f"Message deleted for tenant {tenant.name}: message_id={params.get('message_id')}"
         )
-        chatwoot_config = getattr(tenant, "chatwoot_config", None)
-        if chatwoot_config and chatwoot_config.get("enabled"):
-            create_task_with_logging(
-                handle_chatwoot_event(tenant, "message_deleted", params),
-                name="chatwoot_message_deleted",
-            )
     elif event_type == "message_read":
         logger.debug(
             f"Messages marked as read for tenant {tenant.name}: chat={params.get('chat_jid')}"
         )
-        chatwoot_config = getattr(tenant, "chatwoot_config", None)
-        if chatwoot_config and chatwoot_config.get("enabled"):
-            create_task_with_logging(
-                handle_chatwoot_event(tenant, "message_read", params),
-                name="chatwoot_message_read",
-            )
+
+    create_task_with_logging(
+        handle_chatwoot_event(tenant, event_type, params),
+        name=f"chatwoot_{event_type}",
+    )
+
+
+def _store_message(event_type: str, tenant: "Tenant", params: dict[str, Any]) -> None:
+    if tenant.message_store is None:
+        logger.warning(f"Message store not initialized for tenant {tenant.name}")
+        return
+
+    if event_type == "sent":
+        from_jid = tenant.self_jid or params.get("from", "")
+        chat_jid = params.get("to", "")
+        is_outbound = True
     else:
-        logger.debug(f"Unknown event type arrived: {event_type} with params: {params}")
+        from_jid = params.get("from", "")
+        chat_jid = params.get("chat_jid") or params.get("from", "")
+        is_outbound = tenant.self_jid and from_jid == tenant.self_jid
+    direction = "outbound" if is_outbound else "inbound"
 
-    if event_type in ["message", "sent"]:
-        if tenant.message_store is None:
-            logger.warning(f"Message store not initialized for tenant {tenant.name}")
-            return
-        if event_type == "sent":
-            from_jid = tenant.self_jid or params.get("from", "")
-            chat_jid = params.get("to", "")
-            is_outbound = True
-        else:
-            from_jid = params.get("from", "")
-            chat_jid = params.get("chat_jid") or params.get("from", "")
-            is_outbound = tenant.self_jid and from_jid == tenant.self_jid
-        direction = "outbound" if is_outbound else "inbound"
-
-        msg = StoredMessage(
-            id=params.get("id") or params.get("message_id", ""),
-            from_jid=from_jid or "",
-            chat_jid=chat_jid,
-            is_group=params.get("is_group", False),
-            push_name=params.get("push_name"),
-            text=params.get("text", ""),
-            msg_type=params.get("type", "text"),
-            timestamp=params.get("timestamp", 0),
-            direction=direction,
-            media_url=params.get("media_url"),
+    msg = StoredMessage(
+        id=params.get("id") or params.get("message_id", ""),
+        from_jid=from_jid or "",
+        chat_jid=chat_jid,
+        is_group=params.get("is_group", False),
+        push_name=params.get("push_name"),
+        text=params.get("text", ""),
+        msg_type=params.get("type", "text"),
+        timestamp=params.get("timestamp", 0),
+        direction=direction,
+        media_url=params.get("media_url"),
+    )
+    if hasattr(tenant.message_store, "add_with_persist"):
+        create_task_with_logging(
+            tenant.message_store.add_with_persist(msg), name="store_message"
         )
-        if hasattr(tenant.message_store, "add_with_persist"):
-            create_task_with_logging(
-                tenant.message_store.add_with_persist(msg), name="store_message"
-            )
-        else:
-            tenant.message_store.add(msg)
+    else:
+        tenant.message_store.add(msg)
 
+
+def _broadcast_to_websockets(
+    event_type: str, tenant: "Tenant", tenant_id: str, params: dict[str, Any]
+) -> None:
     create_task_with_logging(
         manager.broadcast(tenant_id, event_type, params), name="broadcast_event"
     )
 
-    # Broadcast to admin dashboard
     if event_type in ["connected", "disconnected", "connecting", "reconnecting"]:
         create_task_with_logging(
             admin_ws_manager.broadcast(
@@ -651,33 +661,93 @@ def handle_bridge_event(
             name="admin_broadcast_message",
         )
 
-    if tenant.webhook_urls:
-        logger.debug(
-            f"Sending webhook for event {event_type} to {len(tenant.webhook_urls)} URLs"
-        )
-        sender = WebhookSender(
-            urls=tenant.webhook_urls,
-            secret=settings.webhook_secret,
-            timeout=settings.webhook_timeout,
-            max_retries=settings.webhook_retries,
-            tenant_hash=tenant.api_key_hash,
-            db=tenant_manager._db,
-        )
-        create_task_with_logging(sender.send(event_type, params), name="webhook_send")
 
+def _send_webhook(event_type: str, tenant: "Tenant", params: dict[str, Any]) -> None:
+    if not tenant.webhook_urls:
+        return
+
+    logger.debug(
+        f"Sending webhook for event {event_type} to {len(tenant.webhook_urls)} URLs"
+    )
+    sender = WebhookSender(
+        urls=tenant.webhook_urls,
+        secret=settings.webhook_secret,
+        timeout=settings.webhook_timeout,
+        max_retries=settings.webhook_retries,
+        tenant_hash=tenant.api_key_hash,
+        db=tenant_manager._db,
+    )
+    create_task_with_logging(sender.send(event_type, params), name="webhook_send")
+
+
+def _handle_chatwoot_integration(
+    event_type: str, tenant: "Tenant", params: dict[str, Any]
+) -> None:
     chatwoot_config = getattr(tenant, "chatwoot_config", None)
-    if chatwoot_config and chatwoot_config.get("enabled"):
-        if event_type in [
-            "message",
-            "sent",
-            "connected",
-            "disconnected",
-            "status_instance",
-        ]:
-            create_task_with_logging(
-                handle_chatwoot_event(tenant, event_type, params),
-                name="chatwoot_event",
-            )
+    if not chatwoot_config or not chatwoot_config.get("enabled"):
+        return
+
+    if event_type in [
+        "message",
+        "sent",
+        "connected",
+        "disconnected",
+        "status_instance",
+    ]:
+        create_task_with_logging(
+            handle_chatwoot_event(tenant, event_type, params),
+            name="chatwoot_event",
+        )
+
+
+EVENT_HANDLERS = {
+    "qr": _handle_qr_event,
+    "connected": _handle_connected_event,
+    "disconnected": _handle_disconnected_event,
+    "reconnecting": _handle_state_event,
+    "reconnect_failed": _handle_state_event,
+    "connecting": _handle_state_event,
+    "auth.update": _handle_auth_update_event,
+    "contacts": _handle_sync_event,
+    "chats_history": _handle_sync_event,
+    "message": _handle_message_log_event,
+    "sent": _handle_message_log_event,
+    "message_deleted": _handle_chatwoot_message_event,
+    "message_read": _handle_chatwoot_message_event,
+}
+
+
+def handle_bridge_event(
+    event_type: str, params: dict[str, Any], tenant_id: Optional[str] = None
+):
+    logger.debug(
+        f"Bridge event received: type={event_type}, tenant={tenant_id[:16] if tenant_id else 'none'}..."
+    )
+
+    if not tenant_id:
+        logger.debug("Event has no tenant_id, ignoring")
+        return
+
+    tenant = tenant_manager.get_tenant_by_hash(tenant_id)
+
+    if not tenant:
+        logger.debug(f"Tenant not found for event: {tenant_id[:16]}...")
+        return
+
+    logger.info(f"Bridge event for tenant {tenant.name}: type={event_type}")
+
+    handler = EVENT_HANDLERS.get(event_type)
+    if handler:
+        handler(event_type, tenant, tenant_id, params)
+    else:
+        logger.debug(f"Unknown event type arrived: {event_type} with params: {params}")
+
+    if event_type in ["message", "sent"]:
+        _store_message(event_type, tenant, params)
+
+    _broadcast_to_websockets(event_type, tenant, tenant_id, params)
+    _send_webhook(event_type, tenant, params)
+    _handle_chatwoot_integration(event_type, tenant, params)
 
 
 tenant_manager.on_event(handle_bridge_event)
