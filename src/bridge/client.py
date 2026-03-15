@@ -160,7 +160,10 @@ class BaileysBridge:
                 if not line:
                     break
                 logger.debug(f"Bridge stderr: {line.decode('utf-8').strip()}")
-            except Exception:
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"Bridge stderr loop error: {e}")
                 break
 
     async def _handle_event(self, method: str, params: dict) -> None:
@@ -170,7 +173,7 @@ class BaileysBridge:
                 if asyncio.iscoroutine(result):
                     await result  # type: ignore[arg-type]
             except Exception as e:
-                logger.debug(f"Event handler error: {e}")
+                logger.warning(f"Event handler error: {e}")
 
     async def call(self, method: str, params: Optional[dict] = None) -> Any:
         if not self._process or not self._process.stdin:

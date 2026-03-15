@@ -44,3 +44,46 @@ def test_decode_event():
     assert isinstance(result, JsonRpcEvent)
     assert result.method == "qr"
     assert result.params["qr"] == "test"
+
+
+class TestStderrLoopErrorHandling:
+    @pytest.mark.asyncio
+    async def test_stderr_loop_handles_exception_with_logging(self, caplog):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from src.bridge.client import BaileysBridge
+
+        bridge = BaileysBridge(auth_dir="/tmp/test", auto_login=False)
+
+        bridge._process = MagicMock()
+        bridge._process.stderr = AsyncMock()
+        bridge._running = True
+
+        bridge._process.stderr.readline = AsyncMock(
+            side_effect=RuntimeError("stderr read error")
+        )
+
+        with caplog.at_level("WARNING"):
+            await bridge._stderr_loop()
+
+        assert any("stderr loop error" in record.message for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_stderr_loop_handles_cancelled_error(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from src.bridge.client import BaileysBridge
+
+        bridge = BaileysBridge(auth_dir="/tmp/test", auto_login=False)
+
+        bridge._process = MagicMock()
+        bridge._process.stderr = AsyncMock()
+        bridge._running = True
+
+        bridge._process.stderr.readline = AsyncMock(
+            side_effect=asyncio.CancelledError()
+        )
+
+        await bridge._stderr_loop()
+
+        assert True

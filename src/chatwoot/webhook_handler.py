@@ -301,7 +301,7 @@ class ChatwootWebhookHandler:
             if hasattr(self._tenant, "chatwoot_integration"):
                 integration = getattr(self._tenant, "chatwoot_integration", None)
                 if integration:
-                    integration.clear_cache()
+                    await integration.clear_cache()
             return "Chatwoot cache cleared successfully."
         except Exception as e:
             logger.error(f"Clearcache command error: {e}")

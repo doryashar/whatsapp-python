@@ -2,6 +2,7 @@ import asyncio
 import re
 from typing import Optional, TYPE_CHECKING
 from datetime import datetime
+from collections import OrderedDict
 import time
 
 from .models import (
@@ -22,6 +23,39 @@ if TYPE_CHECKING:
 logger = get_logger("whatsapp.chatwoot.integration")
 
 
+class TTLLRUCache:
+    def __init__(self, max_size: int = 1000, ttl_seconds: float = 3600):
+        self._max_size = max_size
+        self._ttl_seconds = ttl_seconds
+        self._cache: OrderedDict = OrderedDict()
+        self._timestamps: dict = {}
+
+    def get(self, key):
+        if key in self._cache:
+            if time.time() - self._timestamps.get(key, 0) > self._ttl_seconds:
+                del self._cache[key]
+                del self._timestamps[key]
+                return None
+            self._cache.move_to_end(key)
+            return self._cache[key]
+        return None
+
+    def set(self, key, value) -> None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        else:
+            if len(self._cache) >= self._max_size:
+                oldest = next(iter(self._cache))
+                del self._cache[oldest]
+                del self._timestamps[oldest]
+        self._cache[key] = value
+        self._timestamps[key] = time.time()
+
+    def clear(self) -> None:
+        self._cache.clear()
+        self._timestamps.clear()
+
+
 class ChatwootIntegration:
     LOCK_TIMEOUT = 5.0
     LOCK_POLL_DELAY = 0.0
@@ -39,9 +73,13 @@ class ChatwootIntegration:
         self._bridge = bridge
         self._db = db
         self._client = ChatwootClient(config)
-        self._contact_cache: dict[str, ChatwootContact] = {}
-        self._conversation_cache: dict[int, ChatwootConversation] = {}
-        self._profile_picture_cache: dict[str, str] = {}
+        self._contact_cache: TTLLRUCache = TTLLRUCache(max_size=1000, ttl_seconds=3600)
+        self._conversation_cache: TTLLRUCache = TTLLRUCache(
+            max_size=500, ttl_seconds=1800
+        )
+        self._profile_picture_cache: TTLLRUCache = TTLLRUCache(
+            max_size=2000, ttl_seconds=7200
+        )
         self._conversation_locks: dict[str, asyncio.Lock] = {}
         self._lock_creation_mutex: asyncio.Lock = asyncio.Lock()
         self._last_connection_notification: float = 0
@@ -545,7 +583,7 @@ class ChatwootIntegration:
 
         return attachments
 
-    def clear_cache(self):
+    async def clear_cache(self):
         self._contact_cache.clear()
         self._conversation_cache.clear()
         self._profile_picture_cache.clear()
@@ -574,7 +612,7 @@ class ChatwootIntegration:
             if not profile_url:
                 return
 
-            self._profile_picture_cache[jid] = profile_url
+            self._profile_picture_cache.set(jid, profile_url)
 
             current_thumbnail = contact.thumbnail or ""
             wa_filename = profile_url.split("#")[0].split("?")[0].split("/")[-1]
@@ -754,7 +792,7 @@ class ChatwootIntegration:
                 contact=contact,
                 source_id=source_id,
             )
-            self._conversation_cache[contact.id] = conversation
+            self._conversation_cache.set(contact.id, conversation)
             return conversation
         finally:
             if acquired and lock.locked():

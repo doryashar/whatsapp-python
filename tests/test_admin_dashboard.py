@@ -234,3 +234,171 @@ async def test_delete_tenant_without_raw_key(setup_tenant_manager):
         assert delete_response.json()["status"] == "deleted"
 
         assert tenant_manager._tenants.get(tenant_hash) is None
+
+
+class TestAdminSessionRefresh:
+    @pytest.mark.asyncio
+    async def test_validate_session_refreshes_expiry(self, mock_db):
+        from src.admin.auth import AdminSession
+        from datetime import datetime, timedelta
+
+        mock_db.update_admin_session_expiry = AsyncMock()
+        session = AdminSession(mock_db)
+
+        result = await session.validate_session("test-session-id")
+
+        assert result is True
+        mock_db.update_admin_session_expiry.assert_called_once()
+        call_args = mock_db.update_admin_session_expiry.call_args
+        assert call_args[0][0] == "test-session-id"
+        assert isinstance(call_args[0][1], datetime)
+
+    @pytest.mark.asyncio
+    async def test_validate_session_returns_false_for_invalid(self, mock_db):
+        from src.admin.auth import AdminSession
+
+        mock_db.get_admin_session = AsyncMock(return_value=None)
+        mock_db.update_admin_session_expiry = AsyncMock()
+        session = AdminSession(mock_db)
+
+        result = await session.validate_session("invalid-session")
+
+        assert result is False
+        mock_db.update_admin_session_expiry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_session_duration_constant(self, mock_db):
+        from src.admin.auth import AdminSession
+
+        assert AdminSession.SESSION_DURATION_HOURS == 24
+
+    @pytest.mark.asyncio
+    async def test_create_session_uses_duration_constant(self, mock_db):
+        from src.admin.auth import AdminSession
+        from unittest.mock import MagicMock
+        from datetime import datetime, timedelta
+
+        session = AdminSession(mock_db)
+        request = MagicMock()
+        request.client.host = "127.0.0.1"
+        request.headers.get = lambda x: "test-agent"
+
+        await session.create_session(request, ADMIN_PASSWORD)
+
+        call_args = mock_db.create_admin_session.call_args
+        expires_at = call_args.kwargs["expires_at"]
+        expected_delta = timedelta(hours=AdminSession.SESSION_DURATION_HOURS)
+        actual_delta = expires_at - datetime.now()
+        tolerance = timedelta(seconds=5)
+        assert abs(expected_delta - actual_delta) < tolerance
+
+
+class TestSQLiteTenantTransaction:
+    @pytest.mark.asyncio
+    async def test_save_tenant_uses_transaction_on_sqlite(self, tmp_path):
+        from src.store.database import Database
+        from datetime import datetime, UTC
+
+        db_path = tmp_path / "test.db"
+        db = Database(f"sqlite://{db_path}", tmp_path)
+        await db.connect()
+
+        try:
+            await db.save_tenant(
+                api_key_hash="test_hash_123",
+                name="Test Tenant",
+                created_at=datetime.now(UTC),
+                webhook_urls=["https://example.com/webhook"],
+            )
+
+            tenants = await db.load_tenants()
+            assert len(tenants) == 1
+            assert tenants[0]["name"] == "Test Tenant"
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_save_tenant_rollback_on_error(self, tmp_path):
+        from src.store.database import Database
+        from datetime import datetime, UTC
+        from unittest.mock import patch, AsyncMock
+
+        db_path = tmp_path / "test.db"
+        db = Database(f"sqlite://{db_path}", tmp_path)
+        await db.connect()
+
+        try:
+            await db.save_tenant(
+                api_key_hash="existing_tenant",
+                name="Existing Tenant",
+                created_at=datetime.now(UTC),
+                webhook_urls=[],
+            )
+
+            original_execute = db._pool.execute
+            call_count = [0]
+
+            async def failing_execute(query, *args):
+                call_count[0] += 1
+                if "INSERT OR REPLACE" in query:
+                    raise Exception("Simulated error")
+                return await original_execute(query, *args)
+
+            with patch.object(db._pool, "execute", side_effect=failing_execute):
+                with pytest.raises(Exception, match="Simulated error"):
+                    await db.save_tenant(
+                        api_key_hash="new_tenant",
+                        name="New Tenant",
+                        created_at=datetime.now(UTC),
+                        webhook_urls=[],
+                    )
+
+            tenants = await db.load_tenants()
+            assert len(tenants) == 1
+            assert tenants[0]["api_key_hash"] == "existing_tenant"
+        finally:
+            await db.close()
+
+    @pytest.mark.asyncio
+    async def test_save_tenant_preserves_existing_fields_on_update(self, tmp_path):
+        from src.store.database import Database
+        from datetime import datetime, UTC
+
+        db_path = tmp_path / "test.db"
+        db = Database(f"sqlite://{db_path}", tmp_path)
+        await db.connect()
+
+        try:
+            await db.save_tenant(
+                api_key_hash="preserve_test",
+                name="Original Name",
+                created_at=datetime.now(UTC),
+                webhook_urls=["https://example.com/webhook"],
+            )
+
+            await db.update_session_state(
+                "preserve_test",
+                "connected",
+                "test_jid",
+                "test_phone",
+                "test_name",
+                True,
+            )
+
+            await db.save_tenant(
+                api_key_hash="preserve_test",
+                name="Updated Name",
+                created_at=datetime.now(UTC),
+                webhook_urls=["https://example.com/new_webhook"],
+            )
+
+            tenants = await db.load_tenants()
+            tenant = [t for t in tenants if t["api_key_hash"] == "preserve_test"][0]
+            assert tenant["name"] == "Updated Name"
+            assert tenant["connection_state"] == "connected"
+            assert tenant["self_jid"] == "test_jid"
+            assert tenant["self_phone"] == "test_phone"
+            assert tenant["self_name"] == "test_name"
+            assert tenant["has_auth"] is True
+        finally:
+            await db.close()

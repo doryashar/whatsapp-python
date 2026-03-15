@@ -206,3 +206,175 @@ async def test_admin_requires_key():
         # Try to access without logging in
         response = await client.post("/admin/api/tenants", params={"name": "new_user"})
         assert response.status_code == 401
+
+
+class TestBinaryKeyFileHandling:
+    @pytest.mark.asyncio
+    async def test_binary_key_file_written_correctly(self, tmp_path):
+        from src.tenant import TenantManager, Tenant
+        from unittest.mock import patch
+
+        manager = TenantManager()
+        db = AsyncMock()
+        manager.set_database(db)
+
+        auth_dir = tmp_path / "auth"
+        auth_dir.mkdir(parents=True, exist_ok=True)
+
+        auth_data = {
+            "creds": {"noiseKey": "test"},
+            "keys": {
+                "app-state-sync-key-1.json": b"\x00\x01\x02\x03",
+                "session.json": '{"key": "value"}',
+            },
+        }
+
+        tenant = Tenant(
+            name="test_tenant",
+            api_key_hash="test_hash",
+        )
+        tenant.creds_json = auth_data
+
+        with patch.object(tenant, "get_auth_dir", return_value=auth_dir):
+            success = manager._restore_auth_to_filesystem(tenant)
+
+        assert success is True
+
+        binary_file = auth_dir / "keys" / "app-state-sync-key-1.json"
+        assert binary_file.exists()
+        with open(binary_file, "rb") as f:
+            content = f.read()
+        assert content == b"\x00\x01\x02\x03"
+
+        text_file = auth_dir / "keys" / "session.json"
+        assert text_file.exists()
+        with open(text_file, "r") as f:
+            content = f.read()
+        assert content == '{"key": "value"}'
+
+    @pytest.mark.asyncio
+    async def test_text_key_file_written_correctly(self, tmp_path):
+        from src.tenant import TenantManager, Tenant
+        from unittest.mock import patch
+
+        manager = TenantManager()
+        db = AsyncMock()
+        manager.set_database(db)
+
+        auth_dir = tmp_path / "auth"
+        auth_dir.mkdir(parents=True, exist_ok=True)
+
+        auth_data = {
+            "creds": {"noiseKey": "test"},
+            "keys": {
+                "test-key.json": '{"data": "string content"}',
+            },
+        }
+
+        tenant = Tenant(
+            name="test_tenant",
+            api_key_hash="test_hash",
+        )
+        tenant.creds_json = auth_data
+
+        with patch.object(tenant, "get_auth_dir", return_value=auth_dir):
+            success = manager._restore_auth_to_filesystem(tenant)
+
+        assert success is True
+
+        key_file = auth_dir / "keys" / "test-key.json"
+        assert key_file.exists()
+        with open(key_file, "r") as f:
+            content = f.read()
+        assert content == '{"data": "string content"}'
+
+
+class TestRestartHistoryCleanup:
+    @pytest.mark.asyncio
+    async def test_cleanup_removes_deleted_tenant_entries(self, fresh_tenant_manager):
+        from datetime import datetime, UTC, timedelta
+
+        fresh_tenant_manager._restart_history["deleted_hash"] = [
+            datetime.now(UTC) - timedelta(seconds=60)
+        ]
+        fresh_tenant_manager._last_cleanup = datetime.now(UTC) - timedelta(seconds=7200)
+
+        fresh_tenant_manager._cleanup_restart_history()
+
+        assert "deleted_hash" not in fresh_tenant_manager._restart_history
+
+    @pytest.mark.asyncio
+    async def test_cleanup_removes_expired_timestamps(self, fresh_tenant_manager):
+        from datetime import datetime, UTC, timedelta
+        from src import config
+
+        tenant, _ = await fresh_tenant_manager.create_tenant("test_cleanup")
+
+        old_ts = datetime.now(UTC) - timedelta(
+            seconds=config.settings.restart_window_seconds + 100
+        )
+        recent_ts = datetime.now(UTC) - timedelta(seconds=60)
+
+        fresh_tenant_manager._restart_history[tenant.api_key_hash] = [old_ts, recent_ts]
+        fresh_tenant_manager._last_cleanup = datetime.now(UTC) - timedelta(seconds=7200)
+
+        fresh_tenant_manager._cleanup_restart_history()
+
+        assert len(fresh_tenant_manager._restart_history[tenant.api_key_hash]) == 1
+        assert (
+            fresh_tenant_manager._restart_history[tenant.api_key_hash][0] == recent_ts
+        )
+
+    @pytest.mark.asyncio
+    async def test_cleanup_removes_empty_entries(self, fresh_tenant_manager):
+        from datetime import datetime, UTC, timedelta
+        from src import config
+
+        tenant, _ = await fresh_tenant_manager.create_tenant("test_empty")
+
+        old_ts = datetime.now(UTC) - timedelta(
+            seconds=config.settings.restart_window_seconds + 100
+        )
+        fresh_tenant_manager._restart_history[tenant.api_key_hash] = [old_ts]
+        fresh_tenant_manager._last_cleanup = datetime.now(UTC) - timedelta(seconds=7200)
+
+        fresh_tenant_manager._cleanup_restart_history()
+
+        assert tenant.api_key_hash not in fresh_tenant_manager._restart_history
+
+    def test_cleanup_skipped_when_interval_not_elapsed(self, fresh_tenant_manager):
+        from datetime import datetime, UTC
+
+        fresh_tenant_manager._last_cleanup = datetime.now(UTC)
+        fresh_tenant_manager._restart_history["old_entry"] = [datetime.now(UTC)]
+
+        fresh_tenant_manager._cleanup_restart_history()
+
+        assert "old_entry" in fresh_tenant_manager._restart_history
+
+    @pytest.mark.asyncio
+    async def test_can_restart_triggers_cleanup(
+        self, fresh_tenant_manager, monkeypatch
+    ):
+        from datetime import datetime, UTC, timedelta
+        from src import config
+
+        monkeypatch.setattr(config.settings, "auto_restart_bridge", True)
+
+        tenant, _ = await fresh_tenant_manager.create_tenant("test_trigger")
+        fresh_tenant_manager._restart_history["deleted_tenant"] = [datetime.now(UTC)]
+        fresh_tenant_manager._last_cleanup = datetime.now(UTC) - timedelta(seconds=7200)
+
+        fresh_tenant_manager.can_restart(tenant)
+
+        assert "deleted_tenant" not in fresh_tenant_manager._restart_history
+
+    def test_cleanup_updates_last_cleanup_timestamp(self, fresh_tenant_manager):
+        from datetime import datetime, UTC, timedelta
+
+        old_cleanup = datetime.now(UTC) - timedelta(seconds=7200)
+        fresh_tenant_manager._last_cleanup = old_cleanup
+
+        fresh_tenant_manager._cleanup_restart_history()
+
+        assert fresh_tenant_manager._last_cleanup > old_cleanup

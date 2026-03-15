@@ -1006,7 +1006,8 @@ class TestConversationCacheTTL:
         client = ChatwootClient(config)
         assert client._conversation_cache == {}
 
-    def test_cache_conversation(self, config):
+    @pytest.mark.asyncio
+    async def test_cache_conversation(self, config):
         import time
         from src.chatwoot.client import ChatwootClient
         from src.chatwoot.models import ChatwootConversation
@@ -1015,14 +1016,15 @@ class TestConversationCacheTTL:
         conv = ChatwootConversation(
             id=1, account_id=1, inbox_id=1, contact_id=1, status="open"
         )
-        client._cache_conversation(1, conv)
+        await client._cache_conversation(1, conv)
 
         assert 1 in client._conversation_cache
         cached_conv, timestamp = client._conversation_cache[1]
         assert cached_conv == conv
         assert time.time() - timestamp < 1
 
-    def test_get_cached_conversation_within_ttl(self, config):
+    @pytest.mark.asyncio
+    async def test_get_cached_conversation_within_ttl(self, config):
         import time
         from src.chatwoot.client import ChatwootClient
         from src.chatwoot.models import ChatwootConversation
@@ -1031,12 +1033,13 @@ class TestConversationCacheTTL:
         conv = ChatwootConversation(
             id=1, account_id=1, inbox_id=1, contact_id=1, status="open"
         )
-        client._cache_conversation(1, conv)
+        await client._cache_conversation(1, conv)
 
-        cached = client._get_cached_conversation(1)
+        cached = await client._get_cached_conversation(1)
         assert cached == conv
 
-    def test_get_cached_conversation_expired_ttl(self, config):
+    @pytest.mark.asyncio
+    async def test_get_cached_conversation_expired_ttl(self, config):
         import time
         from src.chatwoot.client import ChatwootClient
         from src.chatwoot.models import ChatwootConversation
@@ -1047,11 +1050,12 @@ class TestConversationCacheTTL:
         )
         client._conversation_cache[1] = (conv, time.time() - 2000)
 
-        cached = client._get_cached_conversation(1)
+        cached = await client._get_cached_conversation(1)
         assert cached is None
         assert 1 not in client._conversation_cache
 
-    def test_clear_cache(self, config):
+    @pytest.mark.asyncio
+    async def test_clear_cache(self, config):
         from src.chatwoot.client import ChatwootClient
         from src.chatwoot.models import ChatwootConversation
 
@@ -1059,8 +1063,8 @@ class TestConversationCacheTTL:
         conv = ChatwootConversation(
             id=1, account_id=1, inbox_id=1, contact_id=1, status="open"
         )
-        client._cache_conversation(1, conv)
-        client.clear_cache()
+        await client._cache_conversation(1, conv)
+        await client.clear_cache()
         assert client._conversation_cache == {}
 
 

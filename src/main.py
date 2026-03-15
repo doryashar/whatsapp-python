@@ -38,6 +38,30 @@ setup_telemetry(
 logger = get_logger()
 
 
+def create_task_with_logging(coro, name: str = "unnamed") -> asyncio.Task:
+    """Create an asyncio task with exception logging."""
+    task = asyncio.create_task(coro)
+
+    def _handle_task_exception(t: asyncio.Task) -> None:
+        try:
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc:
+                logger.error(
+                    f"Background task '{name}' failed: {exc}",
+                    exc_info=exc,
+                    extra={"task_name": name},
+                )
+        except asyncio.CancelledError:
+            pass
+        except asyncio.InvalidStateError:
+            pass
+
+    task.add_done_callback(_handle_task_exception)
+    return task
+
+
 async def _restart_bridge(tenant, reason: str = "restart") -> bool:
     if not tenant.has_valid_auth():
         logger.warning(
@@ -57,7 +81,7 @@ async def _restart_bridge(tenant, reason: str = "restart") -> bool:
         try:
             await tenant.bridge.stop()
         except Exception as e:
-            logger.debug(f"Error stopping bridge for {tenant.name}: {e}")
+            logger.warning(f"Error stopping bridge for {tenant.name}: {e}")
 
     try:
         await asyncio.sleep(settings.restart_cooldown_seconds)
@@ -107,12 +131,8 @@ async def handle_bridge_crash(tenant):
         },
     )
 
-    await tenant_manager.update_session_state(tenant, "connecting")
-
     success = await _restart_bridge(tenant, "process_crash")
-    if success:
-        await tenant_manager.update_session_state(tenant, "connecting")
-    else:
+    if not success:
         await tenant_manager.update_session_state(tenant, "disconnected")
 
 
@@ -312,6 +332,8 @@ async def handle_contacts_sync(tenant: "Tenant", contacts: list[dict]):
 
 async def handle_history_sync(tenant: "Tenant", chats_data: dict[str, Any]):
     """Sync chat history from WhatsApp to database"""
+    from .utils.history import store_chat_messages
+
     if not tenant_manager._db:
         logger.debug(f"No database available for history sync: tenant={tenant.name}")
         return
@@ -327,66 +349,14 @@ async def handle_history_sync(tenant: "Tenant", chats_data: dict[str, Any]):
         f"Starting history sync for tenant {tenant.name}: {len(chats)} chats, {total_messages} messages"
     )
 
-    stored_count = 0
-    duplicate_count = 0
-    error_count = 0
-
-    for chat in chats:
-        chat_jid = chat.get("jid", "")
-        is_group = chat.get("is_group", False)
-        messages = chat.get("messages", [])
-
-        for msg in messages:
-            try:
-                msg_id = msg.get("id", "")
-                if not msg_id:
-                    continue
-
-                from_me = msg.get("from_me", False)
-                from_jid = msg.get("from", "")
-                text = msg.get("text", "")
-                msg_type = msg.get("type", "text")
-                timestamp = msg.get("timestamp", 0)
-                push_name = msg.get("push_name")
-
-                direction = "outbound" if from_me else "inbound"
-
-                stored_msg = StoredMessage(
-                    id=msg_id,
-                    from_jid=from_jid,
-                    chat_jid=chat_jid,
-                    is_group=is_group,
-                    push_name=push_name,
-                    text=text,
-                    msg_type=msg_type,
-                    timestamp=timestamp,
-                    direction=direction,
-                )
-
-                if hasattr(tenant.message_store, "add_with_persist"):
-                    db_id = await tenant.message_store.add_with_persist(stored_msg)
-                    if db_id:
-                        stored_count += 1
-                    else:
-                        duplicate_count += 1
-                else:
-                    tenant.message_store.add(stored_msg)
-                    stored_count += 1
-
-            except Exception as e:
-                error_count += 1
-                logger.error(
-                    f"Failed to sync message for tenant {tenant.name}: {e}",
-                    exc_info=True,
-                )
+    stats = await store_chat_messages(tenant, chats_data, tenant_manager._db)
 
     logger.info(
-        f"History sync complete for tenant {tenant.name}: stored={stored_count}, duplicates={duplicate_count}, errors={error_count}",
+        f"History sync complete for tenant {tenant.name}: "
+        f"stored={stats['stored']}, duplicates={stats['duplicates']}, errors={stats['errors']}",
         extra={
             "tenant": tenant.name,
-            "stored": stored_count,
-            "duplicates": duplicate_count,
-            "errors": error_count,
+            **stats,
         },
     )
 
@@ -472,11 +442,7 @@ def handle_bridge_event(
         logger.debug("Event has no tenant_id, ignoring")
         return
 
-    tenant = None
-    for t in tenant_manager.list_tenants():
-        if t.api_key_hash == tenant_id:
-            tenant = t
-            break
+    tenant = tenant_manager.get_tenant_by_hash(tenant_id)
 
     if not tenant:
         logger.debug(f"Tenant not found for event: {tenant_id[:16]}...")
@@ -486,7 +452,7 @@ def handle_bridge_event(
 
     if event_type == "qr":
         logger.info(f"QR code generated for tenant {tenant.name}")
-        asyncio.create_task(
+        create_task_with_logging(
             admin_ws_manager.broadcast(
                 "qr_generated",
                 {
@@ -495,16 +461,19 @@ def handle_bridge_event(
                     "qr": params.get("qr"),
                     "qr_data_url": params.get("qr_data_url"),
                 },
-            )
+            ),
+            name="broadcast_qr",
         )
         config = getattr(tenant, "chatwoot_config", None)
         if config and config.get("enabled"):
-            asyncio.create_task(handle_chatwoot_event(tenant, "qr", params))
+            create_task_with_logging(
+                handle_chatwoot_event(tenant, "qr", params), name="chatwoot_qr"
+            )
     elif event_type == "connected":
         logger.info(
             f"Tenant {tenant.name} connected: jid={params.get('jid')}, phone={params.get('phone')}"
         )
-        asyncio.create_task(
+        create_task_with_logging(
             tenant_manager.update_session_state(
                 tenant,
                 "connected",
@@ -512,18 +481,24 @@ def handle_bridge_event(
                 self_phone=params.get("phone"),
                 self_name=params.get("name"),
                 has_auth=True,
-            )
+            ),
+            name="update_session_connected",
         )
     elif event_type == "contacts":
         logger.info(
             f"Received contacts for tenant {tenant.name}: count={len(params.get('contacts', []))}"
         )
-        asyncio.create_task(handle_contacts_sync(tenant, params.get("contacts", [])))
+        create_task_with_logging(
+            handle_contacts_sync(tenant, params.get("contacts", [])),
+            name="contacts_sync",
+        )
     elif event_type == "chats_history":
         logger.info(
             f"Received chat history for tenant {tenant.name}: chats={len(params.get('chats', []))}, messages={params.get('total_messages', 0)}"
         )
-        asyncio.create_task(handle_history_sync(tenant, params))
+        create_task_with_logging(
+            handle_history_sync(tenant, params), name="history_sync"
+        )
     elif event_type == "disconnected":
         reason = params.get("reason")
         reason_name = params.get("reason_name", "unknown")
@@ -534,37 +509,53 @@ def handle_bridge_event(
             f"error={error}, should_reconnect={should_reconnect}"
         )
         if reason_name == "loggedOut":
-            asyncio.create_task(
+            create_task_with_logging(
                 tenant_manager.update_session_state(
                     tenant, "disconnected", has_auth=False
-                )
+                ),
+                name="update_session_disconnected",
             )
-            asyncio.create_task(tenant_manager.clear_creds(tenant))
+            create_task_with_logging(
+                tenant_manager.clear_creds(tenant), name="clear_creds"
+            )
             logger.info(f"Cleared credentials for logged out tenant: {tenant.name}")
         elif reason_name == "banned":
-            asyncio.create_task(
-                tenant_manager.update_session_state(tenant, "disconnected")
+            create_task_with_logging(
+                tenant_manager.update_session_state(tenant, "disconnected"),
+                name="update_session_banned",
             )
             logger.error(f"Tenant {tenant.name} is banned from WhatsApp")
         else:
-            asyncio.create_task(
-                tenant_manager.update_session_state(tenant, "disconnected")
+            create_task_with_logging(
+                tenant_manager.update_session_state(tenant, "disconnected"),
+                name="update_session_disconnected",
             )
             if should_reconnect:
                 logger.info(f"Scheduling reconnection for tenant {tenant.name}")
-                asyncio.create_task(trigger_bridge_reconnect(tenant))
+                create_task_with_logging(
+                    trigger_bridge_reconnect(tenant), name="trigger_reconnect"
+                )
     elif event_type == "reconnecting":
         logger.info(f"Tenant {tenant.name} reconnecting: reason={params.get('reason')}")
-        asyncio.create_task(tenant_manager.update_session_state(tenant, "connecting"))
+        create_task_with_logging(
+            tenant_manager.update_session_state(tenant, "connecting"),
+            name="update_session_reconnecting",
+        )
     elif event_type == "reconnect_failed":
         logger.error(f"Tenant {tenant.name} reconnect failed: {params.get('error')}")
     elif event_type == "connecting":
         logger.info(f"Tenant {tenant.name} connecting to WhatsApp...")
-        asyncio.create_task(tenant_manager.update_session_state(tenant, "connecting"))
+        create_task_with_logging(
+            tenant_manager.update_session_state(tenant, "connecting"),
+            name="update_session_connecting",
+        )
     elif event_type == "auth.update":
         auth_data = params
         if auth_data:
-            asyncio.create_task(tenant_manager.save_auth_state(tenant, auth_data))
+            create_task_with_logging(
+                tenant_manager.save_auth_state(tenant, auth_data),
+                name="save_auth_state",
+            )
     elif event_type == "message":
         logger.debug(
             f"Message received for tenant {tenant.name}: from={params.get('from')}"
@@ -579,8 +570,9 @@ def handle_bridge_event(
         )
         chatwoot_config = getattr(tenant, "chatwoot_config", None)
         if chatwoot_config and chatwoot_config.get("enabled"):
-            asyncio.create_task(
-                handle_chatwoot_event(tenant, "message_deleted", params)
+            create_task_with_logging(
+                handle_chatwoot_event(tenant, "message_deleted", params),
+                name="chatwoot_message_deleted",
             )
     elif event_type == "message_read":
         logger.debug(
@@ -588,7 +580,10 @@ def handle_bridge_event(
         )
         chatwoot_config = getattr(tenant, "chatwoot_config", None)
         if chatwoot_config and chatwoot_config.get("enabled"):
-            asyncio.create_task(handle_chatwoot_event(tenant, "message_read", params))
+            create_task_with_logging(
+                handle_chatwoot_event(tenant, "message_read", params),
+                name="chatwoot_message_read",
+            )
     else:
         logger.debug(f"Unknown event type arrived: {event_type} with params: {params}")
 
@@ -596,19 +591,20 @@ def handle_bridge_event(
         if tenant.message_store is None:
             logger.warning(f"Message store not initialized for tenant {tenant.name}")
             return
-        # Determine message direction: outbound if from tenant or if it's a "sent" event, inbound otherwise
-        from_jid = params.get("from") or params.get(
-            "to", ""
-        )  # sent events have "to", message events have "from"
-        is_outbound = event_type == "sent" or (
-            tenant.self_jid and from_jid == tenant.self_jid
-        )
+        if event_type == "sent":
+            from_jid = tenant.self_jid or params.get("from", "")
+            chat_jid = params.get("to", "")
+            is_outbound = True
+        else:
+            from_jid = params.get("from", "")
+            chat_jid = params.get("chat_jid") or params.get("from", "")
+            is_outbound = tenant.self_jid and from_jid == tenant.self_jid
         direction = "outbound" if is_outbound else "inbound"
 
         msg = StoredMessage(
             id=params.get("id") or params.get("message_id", ""),
             from_jid=from_jid or "",
-            chat_jid=params.get("chat_jid") or params.get("to", ""),
+            chat_jid=chat_jid,
             is_group=params.get("is_group", False),
             push_name=params.get("push_name"),
             text=params.get("text", ""),
@@ -618,15 +614,19 @@ def handle_bridge_event(
             media_url=params.get("media_url"),
         )
         if hasattr(tenant.message_store, "add_with_persist"):
-            asyncio.create_task(tenant.message_store.add_with_persist(msg))
+            create_task_with_logging(
+                tenant.message_store.add_with_persist(msg), name="store_message"
+            )
         else:
             tenant.message_store.add(msg)
 
-    asyncio.create_task(manager.broadcast(tenant_id, event_type, params))
+    create_task_with_logging(
+        manager.broadcast(tenant_id, event_type, params), name="broadcast_event"
+    )
 
     # Broadcast to admin dashboard
     if event_type in ["connected", "disconnected", "connecting", "reconnecting"]:
-        asyncio.create_task(
+        create_task_with_logging(
             admin_ws_manager.broadcast(
                 "tenant_state_changed",
                 {
@@ -635,10 +635,11 @@ def handle_bridge_event(
                     "event": event_type,
                     "params": params,
                 },
-            )
+            ),
+            name="admin_broadcast_state",
         )
     elif event_type in ["message", "sent"]:
-        asyncio.create_task(
+        create_task_with_logging(
             admin_ws_manager.broadcast(
                 "new_message",
                 {
@@ -646,7 +647,8 @@ def handle_bridge_event(
                     "tenant_name": tenant.name,
                     "message": params,
                 },
-            )
+            ),
+            name="admin_broadcast_message",
         )
 
     if tenant.webhook_urls:
@@ -661,7 +663,7 @@ def handle_bridge_event(
             tenant_hash=tenant.api_key_hash,
             db=tenant_manager._db,
         )
-        asyncio.create_task(sender.send(event_type, params))
+        create_task_with_logging(sender.send(event_type, params), name="webhook_send")
 
     chatwoot_config = getattr(tenant, "chatwoot_config", None)
     if chatwoot_config and chatwoot_config.get("enabled"):
@@ -672,7 +674,10 @@ def handle_bridge_event(
             "disconnected",
             "status_instance",
         ]:
-            asyncio.create_task(handle_chatwoot_event(tenant, event_type, params))
+            create_task_with_logging(
+                handle_chatwoot_event(tenant, event_type, params),
+                name="chatwoot_event",
+            )
 
 
 tenant_manager.on_event(handle_bridge_event)

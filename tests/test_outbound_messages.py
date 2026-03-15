@@ -43,7 +43,8 @@ async def test_sent_event_creates_outbound_message():
     assert total == 1
     assert messages[0]["direction"] == "outbound"
     assert messages[0]["text"] == "היי"
-    assert messages[0]["from_jid"] == "1234567890@s.whatsapp.net"
+    assert messages[0]["from_jid"] == "972555077668:11@s.whatsapp.net"
+    assert messages[0]["chat_jid"] == "1234567890@s.whatsapp.net"
 
     del tenant_manager._tenants["test_hash_sent"]
 

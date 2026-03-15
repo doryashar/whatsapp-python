@@ -13,6 +13,8 @@ logger = get_logger("whatsapp.admin")
 
 
 class AdminSession:
+    SESSION_DURATION_HOURS = 24
+
     def __init__(self, db: Database):
         self._db = db
         self._session_cookie_name = "admin_session"
@@ -35,7 +37,7 @@ class AdminSession:
             return None
 
         session_id = secrets.token_urlsafe(32)
-        expires_at = datetime.now() + timedelta(hours=24)
+        expires_at = datetime.now() + timedelta(hours=self.SESSION_DURATION_HOURS)
 
         await self._db.create_admin_session(
             session_id=session_id,
@@ -57,7 +59,14 @@ class AdminSession:
             return False
 
         session = await self._db.get_admin_session(session_id)
-        return session is not None
+        if session:
+            await self._refresh_session(session_id)
+            return True
+        return False
+
+    async def _refresh_session(self, session_id: str) -> None:
+        new_expires = datetime.now() + timedelta(hours=self.SESSION_DURATION_HOURS)
+        await self._db.update_admin_session_expiry(session_id, new_expires)
 
     async def get_session(
         self,

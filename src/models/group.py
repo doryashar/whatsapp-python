@@ -1,5 +1,5 @@
 from typing import Optional, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class GroupParticipant(BaseModel):
@@ -392,6 +392,19 @@ class SendStatusRequest(BaseModel):
     font: Optional[int] = 1
     status_jid_list: Optional[list[str]] = None
     all_contacts: bool = False
+
+    @model_validator(mode="after")
+    def validate_recipients(self):
+        if self.all_contacts and self.status_jid_list:
+            raise ValueError(
+                "Cannot specify both all_contacts=True and status_jid_list. "
+                "Choose one recipient selection method."
+            )
+        if not self.all_contacts and not self.status_jid_list:
+            raise ValueError(
+                "Must specify either all_contacts=True or provide status_jid_list."
+            )
+        return self
 
 
 class SendStatusResponse(BaseModel):

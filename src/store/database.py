@@ -1,11 +1,32 @@
+import asyncio
 import json
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Callable, Awaitable, TypeVar
+from functools import wraps
 
 from ..telemetry import get_logger
 
 logger = get_logger("whatsapp.database")
+
+T = TypeVar("T")
+
+DATABASE_RETRY_ATTEMPTS = 3
+DATABASE_RETRY_BASE_DELAY = 0.1
+
+
+def is_transient_error(error: Exception) -> bool:
+    transient_messages = [
+        "connection",
+        "timeout",
+        "deadlock",
+        "locked",
+        "busy",
+        "too many connections",
+        "connection pool",
+    ]
+    error_str = str(error).lower()
+    return any(msg in error_str for msg in transient_messages)
 
 
 class Database:
@@ -43,6 +64,26 @@ class Database:
         if self._pool:
             logger.debug("Closing database connection")
             await self._pool.close()
+
+    async def _with_retry(self, operation: Callable[[], Awaitable[T]]) -> T:
+        last_error: Optional[Exception] = None
+        for attempt in range(DATABASE_RETRY_ATTEMPTS):
+            try:
+                return await operation()
+            except Exception as e:
+                last_error = e
+                if not is_transient_error(e):
+                    raise
+                if attempt < DATABASE_RETRY_ATTEMPTS - 1:
+                    delay = DATABASE_RETRY_BASE_DELAY * (2**attempt)
+                    logger.warning(
+                        f"Database operation failed (attempt {attempt + 1}/{DATABASE_RETRY_ATTEMPTS}), "
+                        f"retrying in {delay}s: {e}"
+                    )
+                    await asyncio.sleep(delay)
+        if last_error:
+            raise last_error
+        raise RuntimeError("Unexpected state in retry logic")
 
     async def _create_tables_postgres(self) -> None:
         logger.debug("Creating PostgreSQL tables if not exist")
@@ -374,34 +415,39 @@ class Database:
                     json.dumps(webhook_urls),
                 )
         else:
-            await self._pool.execute(
-                """
-                INSERT OR REPLACE INTO tenants (api_key_hash, name, created_at, webhook_urls, connection_state, self_jid, self_phone, self_name, last_connected_at, last_disconnected_at, has_auth)
-                VALUES (?, ?, ?, ?, 
-                    COALESCE((SELECT connection_state FROM tenants WHERE api_key_hash = ?), 'disconnected'),
-                    COALESCE((SELECT self_jid FROM tenants WHERE api_key_hash = ?), NULL),
-                    COALESCE((SELECT self_phone FROM tenants WHERE api_key_hash = ?), NULL),
-                    COALESCE((SELECT self_name FROM tenants WHERE api_key_hash = ?), NULL),
-                    COALESCE((SELECT last_connected_at FROM tenants WHERE api_key_hash = ?), NULL),
-                    COALESCE((SELECT last_disconnected_at FROM tenants WHERE api_key_hash = ?), NULL),
-                    COALESCE((SELECT has_auth FROM tenants WHERE api_key_hash = ?), 0)
+            try:
+                await self._pool.execute("BEGIN IMMEDIATE TRANSACTION")
+                await self._pool.execute(
+                    """
+                    INSERT OR REPLACE INTO tenants (api_key_hash, name, created_at, webhook_urls, connection_state, self_jid, self_phone, self_name, last_connected_at, last_disconnected_at, has_auth)
+                    VALUES (?, ?, ?, ?, 
+                        COALESCE((SELECT connection_state FROM tenants WHERE api_key_hash = ?), 'disconnected'),
+                        COALESCE((SELECT self_jid FROM tenants WHERE api_key_hash = ?), NULL),
+                        COALESCE((SELECT self_phone FROM tenants WHERE api_key_hash = ?), NULL),
+                        COALESCE((SELECT self_name FROM tenants WHERE api_key_hash = ?), NULL),
+                        COALESCE((SELECT last_connected_at FROM tenants WHERE api_key_hash = ?), NULL),
+                        COALESCE((SELECT last_disconnected_at FROM tenants WHERE api_key_hash = ?), NULL),
+                        COALESCE((SELECT has_auth FROM tenants WHERE api_key_hash = ?), 0)
+                    )
+                    """,
+                    (
+                        api_key_hash,
+                        name,
+                        created_at.isoformat(),
+                        json.dumps(webhook_urls),
+                        api_key_hash,
+                        api_key_hash,
+                        api_key_hash,
+                        api_key_hash,
+                        api_key_hash,
+                        api_key_hash,
+                        api_key_hash,
+                    ),
                 )
-                """,
-                (
-                    api_key_hash,
-                    name,
-                    created_at.isoformat(),
-                    json.dumps(webhook_urls),
-                    api_key_hash,
-                    api_key_hash,
-                    api_key_hash,
-                    api_key_hash,
-                    api_key_hash,
-                    api_key_hash,
-                    api_key_hash,
-                ),
-            )
-            await self._pool.commit()
+                await self._pool.commit()
+            except Exception as e:
+                await self._pool.execute("ROLLBACK")
+                raise
         logger.debug(f"Tenant saved: {name}")
 
     async def load_tenants(self) -> list[dict]:
@@ -703,25 +749,29 @@ class Database:
 
     async def save_creds(self, api_key_hash: str, creds_json: dict) -> None:
         logger.debug(f"Saving credentials for tenant: hash={api_key_hash[:16]}...")
-        if self._is_postgres:
-            async with self._pool.acquire() as conn:
-                await conn.execute(
+
+        async def _save():
+            if self._is_postgres:
+                async with self._pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE tenants SET creds_json = $1, has_auth = TRUE
+                        WHERE api_key_hash = $2
+                        """,
+                        json.dumps(creds_json),
+                        api_key_hash,
+                    )
+            else:
+                await self._pool.execute(
                     """
-                    UPDATE tenants SET creds_json = $1, has_auth = TRUE
-                    WHERE api_key_hash = $2
+                    UPDATE tenants SET creds_json = ?, has_auth = 1
+                    WHERE api_key_hash = ?
                     """,
-                    json.dumps(creds_json),
-                    api_key_hash,
+                    (json.dumps(creds_json), api_key_hash),
                 )
-        else:
-            await self._pool.execute(
-                """
-                UPDATE tenants SET creds_json = ?, has_auth = 1
-                WHERE api_key_hash = ?
-                """,
-                (json.dumps(creds_json), api_key_hash),
-            )
-            await self._pool.commit()
+                await self._pool.commit()
+
+        await self._with_retry(_save)
         logger.debug("Credentials saved")
 
     async def load_creds(self, api_key_hash: str) -> Optional[dict]:
@@ -1693,6 +1743,23 @@ class Database:
         else:
             await self._pool.execute(
                 "DELETE FROM admin_sessions WHERE id = ?", (session_id,)
+            )
+            await self._pool.commit()
+
+    async def update_admin_session_expiry(
+        self, session_id: str, expires_at: datetime
+    ) -> None:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE admin_sessions SET expires_at = $1 WHERE id = $2",
+                    expires_at,
+                    session_id,
+                )
+        else:
+            await self._pool.execute(
+                "UPDATE admin_sessions SET expires_at = ? WHERE id = ?",
+                (expires_at.isoformat(), session_id),
             )
             await self._pool.commit()
 

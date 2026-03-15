@@ -43,6 +43,7 @@ class ChatwootClient:
         self._account_id = config.account_id
         self._client: Optional[httpx.AsyncClient] = None
         self._conversation_cache: dict[int, Tuple[ChatwootConversation, float]] = {}
+        self._cache_lock = asyncio.Lock()
 
     def _get_headers(self) -> dict:
         return {
@@ -352,7 +353,7 @@ class ChatwootClient:
         contact: ChatwootContact,
         source_id: Optional[str] = None,
     ) -> ChatwootConversation:
-        cached = self._get_cached_conversation(contact.id)
+        cached = await self._get_cached_conversation(contact.id)
         if cached:
             return cached
 
@@ -361,31 +362,36 @@ class ChatwootClient:
             if existing:
                 if existing.status in ("resolved", "closed"):
                     await self.toggle_conversation_status(existing.id, "open")
-                self._cache_conversation(contact.id, existing)
+                await self._cache_conversation(contact.id, existing)
                 return existing
 
         conv = await self.create_conversation(
             contact_id=contact.id, source_id=source_id
         )
-        self._cache_conversation(contact.id, conv)
+        await self._cache_conversation(contact.id, conv)
         return conv
 
-    def _get_cached_conversation(
+    async def _get_cached_conversation(
         self, contact_id: int
     ) -> Optional[ChatwootConversation]:
-        if contact_id in self._conversation_cache:
-            conv, timestamp = self._conversation_cache[contact_id]
-            if time.time() - timestamp < self.CACHE_TTL:
-                return conv
-            else:
-                del self._conversation_cache[contact_id]
+        async with self._cache_lock:
+            if contact_id in self._conversation_cache:
+                conv, timestamp = self._conversation_cache[contact_id]
+                if time.time() - timestamp < self.CACHE_TTL:
+                    return conv
+                else:
+                    del self._conversation_cache[contact_id]
         return None
 
-    def _cache_conversation(self, contact_id: int, conv: ChatwootConversation) -> None:
-        self._conversation_cache[contact_id] = (conv, time.time())
+    async def _cache_conversation(
+        self, contact_id: int, conv: ChatwootConversation
+    ) -> None:
+        async with self._cache_lock:
+            self._conversation_cache[contact_id] = (conv, time.time())
 
-    def clear_cache(self) -> None:
-        self._conversation_cache.clear()
+    async def clear_cache(self) -> None:
+        async with self._cache_lock:
+            self._conversation_cache.clear()
 
     async def create_inbox(self, name: str, webhook_url: str) -> ChatwootInbox:
         endpoint = f"/api/v1/accounts/{self._account_id}/inboxes"
@@ -459,7 +465,12 @@ class ChatwootClient:
         self,
         bot_contact: ChatwootContact,
     ) -> Optional[ChatwootConversation]:
-        return await self.find_conversation_by_contact(bot_contact.id)
+        existing = await self.find_conversation_by_contact(bot_contact.id)
+        if existing:
+            if existing.status in ("resolved", "closed"):
+                await self.toggle_conversation_status(existing.id, "open")
+            return existing
+        return None
 
     async def create_bot_conversation(
         self,

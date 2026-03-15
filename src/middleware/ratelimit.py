@@ -12,6 +12,9 @@ logger = get_logger("whatsapp.ratelimit")
 
 
 class RateLimiter:
+    CLEANUP_INTERVAL = 100
+    CLEANUP_CUTOFF_HOURS = 1
+
     def __init__(
         self,
         requests_per_minute: int = 60,
@@ -30,6 +33,7 @@ class RateLimiter:
         self._hour_requests: dict[str, list[float]] = defaultdict(list)
         self._blocked_ips: dict[str, dict] = {}
         self._failed_auth_attempts: dict[str, list[float]] = defaultdict(list)
+        self._request_count = 0
 
     def is_blocked(self, ip: str) -> bool:
         if ip in self._blocked_ips:
@@ -185,7 +189,28 @@ class RateLimiter:
         self._minute_requests[ip].append(now)
         self._hour_requests[ip].append(now)
 
+        self._request_count += 1
+        if self._request_count % self.CLEANUP_INTERVAL == 0:
+            self._cleanup_old_ips(now)
+
         return True, None
+
+    def _cleanup_old_ips(self, now: float) -> None:
+        cutoff = now - (self.CLEANUP_CUTOFF_HOURS * 3600)
+        cleaned = 0
+
+        for ip in list(self._minute_requests.keys()):
+            if not any(t > cutoff for t in self._minute_requests[ip]):
+                del self._minute_requests[ip]
+                cleaned += 1
+
+        for ip in list(self._hour_requests.keys()):
+            if not any(t > cutoff for t in self._hour_requests[ip]):
+                if ip not in self._minute_requests:
+                    del self._hour_requests[ip]
+
+        if cleaned > 0:
+            logger.debug(f"Rate limiter cleanup: removed {cleaned} inactive IPs")
 
     def get_stats(self, ip: Optional[str] = None) -> dict:
         now = time.time()

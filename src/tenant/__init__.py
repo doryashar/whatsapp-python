@@ -58,6 +58,8 @@ class Tenant:
 
 
 class TenantManager:
+    RESTART_HISTORY_CLEANUP_INTERVAL = 3600
+
     def __init__(
         self, base_auth_dir: Optional[Path] = None, database: Optional[Database] = None
     ):
@@ -70,6 +72,7 @@ class TenantManager:
         self._db = database
         self._initialized = False
         self._restart_history: dict[str, list[datetime]] = {}
+        self._last_cleanup: datetime = datetime.now(UTC)
         logger.debug("TenantManager initialized")
 
     def set_database(self, database: Database) -> None:
@@ -141,8 +144,12 @@ class TenantManager:
                 keys_dir.mkdir(parents=True, exist_ok=True)
                 for filename, content in auth_data["keys"].items():
                     key_file = keys_dir / filename
-                    with open(key_file, "w") as f:
-                        f.write(content)
+                    if isinstance(content, bytes):
+                        with open(key_file, "wb") as f:
+                            f.write(content)
+                    else:
+                        with open(key_file, "w") as f:
+                            f.write(content)
                 logger.debug(
                     f"Restored {len(auth_data['keys'])} key files for tenant: {tenant.name}"
                 )
@@ -247,6 +254,11 @@ class TenantManager:
         key_hash = self.hash_api_key(api_key)
         tenant = self._tenants.get(key_hash)
         logger.debug(f"Lookup tenant by key: found={tenant is not None}")
+        return tenant
+
+    def get_tenant_by_hash(self, api_key_hash: str) -> Optional[Tenant]:
+        tenant = self._tenants.get(api_key_hash)
+        logger.debug(f"Lookup tenant by hash: found={tenant is not None}")
         return tenant
 
     def get_tenant_by_name(self, name: str) -> Optional[Tenant]:
@@ -365,7 +377,34 @@ class TenantManager:
         )
         return tenant.health_check_failures
 
+    def _cleanup_restart_history(self) -> None:
+        now = datetime.now(UTC)
+        if (
+            now - self._last_cleanup
+        ).total_seconds() < self.RESTART_HISTORY_CLEANUP_INTERVAL:
+            return
+
+        cutoff = now - timedelta(seconds=settings.restart_window_seconds)
+        active_tenant_hashes = set(self._tenants.keys())
+
+        for tenant_hash in list(self._restart_history.keys()):
+            if tenant_hash not in active_tenant_hashes:
+                del self._restart_history[tenant_hash]
+            else:
+                self._restart_history[tenant_hash] = [
+                    ts for ts in self._restart_history[tenant_hash] if ts > cutoff
+                ]
+                if not self._restart_history[tenant_hash]:
+                    del self._restart_history[tenant_hash]
+
+        self._last_cleanup = now
+        logger.debug(
+            f"Restart history cleanup completed, {len(self._restart_history)} tenants tracked"
+        )
+
     def can_restart(self, tenant: Tenant) -> bool:
+        self._cleanup_restart_history()
+
         if not settings.auto_restart_bridge:
             logger.debug(f"Auto-restart disabled for {tenant.name}")
             return False

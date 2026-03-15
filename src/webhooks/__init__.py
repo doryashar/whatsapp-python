@@ -242,11 +242,3 @@ class WebhookSender:
         if self._client:
             await self._client.aclose()
             self._client = None
-
-
-webhook_sender = WebhookSender(
-    urls=settings.webhook_urls,
-    secret=settings.webhook_secret,
-    timeout=settings.webhook_timeout,
-    max_retries=settings.webhook_retries,
-)

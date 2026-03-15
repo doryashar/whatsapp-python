@@ -963,6 +963,8 @@ async def update_profile_picture(
     tenant: Tenant = Depends(get_tenant),
 ):
     logger.info(f"Update profile picture: tenant={tenant.name}")
+    if request.image_url and not is_safe_webhook_url(request.image_url):
+        raise HTTPException(status_code=400, detail="Invalid image_url: potential SSRF")
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
         result = await bridge.update_profile_picture(request.image_url)
@@ -1076,6 +1078,8 @@ async def sync_history(
     tenant: Tenant = Depends(get_tenant),
     limit: int = Query(default=50, ge=1, le=200, description="Messages per chat"),
 ):
+    from ..utils.history import store_chat_messages
+
     logger.info(f"Manual history sync: tenant={tenant.name}, limit={limit}")
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
@@ -1084,63 +1088,23 @@ async def sync_history(
         chats = result.get("chats", [])
         total_messages = result.get("total_messages", 0)
 
-        stored_count = 0
-        duplicate_count = 0
+        stats = {"stored": 0, "duplicates": 0, "errors": 0}
 
-        if tenant.message_store:
-            from ..store.messages import StoredMessage
-
-            for chat in chats:
-                chat_jid = chat.get("jid", "")
-                is_group = chat.get("is_group", False)
-                messages = chat.get("messages", [])
-
-                for msg in messages:
-                    try:
-                        msg_id = msg.get("id", "")
-                        if not msg_id:
-                            continue
-
-                        from_me = msg.get("from_me", False)
-                        from_jid = msg.get("from", "")
-                        text = msg.get("text", "")
-                        msg_type = msg.get("type", "text")
-                        timestamp = msg.get("timestamp", 0)
-                        push_name = msg.get("push_name")
-
-                        direction = "outbound" if from_me else "inbound"
-
-                        stored_msg = StoredMessage(
-                            id=msg_id,
-                            from_jid=from_jid,
-                            chat_jid=chat_jid,
-                            is_group=is_group,
-                            push_name=push_name,
-                            text=text,
-                            msg_type=msg_type,
-                            timestamp=timestamp,
-                            direction=direction,
-                        )
-
-                        db_id = await tenant.message_store.add_with_persist(stored_msg)
-                        if db_id:
-                            stored_count += 1
-                        else:
-                            duplicate_count += 1
-
-                    except Exception as e:
-                        logger.error(f"Failed to sync message: {e}")
+        if tenant.message_store and tenant_manager._db:
+            stats = await store_chat_messages(tenant, result, tenant_manager._db)
 
         logger.info(
-            f"History sync complete for tenant {tenant.name}: stored={stored_count}, duplicates={duplicate_count}"
+            f"History sync complete for tenant {tenant.name}: "
+            f"stored={stats['stored']}, duplicates={stats['duplicates']}"
         )
 
         return {
             "status": "synced",
             "chats_count": len(chats),
             "total_messages": total_messages,
-            "stored": stored_count,
-            "duplicates": duplicate_count,
+            "stored": stats["stored"],
+            "duplicates": stats["duplicates"],
+            "errors": stats["errors"],
         }
     except BridgeError as e:
         logger.error(f"History sync failed: {e}")
@@ -1156,9 +1120,12 @@ async def fetch_profile_picture(
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
         result = await bridge.get_profile_picture(request.jid)
+        url = result.get("url")
+        if url and not is_safe_webhook_url(url):
+            url = None
         return FetchProfilePictureResponse(
             jid=result.get("jid"),
-            url=result.get("url"),
+            url=url,
         )
     except BridgeError as e:
         logger.error(f"Fetch profile picture failed: {e}")
