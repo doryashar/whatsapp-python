@@ -38,6 +38,13 @@ class InboundMessage(BaseModel):
     text: str
     type: MessageType = MessageType.TEXT
     timestamp: int
+    media_url: Optional[str] = None
+    mimetype: Optional[str] = None
+    filename: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    location_name: Optional[str] = None
+    location_address: Optional[str] = None
 
     model_config = {"populate_by_name": True}
 

@@ -23,6 +23,12 @@ class StoredMessage:
         timestamp: int = 0,
         direction: str = "inbound",
         media_url: Optional[str] = None,
+        mimetype: Optional[str] = None,
+        filename: Optional[str] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+        location_name: Optional[str] = None,
+        location_address: Optional[str] = None,
         db_id: Optional[int] = None,
     ):
         self.id = id
@@ -35,6 +41,12 @@ class StoredMessage:
         self.timestamp = timestamp
         self.direction = direction
         self.media_url = media_url
+        self.mimetype = mimetype
+        self.filename = filename
+        self.latitude = latitude
+        self.longitude = longitude
+        self.location_name = location_name
+        self.location_address = location_address
         self.db_id = db_id
 
     def to_dict(self) -> dict:
@@ -49,6 +61,12 @@ class StoredMessage:
             "timestamp": self.timestamp,
             "direction": self.direction,
             "media_url": self.media_url,
+            "mimetype": self.mimetype,
+            "filename": self.filename,
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "location_name": self.location_name,
+            "location_address": self.location_address,
             "db_id": self.db_id,
         }
 
@@ -88,6 +106,12 @@ class MessageStore:
                     timestamp=msg.timestamp,
                     direction=getattr(msg, "direction", "inbound"),
                     media_url=getattr(msg, "media_url", None),
+                    mimetype=getattr(msg, "mimetype", None),
+                    filename=getattr(msg, "filename", None),
+                    latitude=getattr(msg, "latitude", None),
+                    longitude=getattr(msg, "longitude", None),
+                    location_name=getattr(msg, "location_name", None),
+                    location_address=getattr(msg, "location_address", None),
                 )
                 msg.db_id = db_id
                 logger.debug(f"Message persisted to DB with db_id={db_id}")

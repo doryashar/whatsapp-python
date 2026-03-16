@@ -21,11 +21,13 @@ class BaileysBridge:
         auth_dir: Optional[Path] = None,
         auto_login: bool = False,
         tenant_id: Optional[str] = None,
+        auto_mark_read: bool = True,
     ):
         self.bridge_path = bridge_path or settings.bridge_path
         self.auth_dir = auth_dir or settings.auth_dir
         self.auto_login = auto_login
         self.tenant_id = tenant_id
+        self.auto_mark_read = auto_mark_read
 
         self._process: Optional[asyncio.subprocess.Process] = None
         self._reader_task: Optional[asyncio.Task] = None
@@ -50,6 +52,7 @@ class BaileysBridge:
         env["WHATSAPP_AUTH_DIR"] = str(self.auth_dir)
         if self.auto_login:
             env["AUTO_LOGIN"] = "true"
+        env["AUTO_MARK_READ"] = "true" if self.auto_mark_read else "false"
 
         logger.info(f"Starting bridge: node {self.bridge_path}")
         self._process = await asyncio.create_subprocess_exec(
@@ -209,12 +212,23 @@ class BaileysBridge:
         return await self.call("logout")
 
     async def send_message(
-        self, to: str, text: str, media_url: Optional[str] = None
+        self,
+        to: str,
+        text: str,
+        media_url: Optional[str] = None,
+        quoted_message_id: Optional[str] = None,
+        quoted_text: Optional[str] = None,
+        quoted_chat: Optional[str] = None,
     ) -> dict:
         logger.info(f"Bridge send_message: to={to}")
-        return await self.call(
-            "send_message", {"to": to, "text": text, "media_url": media_url}
-        )
+        payload: dict = {"to": to, "text": text, "media_url": media_url}
+        if quoted_message_id:
+            payload["quoted"] = {
+                "message_id": quoted_message_id,
+                "text": quoted_text or "",
+                "chat": quoted_chat or "",
+            }
+        return await self.call("send_message", payload)
 
     async def send_reaction(
         self, chat: str, message_id: str, emoji: str, from_me: bool = False

@@ -113,6 +113,12 @@ def get_sidebar(active_page: str) -> str:
             "/admin/chatwoot",
             '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>',
         ),
+        (
+            "logs",
+            "Logs",
+            "/admin/logs",
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path>',
+        ),
     ]
 
     items_html = ""
@@ -1113,6 +1119,11 @@ async def admin_messages_page(
     <h1 class="text-2xl font-bold">Messages</h1>
 </header>
 <div class="p-6">
+    <div id="messages-tabs-container" class="mb-4" hx-get="/admin/fragments/messages-tabs" hx-trigger="load">
+        <div class="flex gap-1.5 overflow-x-auto pb-2">
+            <button class="px-3 py-1.5 text-xs bg-whatsapp text-white rounded-full font-medium">All</button>
+        </div>
+    </div>
     <div class="bg-gray-800 rounded-lg p-4 mb-4 border border-gray-700">
         <div class="flex gap-4 items-center flex-wrap">
             <input type="text" 
@@ -1121,7 +1132,7 @@ async def admin_messages_page(
                    class="flex-1 min-w-64 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp"
                    onkeyup="debounceSearch()">
             
-            <select id="tenant-filter" class="px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp" onchange="searchMessages()">
+            <select id="tenant-filter" class="px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-whatsapp" onchange="onTenantFilterChange()">
                 <option value="">All Tenants</option>
                 {tenant_options}
             </select>
@@ -1149,8 +1160,35 @@ async def admin_messages_page(
     </div>
 </div>
 """
+    modals = """
+<div id="reply-modal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+    <div class="bg-gray-800 rounded-lg p-5 w-[420px] border border-gray-700 shadow-xl">
+        <div class="flex items-center justify-between mb-3">
+            <span class="text-sm font-medium text-gray-300">Reply to message</span>
+            <button onclick="closeReplyModal()" class="text-gray-400 hover:text-white transition">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+        <div class="text-xs text-gray-500 mb-1">From: <span id="reply-from-name" class="text-gray-300"></span></div>
+        <div id="reply-quote" class="text-sm bg-gray-700/50 rounded p-2.5 mb-3 text-gray-300 border-l-3 border-whatsapp truncate"></div>
+        <div class="mb-3">
+            <label class="block text-xs text-gray-400 mb-1">Send as tenant</label>
+            <select id="reply-tenant" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-whatsapp">
+            </select>
+        </div>
+        <textarea id="reply-text" rows="3" class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-whatsapp resize-none" placeholder="Type your reply..."></textarea>
+        <div class="flex gap-2 justify-end">
+            <button onclick="closeReplyModal()" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm transition">Cancel</button>
+            <button onclick="sendReply()" class="px-5 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg text-sm font-medium transition">Send</button>
+        </div>
+    </div>
+</div>
+<div id="reply-toast" class="hidden fixed bottom-6 right-6 px-4 py-3 rounded-lg shadow-lg text-sm font-medium z-50 transition-all"></div>
+"""
     script = """
 let searchTimeout = null;
+let selectedChatJid = null;
+let replyData = {};
 
 function debounceSearch() {
     clearTimeout(searchTimeout);
@@ -1168,6 +1206,7 @@ function searchMessages() {
     if (search) url += '&search=' + encodeURIComponent(search);
     if (tenant) url += '&tenant_hash=' + encodeURIComponent(tenant);
     if (direction) url += '&direction=' + encodeURIComponent(direction);
+    if (selectedChatJid) url += '&chat_jid=' + encodeURIComponent(selectedChatJid);
     
     htmx.ajax('GET', url, {
         target: '#messages-list',
@@ -1179,15 +1218,130 @@ function clearSearch() {
     document.getElementById('message-search').value = '';
     document.getElementById('tenant-filter').value = '';
     document.getElementById('direction-filter').value = '';
+    selectedChatJid = null;
+    document.querySelectorAll('.msg-tab').forEach(t => {
+        t.classList.remove('bg-whatsapp', 'text-white');
+        t.classList.add('bg-gray-700', 'text-gray-300');
+    });
+    const allTab = document.querySelector('.msg-tab');
+    if (allTab) {
+        allTab.classList.remove('bg-gray-700', 'text-gray-300');
+        allTab.classList.add('bg-whatsapp', 'text-white');
+    }
+    fetchTabs();
     searchMessages();
 }
+
+function switchChatTab(chatJid, btn) {
+    selectedChatJid = chatJid;
+    document.querySelectorAll('.msg-tab').forEach(t => {
+        t.classList.remove('bg-whatsapp', 'text-white');
+        t.classList.add('bg-gray-700', 'text-gray-300');
+    });
+    btn.classList.remove('bg-gray-700', 'text-gray-300');
+    btn.classList.add('bg-whatsapp', 'text-white');
+    searchMessages();
+}
+
+function onTenantFilterChange() {
+    selectedChatJid = null;
+    fetchTabs();
+    searchMessages();
+}
+
+function fetchTabs() {
+    const tenant = document.getElementById('tenant-filter').value;
+    let url = '/admin/fragments/messages-tabs';
+    if (tenant) url += '?tenant_hash=' + encodeURIComponent(tenant);
+    htmx.ajax('GET', url, {
+        target: '#messages-tabs-container',
+        swap: 'innerHTML'
+    });
+}
+
+function openReplyModal(btn) {
+    replyData = {
+        tenantHash: btn.dataset.tenantHash,
+        chatJid: btn.dataset.chatJid,
+        messageId: btn.dataset.messageId,
+        fromName: btn.dataset.fromName,
+        quotedText: btn.dataset.quotedText
+    };
+    document.getElementById('reply-from-name').textContent = replyData.fromName;
+    document.getElementById('reply-quote').textContent = replyData.quotedText || '(no text)';
+    document.getElementById('reply-text').value = '';
+    
+    const tenantSelect = document.getElementById('reply-tenant');
+    const globalTenants = document.getElementById('tenant-filter');
+    tenantSelect.innerHTML = '';
+    for (const opt of globalTenants.options) {
+        const newOpt = document.createElement('option');
+        newOpt.value = opt.value;
+        newOpt.textContent = opt.textContent;
+        if (opt.value === replyData.tenantHash) newOpt.selected = true;
+        tenantSelect.appendChild(newOpt);
+    }
+    
+    document.getElementById('reply-modal').classList.remove('hidden');
+    setTimeout(() => document.getElementById('reply-text').focus(), 100);
+}
+
+function closeReplyModal() {
+    document.getElementById('reply-modal').classList.add('hidden');
+    replyData = {};
+}
+
+function showToast(message, isError) {
+    const toast = document.getElementById('reply-toast');
+    toast.textContent = message;
+    toast.className = 'fixed bottom-6 right-6 px-4 py-3 rounded-lg shadow-lg text-sm font-medium z-50 transition-all ' + (isError ? 'bg-red-600 text-white' : 'bg-whatsapp text-white');
+    toast.classList.remove('hidden');
+    setTimeout(() => toast.classList.add('hidden'), 3000);
+}
+
+async function sendReply() {
+    const text = document.getElementById('reply-text').value.trim();
+    if (!text) { showToast('Message text is required', true); return; }
+    
+    const tenantHash = document.getElementById('reply-tenant').value;
+    if (!tenantHash) { showToast('Select a tenant', true); return; }
+    
+    try {
+        const body = {
+            to: replyData.chatJid,
+            text: text,
+            quoted_message_id: replyData.messageId,
+            quoted_text: replyData.quotedText,
+            quoted_chat: replyData.chatJid
+        };
+        const res = await fetch('/admin/api/tenants/' + tenantHash + '/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showToast('Reply sent!', false);
+            closeReplyModal();
+            searchMessages();
+        } else {
+            showToast(data.detail || 'Failed to send', true);
+        }
+    } catch (e) {
+        showToast('Error: ' + e.message, true);
+    }
+}
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeReplyModal();
+});
 """
 
     html = PAGE_TEMPLATE.format(
         title="Messages",
         sidebar=get_sidebar("messages"),
         content=content,
-        modals="",
+        modals=modals,
         script=script,
     )
     return HTMLResponse(content=html)
@@ -1470,6 +1624,301 @@ async function syncChatwootMessages(tenantHash) {
     return HTMLResponse(content=html)
 
 
+@router.get("/logs", response_class=HTMLResponse)
+async def admin_logs_page(
+    request: Request,
+    session_id: str = Depends(require_admin_session),
+):
+    content = """
+<header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold">Logs & Events</h1>
+        <div class="flex items-center gap-2 text-sm text-gray-400">
+            <span id="log-status" class="flex items-center gap-1">
+                <span class="w-2 h-2 bg-green-500 rounded-full"></span>
+                Connected
+            </span>
+            <span class="mx-2">|</span>
+            <span id="log-count">0 entries</span>
+        </div>
+    </div>
+</header>
+<div class="p-6 space-y-4">
+    <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+        <div class="flex gap-3 items-center flex-wrap">
+            <input type="text"
+                   id="log-search"
+                   placeholder="Search logs..."
+                   class="flex-1 min-w-48 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-whatsapp"
+                   onkeyup="debounceLogFilter()">
+
+            <select id="log-type-filter" class="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-whatsapp" onchange="filterLogs()">
+                <option value="">All Types</option>
+                <option value="log">Logs</option>
+                <option value="event">Events</option>
+            </select>
+
+            <select id="log-level-filter" class="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-whatsapp" onchange="filterLogs()">
+                <option value="">All Levels</option>
+                <option value="DEBUG">Debug</option>
+                <option value="INFO">Info</option>
+                <option value="WARNING">Warning</option>
+                <option value="ERROR">Error</option>
+                <option value="EVENT">Event</option>
+            </select>
+
+            <select id="log-source-filter" class="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-whatsapp" onchange="filterLogs()">
+                <option value="">All Sources</option>
+                <option value="bridge">Bridge Events</option>
+                <option value="webhook">Webhooks</option>
+                <option value="security">Security</option>
+                <option value="whatsapp.admin">Admin</option>
+                <option value="whatsapp.api">API</option>
+                <option value="whatsapp.tenant">Tenant</option>
+                <option value="whatsapp.database">Database</option>
+            </select>
+
+            <div class="flex items-center gap-1 border-l border-gray-600 pl-3">
+                <button onclick="togglePause()" id="pause-btn" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition flex items-center gap-1" title="Pause/Resume">
+                    <svg id="pause-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    <span id="pause-label">Pause</span>
+                </button>
+                <button onclick="toggleAutoScroll()" id="scroll-btn" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition flex items-center gap-1" title="Auto-scroll">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path></svg>
+                    <span id="scroll-label">Auto-scroll</span>
+                </button>
+                <button onclick="toggleTruncate()" id="truncate-btn" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition flex items-center gap-1" title="Truncate lines">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h8m-8 6h16"></path></svg>
+                    <span id="truncate-label">Truncate</span>
+                </button>
+                <button onclick="clearLogs()" class="px-3 py-2 bg-red-600/20 hover:bg-red-600/40 text-red-400 text-sm rounded-lg transition flex items-center gap-1" title="Clear all logs">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    Clear
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-gray-950 rounded-xl border border-gray-700 overflow-hidden">
+        <div id="log-stream" class="font-mono text-sm leading-relaxed overflow-y-auto" style="height: calc(100vh - 280px); min-height: 400px;">
+            <div class="p-4 text-center text-gray-600">Loading logs...</div>
+        </div>
+    </div>
+</div>
+"""
+    script = """
+let logPaused = false;
+let autoScroll = true;
+let truncateEnabled = true;
+let truncateLimit = 200;
+let logEntryCount = 0;
+let logFilterTimeout = null;
+
+function getLevelColor(level) {
+    const colors = {
+        'DEBUG': 'text-gray-500',
+        'INFO': 'text-gray-300',
+        'WARNING': 'text-yellow-400',
+        'ERROR': 'text-red-400',
+        'EVENT': 'text-cyan-400',
+    };
+    return colors[level] || 'text-gray-300';
+}
+
+function getSourceColor(source) {
+    if (source === 'bridge') return 'text-cyan-600';
+    if (source === 'webhook') return 'text-purple-600';
+    if (source === 'security') return 'text-orange-600';
+    return 'text-gray-600';
+}
+
+function formatTimestamp(ts) {
+    if (!ts) return '';
+    try {
+        const d = new Date(ts);
+        return d.toLocaleTimeString('en-US', {hour12: false}) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+    } catch(e) { return ts; }
+}
+
+function truncate(text, limit) {
+    if (!truncateEnabled || !text) return text;
+    if (text.length <= limit) return text;
+    return text.substring(0, limit) + '...';
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function appendLogEntry(entry) {
+    if (logPaused) return;
+
+    const stream = document.getElementById('log-stream');
+    if (!stream) return;
+
+    const searchVal = (document.getElementById('log-search')?.value || '').toLowerCase();
+    const typeFilter = document.getElementById('log-type-filter')?.value || '';
+    const levelFilter = document.getElementById('log-level-filter')?.value || '';
+    const sourceFilter = document.getElementById('log-source-filter')?.value || '';
+
+    if (typeFilter && entry.type !== typeFilter) return;
+    if (levelFilter && entry.level !== levelFilter) return;
+    if (sourceFilter && !entry.source.toLowerCase().includes(sourceFilter.toLowerCase())) return;
+    if (searchVal && !entry.message.toLowerCase().includes(searchVal) && !entry.source.toLowerCase().includes(searchVal)) return;
+
+    const line = document.createElement('div');
+    line.className = 'flex hover:bg-gray-900/50 px-3 py-0.5 border-b border-gray-900/50';
+    line.dataset.id = entry.id;
+    line.dataset.type = entry.type;
+    line.dataset.level = entry.level;
+    line.dataset.source = entry.source;
+
+    let msg = escapeHtml(truncate(entry.message, truncateLimit));
+    if (searchVal) {
+        const re = new RegExp('(' + searchVal.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + ')', 'gi');
+        msg = msg.replace(re, '<mark class="bg-yellow-500/30 text-yellow-200 rounded px-0.5">$1</mark>');
+    }
+
+    const tenantBadge = entry.tenant ? '<span class="text-gray-600 mx-1">[' + escapeHtml(entry.tenant) + ']</span>' : '';
+
+    line.innerHTML =
+        '<span class="text-gray-600 select-none">' + formatTimestamp(entry.timestamp) + '</span> ' +
+        '<span class="' + getLevelColor(entry.level) + ' select-none w-12 inline-block">[' + entry.level.padEnd(7) + ']</span> ' +
+        '<span class="' + getSourceColor(entry.source) + ' select-none w-32 inline-block truncate">[' + escapeHtml(entry.source) + ']</span>' +
+        tenantBadge +
+        '<span class="' + getLevelColor(entry.level) + '">' + msg + '</span>';
+
+    stream.appendChild(line);
+    logEntryCount++;
+    document.getElementById('log-count').textContent = logEntryCount + ' entries';
+
+    if (autoScroll) {
+        stream.scrollTop = stream.scrollHeight;
+    }
+
+    const maxLines = 500;
+    while (stream.children.length > maxLines) {
+        stream.removeChild(stream.firstChild);
+    }
+}
+
+function loadInitialLogs() {
+    const search = document.getElementById('log-search').value;
+    const typeFilter = document.getElementById('log-type-filter').value;
+    const levelFilter = document.getElementById('log-level-filter').value;
+    const sourceFilter = document.getElementById('log-source-filter').value;
+
+    let url = '/admin/fragments/logs?limit=200';
+    if (search) url += '&search=' + encodeURIComponent(search);
+    if (typeFilter) url += '&type=' + encodeURIComponent(typeFilter);
+    if (levelFilter) url += '&level=' + encodeURIComponent(levelFilter);
+    if (sourceFilter) url += '&source=' + encodeURIComponent(sourceFilter);
+
+    fetch(url, {headers: {'X-Requested-With': 'HTMX'}})
+        .then(r => r.json())
+        .then(data => {
+            const stream = document.getElementById('log-stream');
+            stream.innerHTML = '';
+            logEntryCount = 0;
+            if (data.entries && data.entries.length > 0) {
+                data.entries.forEach(entry => appendLogEntry(entry));
+            } else {
+                stream.innerHTML = '<div class="p-4 text-center text-gray-600">No log entries found</div>';
+            }
+            if (autoScroll) stream.scrollTop = stream.scrollHeight;
+        })
+        .catch(err => {
+            document.getElementById('log-stream').innerHTML = '<div class="p-4 text-center text-red-400">Failed to load logs</div>';
+        });
+}
+
+function debounceLogFilter() {
+    clearTimeout(logFilterTimeout);
+    logFilterTimeout = setTimeout(() => { loadInitialLogs(); }, 300);
+}
+
+function filterLogs() {
+    loadInitialLogs();
+}
+
+function togglePause() {
+    logPaused = !logPaused;
+    const icon = document.getElementById('pause-icon');
+    const label = document.getElementById('pause-label');
+    const btn = document.getElementById('pause-btn');
+    if (logPaused) {
+        icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>';
+        label.textContent = 'Resume';
+        btn.classList.add('bg-yellow-600/30');
+        btn.classList.remove('bg-gray-700');
+    } else {
+        icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>';
+        label.textContent = 'Pause';
+        btn.classList.remove('bg-yellow-600/30');
+        btn.classList.add('bg-gray-700');
+    }
+}
+
+function toggleAutoScroll() {
+    autoScroll = !autoScroll;
+    const btn = document.getElementById('scroll-btn');
+    const label = document.getElementById('scroll-label');
+    if (autoScroll) {
+        label.textContent = 'Auto-scroll';
+        btn.classList.remove('bg-yellow-600/30');
+        btn.classList.add('bg-gray-700');
+        const stream = document.getElementById('log-stream');
+        stream.scrollTop = stream.scrollHeight;
+    } else {
+        label.textContent = 'Scroll off';
+        btn.classList.add('bg-yellow-600/30');
+        btn.classList.remove('bg-gray-700');
+    }
+}
+
+function toggleTruncate() {
+    truncateEnabled = !truncateEnabled;
+    const btn = document.getElementById('truncate-btn');
+    const label = document.getElementById('truncate-label');
+    if (truncateEnabled) {
+        label.textContent = 'Truncate';
+        btn.classList.remove('bg-yellow-600/30');
+        btn.classList.add('bg-gray-700');
+    } else {
+        label.textContent = 'Full';
+        btn.classList.add('bg-yellow-600/30');
+        btn.classList.remove('bg-gray-700');
+    }
+    loadInitialLogs();
+}
+
+function clearLogs() {
+    if (!confirm('Clear all log entries from the buffer?')) return;
+    fetch('/admin/api/logs/clear', {method: 'POST', headers: {'Content-Type': 'application/json'}})
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('log-stream').innerHTML = '<div class="p-4 text-center text-gray-600">Logs cleared</div>';
+            logEntryCount = 0;
+            document.getElementById('log-count').textContent = '0 entries';
+        })
+        .catch(() => {});
+}
+
+document.addEventListener('DOMContentLoaded', () => { loadInitialLogs(); });
+"""
+
+    html = PAGE_TEMPLATE.format(
+        title="Logs",
+        sidebar=get_sidebar("logs"),
+        content=content,
+        modals="",
+        script=script,
+    )
+    return HTMLResponse(content=html)
+
+
 @router.get("/tenants/{tenant_hash}", response_class=HTMLResponse)
 async def admin_tenant_details_page(
     tenant_hash: str,
@@ -1650,6 +2099,25 @@ async def admin_tenant_details_page(
                         <div class="flex items-center justify-between p-3 bg-gray-700/50 rounded-lg">
                             <span class="text-gray-400">Has Authentication</span>
                             <span class="font-medium">{"Yes" if tenant.has_auth else "No"}</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="border-t border-gray-700 pt-6">
+                    <h3 class="text-lg font-semibold mb-3">WhatsApp Settings</h3>
+                    <div class="space-y-4">
+                        <div class="flex items-center gap-3 p-3 bg-gray-700/50 rounded-lg">
+                            <input type="checkbox" id="setting-auto-mark-read" 
+                                   class="w-4 h-4 rounded bg-gray-700 border-gray-600 text-whatsapp focus:ring-whatsapp"
+                                   onchange="updateAutoMarkRead(this.checked)">
+                            <div>
+                                <label for="setting-auto-mark-read" class="text-sm font-medium cursor-pointer">
+                                    Automatically mark incoming messages as read
+                                </label>
+                                <p class="text-xs text-gray-500 mt-1">
+                                    When disabled, senders will see double grey ticks (delivered) instead of blue ticks (read)
+                                </p>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1836,6 +2304,35 @@ async function deleteTenant() {
         alert('Failed: ' + (data.detail || JSON.stringify(data)));
     }
 }
+
+async function updateAutoMarkRead(enabled) {
+    const response = await fetch('/admin/api/tenants/"""
+        + tenant_hash
+        + """/settings', {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({auto_mark_read: enabled})
+    });
+    const data = await response.json();
+    if (response.ok) {
+        showNotification('Setting updated' + (data.bridge_restarted ? ' - Bridge restarted to apply changes' : ''), 'success');
+    } else {
+        showNotification('Failed: ' + (data.detail || JSON.stringify(data)), 'error');
+        document.getElementById('setting-auto-mark-read').checked = !enabled;
+    }
+}
+
+async function loadTenantSettings() {
+    const response = await fetch('/admin/api/tenants/"""
+        + tenant_hash
+        + """/settings');
+    if (response.ok) {
+        const data = await response.json();
+        document.getElementById('setting-auto-mark-read').checked = data.auto_mark_read;
+    }
+}
+
+document.addEventListener('DOMContentLoaded', loadTenantSettings);
 """
     )
 
@@ -2076,6 +2573,44 @@ async def get_tenants_fragment(session_id: str = Depends(require_admin_session))
     return HTMLResponse(content="".join(html_parts))
 
 
+@fragments_router.get("/messages-tabs", response_class=HTMLResponse)
+async def get_messages_tabs_fragment(
+    tenant_hash: Optional[str] = Query(None),
+    session_id: str = Depends(require_admin_session),
+):
+    db = tenant_manager._db
+    if not db:
+        return HTMLResponse(
+            content='<div class="flex gap-1"><button class="px-3 py-1.5 text-xs bg-whatsapp text-white rounded-full font-medium">All</button></div>'
+        )
+
+    chats = await db.get_recent_chat_tabs(tenant_hash=tenant_hash, limit=20)
+
+    active_chat = ""
+    if chats:
+        active_chat = chats[0]["chat_jid"] if not tenant_hash else ""
+
+    tabs = [
+        '<button class="msg-tab px-3 py-1.5 text-xs bg-whatsapp text-white rounded-full font-medium whitespace-nowrap" onclick="switchChatTab(null, this)">All</button>'
+    ]
+    for chat in chats:
+        name = chat.get("name") or chat["chat_jid"].split("@")[0]
+        if chat.get("is_group"):
+            label = name[:25]
+        else:
+            label = name[:25]
+        escaped_jid = chat["chat_jid"].replace("'", "\\'")
+        tabs.append(
+            f'<button class="msg-tab px-3 py-1.5 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 rounded-full font-medium whitespace-nowrap" onclick="switchChatTab(\'{escaped_jid}\', this)">{label}</button>'
+        )
+
+    return HTMLResponse(
+        content='<div class="flex gap-1.5 overflow-x-auto pb-2 scrollbar-thin">'
+        + "".join(tabs)
+        + "</div>"
+    )
+
+
 @fragments_router.get("/messages", response_class=HTMLResponse)
 async def get_messages_fragment(
     tenant_hash: Optional[str] = Query(None),
@@ -2103,8 +2638,27 @@ async def get_messages_fragment(
 
     tenants = {t.api_key_hash: t.name for t in tenant_manager.list_tenants()}
 
+    # Build contact name lookup for display
+    contact_lookup = {}
+    if messages:
+        _tenant_set: set[str] = set()
+        _chat_set: set[str] = set()
+        for msg in messages:
+            t = msg.get("tenant_hash")
+            c = msg.get("chat_jid")
+            if t:
+                _tenant_set.add(str(t))
+            if c:
+                _chat_set.add(str(c))
+        unique_tenants = list(_tenant_set)
+        unique_chats = list(_chat_set)
+        if unique_tenants and unique_chats:
+            contact_lookup = await db.get_contact_names_for_chats(
+                unique_tenants, unique_chats
+            )
+
     if not messages:
-        if search or tenant_hash or direction:
+        if search or tenant_hash or direction or chat_jid:
             return HTMLResponse(
                 content='<div class="p-6 text-center text-gray-500">No messages match your search criteria</div>'
             )
@@ -2112,7 +2666,6 @@ async def get_messages_fragment(
             content='<div class="p-6 text-center text-gray-500">No messages found</div>'
         )
 
-    # Add count header
     count_header = ""
     if total > len(messages):
         count_header = f'<div class="px-6 py-3 bg-gray-700/50 text-sm text-gray-400 border-b border-gray-700">Showing {len(messages)} of {total} messages</div>'
@@ -2121,7 +2674,8 @@ async def get_messages_fragment(
 
     html_parts = [count_header]
     for msg in messages:
-        tenant_name = tenants.get(msg.get("tenant_hash") or "", "Unknown")
+        t_hash = msg.get("tenant_hash") or ""
+        tenant_name = tenants.get(t_hash, "Unknown")
         direction_badge = (
             '<span class="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded">In</span>'
             if msg.get("direction") == "inbound"
@@ -2129,9 +2683,29 @@ async def get_messages_fragment(
         )
         msg_type = msg.get("msg_type") or "text"
         raw_text = msg.get("text") or ""
+        media_url = msg.get("media_url")
+
+        msg_type_badge = ""
+        if msg_type != "text" and media_url:
+            type_colors = {
+                "image": "bg-green-500/20 text-green-400",
+                "video": "bg-red-500/20 text-red-400",
+                "audio": "bg-purple-500/20 text-purple-400",
+                "document": "bg-blue-500/20 text-blue-400",
+                "location": "bg-yellow-500/20 text-yellow-400",
+                "sticker": "bg-pink-500/20 text-pink-400",
+                "contact": "bg-cyan-500/20 text-cyan-400",
+            }
+            color = type_colors.get(msg_type, "bg-gray-500/20 text-gray-400")
+            msg_type_badge = (
+                f'<span class="px-2 py-1 text-xs {color} rounded">{msg_type}</span>'
+            )
+
         text = raw_text[:100] + "..." if len(raw_text) > 100 else raw_text
 
-        # Highlight search terms
+        if not text and msg_type != "text":
+            text = f"<i class='text-gray-500'>[{msg_type.title()} message]</i>"
+
         if search:
             import re
 
@@ -2151,23 +2725,71 @@ async def get_messages_fragment(
             timestamp = "-"
         is_group = msg.get("is_group") or False
 
+        # Build display name: push_name or from_jid stripped
+        from_jid = msg.get("from_jid") or ""
+        push_name = msg.get("push_name") or ""
+        if push_name and push_name.strip():
+            display_name = push_name.strip()
+        else:
+            display_name = from_jid.split("@")[0] if "@" in from_jid else from_jid[:30]
+
+        # Build context bracket: [GROUP_NAME] or [private]
+        chat_jid_val = msg.get("chat_jid") or ""
+        contact_info = contact_lookup.get((t_hash, chat_jid_val))
+        if is_group:
+            group_name = "group"
+            if contact_info and contact_info.get("name"):
+                group_name = contact_info["name"][:30]
+            context_bracket = f'<span class="text-xs text-orange-400 font-medium">[{group_name}]</span>'
+        else:
+            context_bracket = '<span class="text-xs text-gray-500">[private]</span>'
+
+        # Reply button data attributes
+        msg_id_val = msg.get("message_id") or ""
+        escaped_display = (
+            display_name.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("'", "&#39;")
+            .replace('"', "&quot;")
+        )
+        escaped_text_for_quote = (
+            (raw_text[:80] if raw_text else "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("'", "&#39;")
+            .replace('"', "&quot;")
+            .replace("\n", " ")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
         html_parts.append(f"""
 <div class="p-4 hover:bg-gray-700/50 transition">
     <div class="flex items-start justify-between gap-4">
         <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 flex-wrap">
-                <span class="font-medium">{tenant_name}</span>
+                <span class="font-medium text-white">{escaped_display}</span>
+                {context_bracket}
                 {direction_badge}
-                {"<span class='px-2 py-1 text-xs bg-orange-500/20 text-orange-400 rounded'>Group</span>" if is_group else ""}
-                <span class="text-xs text-gray-500">{msg_type}</span>
+                {msg_type_badge if msg_type_badge else f'<span class="text-xs text-gray-500">{msg_type}</span>'}
             </div>
-            <div class="text-sm text-gray-400 mt-1">
-                From: <span class="text-gray-300">{msg.get("from_jid", "-")[:30]}</span>
-                {"| Chat: <span class='text-gray-300'>" + msg.get("chat_jid", "-")[:30] + "</span>" if msg.get("chat_jid") else ""}
-            </div>
-            {"<div class='mt-2 text-sm text-gray-300 truncate'>" + (text or "<i class='text-gray-500'>No text content</i>") + "</div>" if text else ""}
+            {"<div class='mt-2 text-sm text-gray-300 truncate'>" + text + "</div>" if text else ""}
         </div>
-        <div class="text-xs text-gray-500 whitespace-nowrap">{timestamp}</div>
+        <div class="flex items-center gap-2 shrink-0">
+            <button onclick="openReplyModal(this)" 
+                    data-tenant-hash="{t_hash}" 
+                    data-chat-jid="{chat_jid_val.replace("'", "&#39;")}" 
+                    data-message-id="{msg_id_val}" 
+                    data-from-name="{escaped_display}" 
+                    data-quoted-text="{escaped_text_for_quote}"
+                    class="p-1.5 text-gray-500 hover:text-whatsapp hover:bg-gray-700 rounded transition" 
+                    title="Reply">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"/></svg>
+            </button>
+            <div class="text-xs text-gray-500 whitespace-nowrap">{timestamp}</div>
+        </div>
     </div>
 </div>
 """)
@@ -2661,10 +3283,131 @@ async def get_tenant_messages_fragment(
             content='<div class="p-6 text-center text-gray-500">No messages yet</div>'
         )
 
+    def render_media_content(msg):
+        msg_type = msg.get("msg_type") or "text"
+        media_url = msg.get("media_url")
+        mimetype = msg.get("mimetype") or ""
+        filename = msg.get("filename") or ""
+        caption = msg.get("text") or ""
+        latitude = msg.get("latitude")
+        longitude = msg.get("longitude")
+        location_name = msg.get("location_name") or ""
+        location_address = msg.get("location_address") or ""
+
+        if msg_type == "text" or not media_url:
+            if caption:
+                return f'<div class="text-sm text-gray-100">{caption}</div>'
+            return "<div class='text-sm text-gray-500 italic'>No text</div>"
+
+        media_html = ""
+
+        if msg_type == "image":
+            media_html = f'''
+            <div class="mb-2">
+                <a href="{media_url}" target="_blank" class="block">
+                    <img src="{media_url}" alt="Image" class="max-w-full rounded-lg max-h-48 object-cover cursor-pointer hover:opacity-90" onerror="this.onerror=null;this.src='';this.parentElement.innerHTML='<div class=\\'p-4 bg-gray-600 rounded-lg text-center\\'><svg class=\\'w-8 h-8 mx-auto text-gray-400\\' fill=\\'none\\' stroke=\\'currentColor\\' viewBox=\\'0 0 24 24\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' stroke-width=\\'2\\' d=\\'M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z\\'></path></svg><div class=\\'text-xs text-gray-400 mt-1\\'>Image</div></div>'">
+                </a>
+                <a href="{media_url}" target="_blank" download class="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 mt-1">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                    Download
+                </a>
+            </div>'''
+
+        elif msg_type == "video":
+            media_html = f'''
+            <div class="mb-2">
+                <video controls class="max-w-full rounded-lg max-h-48">
+                    <source src="{media_url}" type="{mimetype or "video/mp4"}">
+                    Your browser does not support video playback
+                </video>
+                <a href="{media_url}" target="_blank" download class="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 mt-1">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                    Download
+                </a>
+            </div>'''
+
+        elif msg_type == "audio":
+            media_html = f'''
+            <div class="mb-2 bg-gray-600 rounded-lg p-3">
+                <audio controls class="w-full h-8">
+                    <source src="{media_url}" type="{mimetype or "audio/mpeg"}">
+                    Your browser does not support audio playback
+                </audio>
+                <a href="{media_url}" target="_blank" download class="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 mt-1">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                    Download Audio
+                </a>
+            </div>'''
+
+        elif msg_type == "document":
+            display_name = filename or "Document"
+            media_html = f'''
+            <div class="mb-2">
+                <a href="{media_url}" target="_blank" class="flex items-center gap-3 bg-gray-600 rounded-lg p-3 hover:bg-gray-500 transition">
+                    <svg class="w-10 h-10 text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                    </svg>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm text-gray-100 truncate">{display_name}</div>
+                        <div class="text-xs text-gray-400">{mimetype or "Unknown type"}</div>
+                    </div>
+                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                </a>
+            </div>'''
+
+        elif msg_type == "location":
+            maps_url = f"https://maps.google.com/?q={latitude},{longitude}"
+            display_text = (
+                location_name or location_address or f"{latitude:.6f}, {longitude:.6f}"
+            )
+            media_html = f'''
+            <div class="mb-2">
+                <a href="{maps_url}" target="_blank" class="flex items-center gap-3 bg-gray-600 rounded-lg p-3 hover:bg-gray-500 transition">
+                    <svg class="w-10 h-10 text-red-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                    </svg>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm text-gray-100 truncate">{display_text}</div>
+                        <div class="text-xs text-gray-400">Open in Google Maps</div>
+                    </div>
+                    <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                </a>
+            </div>'''
+
+        elif msg_type == "sticker":
+            media_html = f'''
+            <div class="mb-2">
+                <img src="{media_url}" alt="Sticker" class="max-w-24 max-h-24 object-contain">
+            </div>'''
+
+        elif msg_type == "contact":
+            media_html = f"""
+            <div class="mb-2 bg-gray-600 rounded-lg p-3 flex items-center gap-3">
+                <svg class="w-8 h-8 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
+                </svg>
+                <div class="text-sm text-gray-100">{caption}</div>
+            </div>"""
+
+        else:
+            if media_url:
+                media_html = f'''
+                <div class="mb-2">
+                    <a href="{media_url}" target="_blank" class="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                        Download Media ({msg_type})
+                    </a>
+                </div>'''
+
+        if caption and msg_type not in ["text"]:
+            media_html += f'<div class="text-sm text-gray-100">{caption}</div>'
+
+        return media_html
+
     html_parts = []
-    for msg in reversed(messages):  # Show oldest to newest
+    for msg in reversed(messages):
         is_inbound = msg.get("direction") != "outbound"
-        text = msg.get("text") or "<i class='text-gray-500'>No text</i>"
         ts = msg.get("timestamp")
 
         if ts:
@@ -2680,12 +3423,14 @@ async def get_tenant_messages_fragment(
             phone = from_jid.split("@")[0] if "@" in from_jid else from_jid
             push_name = phone if phone else "Unknown"
 
+        content_html = render_media_content(msg)
+
         if is_inbound:
             html_parts.append(f"""
 <div class="flex gap-2 mb-3 px-4">
     <div class="max-w-[80%] bg-gray-700 rounded-2xl rounded-tl-sm px-4 py-2">
         <div class='text-xs text-whatsapp mb-1'>{push_name}</div>
-        <div class="text-sm text-gray-100">{text}</div>
+        {content_html}
         <div class="text-xs text-gray-400 mt-1 text-right">{timestamp}</div>
     </div>
 </div>""")
@@ -2703,7 +3448,7 @@ async def get_tenant_messages_fragment(
 <div class="flex gap-2 mb-3 justify-end px-4">
     <div class="max-w-[80%] bg-whatsapp/20 rounded-2xl rounded-tr-sm px-4 py-2">
         <div class='text-xs text-whatsapp/70 mb-1'>To: {recipient_display}</div>
-        <div class="text-sm text-gray-100">{text}</div>
+        {content_html}
         <div class="text-xs text-gray-400 mt-1 text-right">{timestamp}</div>
     </div>
 </div>""")
@@ -2811,6 +3556,33 @@ async def get_recent_chats_fragment(
 
     chats = await db.get_recent_chats(tenant_hash, limit=50)
     return {"chats": chats}
+
+
+@fragments_router.get("/logs")
+async def get_logs_fragment(
+    type: Optional[str] = Query(None),
+    level: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+    session_id: str = Depends(require_admin_session),
+):
+    from ..main import log_buffer_inst
+
+    entries, total = await log_buffer_inst.list(
+        limit=limit,
+        type_filter=type,
+        level_filter=level,
+        source_filter=source,
+        search=search,
+    )
+    return JSONResponse(
+        content={
+            "entries": entries,
+            "total": total,
+            "max_size": log_buffer_inst.max_size,
+        }
+    )
 
 
 # JSON API Routes
@@ -3166,6 +3938,9 @@ async def remove_tenant_webhook_api(
 class AdminSendMessage(BaseModel):
     to: str
     text: str
+    quoted_message_id: Optional[str] = None
+    quoted_text: Optional[str] = None
+    quoted_chat: Optional[str] = None
 
 
 @api_router.post("/tenants/{tenant_hash}/send")
@@ -3189,7 +3964,13 @@ async def admin_send_message(
 
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
-        result = await bridge.send_message(to=data.to, text=data.text)
+        result = await bridge.send_message(
+            to=data.to,
+            text=data.text,
+            quoted_message_id=data.quoted_message_id,
+            quoted_text=data.quoted_text,
+            quoted_chat=data.quoted_chat,
+        )
         return {
             "status": "sent",
             "message_id": result.get("message_id"),
@@ -3236,6 +4017,16 @@ async def clear_failed_auth_api(
 ):
     rate_limiter.clear_failed_auth(ip)
     return {"status": "cleared"}
+
+
+@api_router.post("/logs/clear")
+async def clear_logs_api(
+    session_id: str = Depends(require_admin_session),
+):
+    from ..main import log_buffer_inst
+
+    count = await log_buffer_inst.clear()
+    return {"status": "cleared", "removed": count}
 
 
 # Bulk Operations
@@ -3394,6 +4185,54 @@ class ChatwootTenantConfigRequest(BaseModel):
     enabled: bool = True
     sign_messages: bool = True
     reopen_conversation: bool = True
+
+
+class TenantSettingsRequest(BaseModel):
+    auto_mark_read: Optional[bool] = None
+
+
+@api_router.get("/tenants/{tenant_hash}/settings")
+async def get_tenant_settings(
+    tenant_hash: str,
+    session_id: str = Depends(require_admin_session),
+):
+    tenant = tenant_manager.get_tenant_by_hash(tenant_hash)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    settings = tenant.settings or {}
+    return {
+        "settings": settings,
+        "auto_mark_read": tenant.get_auto_mark_read(),
+    }
+
+
+@api_router.patch("/tenants/{tenant_hash}/settings")
+async def update_tenant_settings(
+    tenant_hash: str,
+    data: TenantSettingsRequest,
+    session_id: str = Depends(require_admin_session),
+):
+    tenant = tenant_manager.get_tenant_by_hash(tenant_hash)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    update_data = {}
+    if data.auto_mark_read is not None:
+        update_data["auto_mark_read"] = data.auto_mark_read
+
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No settings to update")
+
+    success, needs_restart = await tenant_manager.update_tenant_settings(
+        tenant, update_data
+    )
+
+    return {
+        "status": "updated",
+        "settings": tenant.settings,
+        "bridge_restarted": needs_restart,
+    }
 
 
 @api_router.post("/chatwoot/config")

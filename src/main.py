@@ -7,6 +7,13 @@ from contextlib import asynccontextmanager
 
 from .config import settings
 from .telemetry import setup_telemetry, instrument_app, get_logger
+from .admin.log_buffer import (
+    LogBuffer,
+    LogEntry,
+    LogBufferHandler,
+    set_ws_manager,
+    queue_broadcast,
+)
 from .api import router, admin_router
 from .api.chatwoot_routes import (
     router as chatwoot_router,
@@ -29,12 +36,21 @@ from .chatwoot import ChatwootConfig, ChatwootIntegration
 if TYPE_CHECKING:
     from .tenant import Tenant
 
-setup_telemetry(
+log_buffer_inst = LogBuffer(max_size=settings.admin_log_buffer_size)
+
+_, root_logger = setup_telemetry(
     service_name=settings.service_name,
     service_version=settings.service_version,
     otlp_endpoint=settings.otlp_endpoint if settings.otlp_endpoint else None,
     debug=settings.debug,
 )
+
+buffer_handler = LogBufferHandler(log_buffer_inst)
+buffer_handler.setFormatter(
+    root_logger.handlers[0].formatter if root_logger.handlers else None
+)
+root_logger.addHandler(buffer_handler)
+
 logger = get_logger()
 
 
@@ -248,6 +264,7 @@ async def lifespan(app: FastAPI):
     health_task = asyncio.create_task(connection_health_check())
 
     logger.info("WhatsApp API ready")
+    set_ws_manager(admin_ws_manager)
     yield
 
     health_task.cancel()
@@ -620,6 +637,12 @@ def _store_message(event_type: str, tenant: "Tenant", params: dict[str, Any]) ->
         timestamp=params.get("timestamp", 0),
         direction=direction,
         media_url=params.get("media_url"),
+        mimetype=params.get("mimetype"),
+        filename=params.get("filename"),
+        latitude=params.get("latitude"),
+        longitude=params.get("longitude"),
+        location_name=params.get("location_name"),
+        location_address=params.get("location_address"),
     )
     if hasattr(tenant.message_store, "add_with_persist"):
         create_task_with_logging(
@@ -718,6 +741,66 @@ EVENT_HANDLERS = {
 }
 
 
+def _capture_event_to_log_buffer(
+    event_type: str, tenant: "Tenant", params: dict[str, Any]
+) -> None:
+    from datetime import datetime, timezone
+
+    source = "bridge"
+    level = "EVENT"
+    message = f"{event_type}"
+
+    if event_type in ("message", "sent"):
+        direction = "sent" if event_type == "sent" else "received"
+        jid = params.get("from") or params.get("to") or ""
+        message = f"Message {direction} from {jid[:30]}"
+        if params.get("text"):
+            preview = params["text"][:80]
+            message += f": {preview}"
+    elif event_type == "connected":
+        message = f"Tenant {tenant.name} connected"
+    elif event_type == "disconnected":
+        reason = params.get("reason", "unknown")
+        message = f"Tenant {tenant.name} disconnected: {reason}"
+    elif event_type == "qr":
+        message = f"QR code generated for {tenant.name}"
+    elif event_type in ("connecting", "reconnecting"):
+        message = f"Tenant {tenant.name} is {event_type}"
+    elif event_type == "reconnect_failed":
+        message = f"Reconnect failed for {tenant.name}"
+    elif event_type == "auth.update":
+        message = f"Auth credentials updated for {tenant.name}"
+    elif event_type in ("contacts", "chats_history"):
+        message = f"Sync {event_type} for {tenant.name}"
+    elif event_type in ("message_deleted", "message_read"):
+        message = f"{event_type} for {tenant.name}"
+
+    entry = LogEntry(
+        id=0,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        type="event",
+        level=level,
+        source=source,
+        message=message,
+        tenant=tenant.name,
+        details={"event_type": event_type},
+    )
+    log_buffer_inst.add_sync(entry)
+
+    queue_broadcast(
+        "app_event",
+        {
+            "id": entry.id,
+            "timestamp": entry.timestamp,
+            "type": entry.type,
+            "level": entry.level,
+            "source": entry.source,
+            "message": entry.message,
+            "tenant": entry.tenant,
+        },
+    )
+
+
 def handle_bridge_event(
     event_type: str, params: dict[str, Any], tenant_id: Optional[str] = None
 ):
@@ -749,6 +832,7 @@ def handle_bridge_event(
     _broadcast_to_websockets(event_type, tenant, tenant_id, params)
     _send_webhook(event_type, tenant, params)
     _handle_chatwoot_integration(event_type, tenant, params)
+    _capture_event_to_log_buffer(event_type, tenant, params)
 
 
 tenant_manager.on_event(handle_bridge_event)

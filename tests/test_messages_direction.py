@@ -22,6 +22,7 @@ def mock_db():
     db = MagicMock()
     db.list_messages = AsyncMock(return_value=([], 0))
     db.get_recent_chats = AsyncMock(return_value=[])
+    db.get_recent_chat_tabs = AsyncMock(return_value=[])
     db.get_webhook_stats = AsyncMock(
         return_value={"total": 0, "success_count": 0, "fail_count": 0}
     )
@@ -32,6 +33,7 @@ def mock_db():
     db.save_tenant = AsyncMock(return_value=None)
     db.load_tenants = AsyncMock(return_value=[])
     db.delete_tenant = AsyncMock(return_value=True)
+    db.get_contact_names_for_chats = AsyncMock(return_value={})
     return db
 
 

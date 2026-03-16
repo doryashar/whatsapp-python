@@ -197,10 +197,31 @@ class Database:
                 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS enabled BOOLEAN DEFAULT TRUE
             """)
             await conn.execute("""
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS settings JSONB
+            """)
+            await conn.execute("""
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS chatwoot_synced_at TIMESTAMPTZ
             """)
             await conn.execute("""
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_url TEXT
+            """)
+            await conn.execute("""
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS mimetype TEXT
+            """)
+            await conn.execute("""
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS filename TEXT
+            """)
+            await conn.execute("""
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS latitude REAL
+            """)
+            await conn.execute("""
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS longitude REAL
+            """)
+            await conn.execute("""
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS location_name TEXT
+            """)
+            await conn.execute("""
+                ALTER TABLE messages ADD COLUMN IF NOT EXISTS location_address TEXT
             """)
             await conn.execute("""
                 ALTER TABLE messages ADD COLUMN IF NOT EXISTS chatwoot_message_id INTEGER
@@ -410,6 +431,9 @@ class Database:
             await self._pool.execute(
                 "ALTER TABLE tenants ADD COLUMN enabled INTEGER DEFAULT 1"
             )
+        if "settings" not in columns:
+            logger.info("Adding settings column to tenants table")
+            await self._pool.execute("ALTER TABLE tenants ADD COLUMN settings TEXT")
         cursor = await self._pool.execute("PRAGMA table_info(messages)")
         msg_columns = [row[1] for row in await cursor.fetchall()]
         if "chatwoot_synced_at" not in msg_columns:
@@ -423,6 +447,28 @@ class Database:
         if "media_url" not in msg_columns:
             logger.info("Adding media_url column to messages table")
             await self._pool.execute("ALTER TABLE messages ADD COLUMN media_url TEXT")
+        if "mimetype" not in msg_columns:
+            logger.info("Adding mimetype column to messages table")
+            await self._pool.execute("ALTER TABLE messages ADD COLUMN mimetype TEXT")
+        if "filename" not in msg_columns:
+            logger.info("Adding filename column to messages table")
+            await self._pool.execute("ALTER TABLE messages ADD COLUMN filename TEXT")
+        if "latitude" not in msg_columns:
+            logger.info("Adding latitude column to messages table")
+            await self._pool.execute("ALTER TABLE messages ADD COLUMN latitude REAL")
+        if "longitude" not in msg_columns:
+            logger.info("Adding longitude column to messages table")
+            await self._pool.execute("ALTER TABLE messages ADD COLUMN longitude REAL")
+        if "location_name" not in msg_columns:
+            logger.info("Adding location_name column to messages table")
+            await self._pool.execute(
+                "ALTER TABLE messages ADD COLUMN location_name TEXT"
+            )
+        if "location_address" not in msg_columns:
+            logger.info("Adding location_address column to messages table")
+            await self._pool.execute(
+                "ALTER TABLE messages ADD COLUMN location_address TEXT"
+            )
         if "chatwoot_message_id" not in msg_columns:
             logger.info("Adding chatwoot_message_id column to messages table")
             await self._pool.execute(
@@ -533,7 +579,7 @@ class Database:
                     """SELECT api_key_hash, name, created_at, webhook_urls, 
                               connection_state, self_jid, self_phone, self_name,
                               last_connected_at, last_disconnected_at, has_auth, creds_json,
-                              chatwoot_config, enabled
+                              chatwoot_config, enabled, settings
                        FROM tenants"""
                 )
                 tenants = [
@@ -561,6 +607,9 @@ class Database:
                         "enabled": bool(row["enabled"])
                         if row["enabled"] is not None
                         else True,
+                        "settings": json.loads(row["settings"])
+                        if row["settings"] and isinstance(row["settings"], str)
+                        else row["settings"],
                     }
                     for row in rows
                 ]
@@ -569,7 +618,7 @@ class Database:
                 """SELECT api_key_hash, name, created_at, webhook_urls,
                           connection_state, self_jid, self_phone, self_name,
                           last_connected_at, last_disconnected_at, has_auth, creds_json,
-                          chatwoot_config, enabled
+                          chatwoot_config, enabled, settings
                    FROM tenants"""
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -593,6 +642,7 @@ class Database:
                         "creds_json": json.loads(row[11]) if row[11] else None,
                         "chatwoot_config": json.loads(row[12]) if row[12] else None,
                         "enabled": bool(row[13]) if row[13] is not None else True,
+                        "settings": json.loads(row[14]) if row[14] else None,
                     }
                     for row in rows
                 ]
@@ -911,6 +961,23 @@ class Database:
             await self._pool.commit()
         logger.debug("Chatwoot config saved")
 
+    async def save_settings(self, api_key_hash: str, settings: Optional[dict]) -> None:
+        logger.debug(f"Saving settings for tenant: hash={api_key_hash[:16]}...")
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE tenants SET settings = $1 WHERE api_key_hash = $2",
+                    json.dumps(settings) if settings else None,
+                    api_key_hash,
+                )
+        else:
+            await self._pool.execute(
+                "UPDATE tenants SET settings = ? WHERE api_key_hash = ?",
+                (json.dumps(settings) if settings else None, api_key_hash),
+            )
+            await self._pool.commit()
+        logger.debug("Settings saved")
+
     async def save_global_config(self, key: str, value: dict) -> None:
         logger.debug(f"Saving global config: key={key}")
         if self._is_postgres:
@@ -969,6 +1036,12 @@ class Database:
         timestamp: int = 0,
         direction: str = "inbound",
         media_url: Optional[str] = None,
+        mimetype: Optional[str] = None,
+        filename: Optional[str] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
+        location_name: Optional[str] = None,
+        location_address: Optional[str] = None,
     ) -> Optional[int]:
         from ..utils.phone import normalize_phone, extract_phone_from_jid
 
@@ -976,8 +1049,8 @@ class Database:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
                     """
-                    INSERT INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, media_url)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    INSERT INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, media_url, mimetype, filename, latitude, longitude, location_name, location_address)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                     ON CONFLICT (tenant_hash, message_id) DO NOTHING
                     RETURNING id
                     """,
@@ -992,13 +1065,19 @@ class Database:
                     timestamp,
                     direction,
                     media_url,
+                    mimetype,
+                    filename,
+                    latitude,
+                    longitude,
+                    location_name,
+                    location_address,
                 )
                 msg_id = row["id"] if row else None
         else:
             cursor = await self._pool.execute(
                 """
-                INSERT OR IGNORE INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, media_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO messages (tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, media_url, mimetype, filename, latitude, longitude, location_name, location_address)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     tenant_hash,
@@ -1012,6 +1091,12 @@ class Database:
                     timestamp,
                     direction,
                     media_url,
+                    mimetype,
+                    filename,
+                    latitude,
+                    longitude,
+                    location_name,
+                    location_address,
                 ),
             )
             await self._pool.commit()
@@ -1075,7 +1160,7 @@ class Database:
                 params.extend([limit, offset])
                 rows = await conn.fetch(
                     f"""
-                    SELECT id, tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, created_at
+                    SELECT id, tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, created_at, media_url, mimetype, filename, latitude, longitude, location_name, location_address
                     FROM messages {where_clause}
                     ORDER BY created_at DESC
                     LIMIT ${param_idx} OFFSET ${param_idx + 1}
@@ -1113,7 +1198,7 @@ class Database:
             params.extend([limit, offset])
             async with self._pool.execute(
                 f"""
-                SELECT id, tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, created_at
+                SELECT id, tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, text, msg_type, timestamp, direction, created_at, media_url, mimetype, filename, latitude, longitude, location_name, location_address
                 FROM messages {where_clause}
                 ORDER BY created_at DESC
                 LIMIT ? OFFSET ?
@@ -1135,6 +1220,13 @@ class Database:
                         "timestamp": row[9],
                         "direction": row[10],
                         "created_at": row[11],
+                        "media_url": row[12],
+                        "mimetype": row[13],
+                        "filename": row[14],
+                        "latitude": row[15],
+                        "longitude": row[16],
+                        "location_name": row[17],
+                        "location_address": row[18],
                     }
                     for row in rows
                 ]
@@ -1164,7 +1256,7 @@ class Database:
                 row = await conn.fetchrow(
                     """
                     SELECT id, tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, 
-                           text, msg_type, timestamp, direction, created_at, media_url,
+                           text, msg_type, timestamp, direction, created_at, media_url, mimetype, filename, latitude, longitude, location_name, location_address,
                            chatwoot_message_id, chatwoot_conversation_id, chatwoot_inbox_id, chatwoot_is_read
                     FROM messages
                     WHERE tenant_hash = $1 AND message_id = $2
@@ -1179,7 +1271,7 @@ class Database:
             async with self._pool.execute(
                 """
                 SELECT id, tenant_hash, message_id, from_jid, chat_jid, is_group, push_name, 
-                       text, msg_type, timestamp, direction, created_at, media_url,
+                       text, msg_type, timestamp, direction, created_at, media_url, mimetype, filename, latitude, longitude, location_name, location_address,
                        chatwoot_message_id, chatwoot_conversation_id, chatwoot_inbox_id, chatwoot_is_read
                 FROM messages
                 WHERE tenant_hash = ? AND message_id = ?
@@ -1202,11 +1294,17 @@ class Database:
                         "direction": row[10],
                         "created_at": row[11],
                         "media_url": row[12],
-                        "chatwoot_message_id": row[13],
-                        "chatwoot_conversation_id": row[14],
-                        "chatwoot_inbox_id": row[15],
-                        "chatwoot_is_read": bool(row[16])
-                        if row[16] is not None
+                        "mimetype": row[13],
+                        "filename": row[14],
+                        "latitude": row[15],
+                        "longitude": row[16],
+                        "location_name": row[17],
+                        "location_address": row[18],
+                        "chatwoot_message_id": row[19],
+                        "chatwoot_conversation_id": row[20],
+                        "chatwoot_inbox_id": row[21],
+                        "chatwoot_is_read": bool(row[22])
+                        if row[22] is not None
                         else False,
                     }
                 return None
@@ -1562,6 +1660,113 @@ class Database:
                     }
                     for row in rows
                 ]
+
+    async def get_recent_chat_tabs(
+        self,
+        tenant_hash: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                if tenant_hash:
+                    rows = await conn.fetch(
+                        """
+                        SELECT c.chat_jid, c.name, c.is_group
+                        FROM contacts c
+                        WHERE c.tenant_hash = $1
+                        ORDER BY c.last_message_at DESC NULLS LAST
+                        LIMIT $2
+                        """,
+                        tenant_hash,
+                        limit,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        """
+                        SELECT c.chat_jid, c.name, c.is_group
+                        FROM contacts c
+                        ORDER BY c.last_message_at DESC NULLS LAST
+                        LIMIT $1
+                        """,
+                        limit,
+                    )
+                return [
+                    {
+                        "chat_jid": row["chat_jid"],
+                        "name": row["name"],
+                        "is_group": row["is_group"],
+                    }
+                    for row in rows
+                ]
+        else:
+            if tenant_hash:
+                query = """
+                    SELECT chat_jid, name, is_group
+                    FROM contacts
+                    WHERE tenant_hash = ?
+                    ORDER BY last_message_at DESC
+                    LIMIT ?
+                """
+                params = (tenant_hash, limit)
+            else:
+                query = """
+                    SELECT chat_jid, name, is_group
+                    FROM contacts
+                    ORDER BY last_message_at DESC
+                    LIMIT ?
+                """
+                params = (limit,)
+            async with self._pool.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                return [
+                    {
+                        "chat_jid": row[0],
+                        "name": row[1],
+                        "is_group": bool(row[2]),
+                    }
+                    for row in rows
+                ]
+
+    async def get_contact_names_for_chats(
+        self,
+        tenant_hashes: list[str],
+        chat_jids: list[str],
+    ) -> dict:
+        if not tenant_hashes or not chat_jids:
+            return {}
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT tenant_hash, chat_jid, name, is_group
+                    FROM contacts
+                    WHERE tenant_hash = ANY($1) AND chat_jid = ANY($2)
+                    """,
+                    tenant_hashes,
+                    chat_jids,
+                )
+                return {
+                    (row["tenant_hash"], row["chat_jid"]): {
+                        "name": row["name"],
+                        "is_group": row["is_group"],
+                    }
+                    for row in rows
+                }
+        else:
+            placeholders_tenant = ",".join("?" for _ in tenant_hashes)
+            placeholders_chat = ",".join("?" for _ in chat_jids)
+            query = f"""
+                SELECT tenant_hash, chat_jid, name, is_group
+                FROM contacts
+                WHERE tenant_hash IN ({placeholders_tenant}) AND chat_jid IN ({placeholders_chat})
+            """
+            params = [*tenant_hashes, *chat_jids]
+            async with self._pool.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+                return {
+                    (row[0], row[1]): {"name": row[2], "is_group": bool(row[3])}
+                    for row in rows
+                }
 
     async def save_webhook_attempt(
         self,

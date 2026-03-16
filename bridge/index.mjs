@@ -22,6 +22,7 @@ import QRCode from "qrcode";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUTH_DIR = process.env.WHATSAPP_AUTH_DIR || path.join(__dirname, "..", "data", "auth");
 
+const AUTO_MARK_READ = process.env.AUTO_MARK_READ !== "false";
 const logger = pino({ level: process.env.DEBUG === "true" ? "debug" : "silent" });
 
 let sock = null;
@@ -121,6 +122,10 @@ function extractMessageContent(message) {
       text: msg.imageMessage.caption || "",
       type: "image",
       mimetype: msg.imageMessage.mimetype,
+      url: msg.imageMessage.url,
+      mediaKey: msg.imageMessage.mediaKey,
+      fileEncSha256: msg.imageMessage.fileEncSha256,
+      fileSha256: msg.imageMessage.fileSha256,
       contextInfo: msg.imageMessage.contextInfo,
     };
   }
@@ -129,6 +134,10 @@ function extractMessageContent(message) {
       text: msg.videoMessage.caption || "",
       type: "video",
       mimetype: msg.videoMessage.mimetype,
+      url: msg.videoMessage.url,
+      mediaKey: msg.videoMessage.mediaKey,
+      fileEncSha256: msg.videoMessage.fileEncSha256,
+      fileSha256: msg.videoMessage.fileSha256,
       contextInfo: msg.videoMessage.contextInfo,
     };
   }
@@ -137,25 +146,43 @@ function extractMessageContent(message) {
       text: "", 
       type: "audio", 
       mimetype: msg.audioMessage.mimetype,
+      url: msg.audioMessage.url,
+      mediaKey: msg.audioMessage.mediaKey,
+      fileEncSha256: msg.audioMessage.fileEncSha256,
+      fileSha256: msg.audioMessage.fileSha256,
       contextInfo: msg.audioMessage.contextInfo,
     };
   }
   if (msg.documentMessage) {
     return {
-      text: "",
+      text: msg.documentMessage.caption || "",
       type: "document",
       filename: msg.documentMessage.fileName,
       mimetype: msg.documentMessage.mimetype,
+      url: msg.documentMessage.url,
+      mediaKey: msg.documentMessage.mediaKey,
+      fileEncSha256: msg.documentMessage.fileEncSha256,
+      fileSha256: msg.documentMessage.fileSha256,
       contextInfo: msg.documentMessage.contextInfo,
     };
   }
-  if (msg.stickerMessage) return { text: "", type: "sticker" };
+  if (msg.stickerMessage) {
+    return { 
+      text: "", 
+      type: "sticker",
+      mimetype: msg.stickerMessage.mimetype,
+      url: msg.stickerMessage.url,
+      mediaKey: msg.stickerMessage.mediaKey,
+    };
+  }
   if (msg.locationMessage) {
     return {
       text: `https://maps.google.com/?q=${msg.locationMessage.degreesLatitude},${msg.locationMessage.degreesLongitude}`,
       type: "location",
       latitude: msg.locationMessage.degreesLatitude,
       longitude: msg.locationMessage.degreesLongitude,
+      name: msg.locationMessage.name || null,
+      address: msg.locationMessage.address || null,
     };
   }
   if (msg.contactMessage) {
@@ -449,6 +476,16 @@ async function createSocket() {
         text: content.text,
         type: content.type,
         timestamp: msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now(),
+        mimetype: content.mimetype || null,
+        media_url: content.url || null,
+        filename: content.filename || null,
+        latitude: content.latitude || null,
+        longitude: content.longitude || null,
+        location_name: content.name || null,
+        location_address: content.address || null,
+        media_key: content.mediaKey || null,
+        file_enc_sha256: content.fileEncSha256 || null,
+        file_sha256: content.fileSha256 || null,
       };
 
       if (content.contextInfo) {
@@ -461,10 +498,12 @@ async function createSocket() {
 
       sendEvent("message", eventData);
 
-      try {
-        await sock.readMessages([{ remoteJid, id: msg.key.id, fromMe: false }]);
-      } catch (err) {
-        logger.debug({ err: err.message, remoteJid, messageId: msg.key.id }, "Failed to mark message as read");
+      if (AUTO_MARK_READ) {
+        try {
+          await sock.readMessages([{ remoteJid, id: msg.key.id, fromMe: false }]);
+        } catch (err) {
+          logger.debug({ err: err.message, remoteJid, messageId: msg.key.id }, "Failed to mark message as read");
+        }
       }
     }
   });
@@ -548,7 +587,7 @@ const methods = {
   },
 
   async send_message(params) {
-    const { to, text, media_url } = params;
+    const { to, text, media_url, quoted } = params;
 
     if (!sock || connectionState !== "connected") {
       throw new Error("Not connected to WhatsApp");
@@ -557,6 +596,12 @@ const methods = {
     const jid = toJid(to);
     let result;
     let msgType = "text";
+
+    const contextInfo = quoted ? {
+      stanzaId: quoted.message_id,
+      participant: quoted.chat || quoted.participant,
+      quotedMessage: { conversation: quoted.text || "" }
+    } : undefined;
 
     if (media_url) {
       const buffer = fs.readFileSync(media_url);
@@ -586,9 +631,13 @@ const methods = {
         mimetype,
         caption: text,
         fileName: path.basename(media_url),
+        ...(contextInfo ? { contextInfo } : {}),
       });
     } else {
-      result = await sock.sendMessage(jid, { text });
+      result = await sock.sendMessage(jid, {
+        text,
+        ...(contextInfo ? { contextInfo } : {}),
+      });
     }
 
     const messageId = result?.key?.id || "unknown";

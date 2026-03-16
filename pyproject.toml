@@ -17,6 +17,7 @@ dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
     "httpx>=0.26.0",
+    "pytest-cov>=4.1.0",
 ]
 playwright = [
     "pytest-playwright>=0.4.0",
