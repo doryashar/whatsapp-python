@@ -117,6 +117,7 @@ class BaileysBridge:
 
         reader = self._process.stdout
         while self._running:
+            data = ""
             try:
                 line = await reader.readline()
                 if not line:
@@ -130,6 +131,10 @@ class BaileysBridge:
                     f"Bridge <- {data[:200]}{'...' if len(data) > 200 else ''}"
                 )
                 msg = decode_response(data)
+
+                if msg is None:
+                    logger.debug(f"Skipping non-JSON-RPC bridge output: {data[:120]}")
+                    continue
 
                 if isinstance(msg, JsonRpcResponse):
                     if msg.id is not None and msg.id in self._pending:
@@ -146,11 +151,15 @@ class BaileysBridge:
                 elif isinstance(msg, JsonRpcEvent):
                     logger.debug(f"Bridge event: {msg.method}")
                     await self._handle_event(msg.method, msg.params)
+                else:
+                    logger.warning(
+                        f"Unexpected bridge message type: {type(msg).__name__}"
+                    )
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.debug(f"Bridge read error: {e}")
+                logger.warning(f"Bridge read error: {e}")
 
     async def _stderr_loop(self) -> None:
         if not self._process or not self._process.stderr:
@@ -283,6 +292,17 @@ class BaileysBridge:
     async def get_chats_with_messages(self, limit_per_chat: int = 50) -> dict:
         logger.info(f"Bridge get_chats_with_messages: limit={limit_per_chat}")
         return await self.call("get_chats_with_messages", {"limit": limit_per_chat})
+
+    async def fetch_chat_history(
+        self, limit_per_chat: int = 50, max_chats: int = 100
+    ) -> dict:
+        logger.info(
+            f"Bridge fetch_chat_history: limit_per_chat={limit_per_chat}, max_chats={max_chats}"
+        )
+        return await self.call(
+            "fetch_chat_history",
+            {"limit_per_chat": limit_per_chat, "max_chats": max_chats},
+        )
 
     async def get_profile_picture(self, jid: str) -> dict:
         logger.debug(f"Bridge get_profile_picture: jid={jid}")

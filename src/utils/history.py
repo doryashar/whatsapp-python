@@ -28,6 +28,7 @@ async def store_chat_messages(
         chat_jid = chat.get("jid", "")
         is_group = chat.get("is_group", False)
         messages = chat.get("messages", [])
+        chat_name = chat.get("name") or chat.get("subject")
 
         for msg in messages:
             try:
@@ -54,6 +55,7 @@ async def store_chat_messages(
                     msg_type=msg_type,
                     timestamp=timestamp,
                     direction=direction,
+                    chat_name=chat_name,
                 )
 
                 if hasattr(tenant.message_store, "add_with_persist"):

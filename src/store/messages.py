@@ -29,6 +29,7 @@ class StoredMessage:
         longitude: Optional[float] = None,
         location_name: Optional[str] = None,
         location_address: Optional[str] = None,
+        chat_name: Optional[str] = None,
         db_id: Optional[int] = None,
     ):
         self.id = id
@@ -47,6 +48,7 @@ class StoredMessage:
         self.longitude = longitude
         self.location_name = location_name
         self.location_address = location_address
+        self.chat_name = chat_name
         self.db_id = db_id
 
     def to_dict(self) -> dict:
@@ -67,6 +69,7 @@ class StoredMessage:
             "longitude": self.longitude,
             "location_name": self.location_name,
             "location_address": self.location_address,
+            "chat_name": self.chat_name,
             "db_id": self.db_id,
         }
 
@@ -112,6 +115,7 @@ class MessageStore:
                     longitude=getattr(msg, "longitude", None),
                     location_name=getattr(msg, "location_name", None),
                     location_address=getattr(msg, "location_address", None),
+                    chat_name=getattr(msg, "chat_name", None),
                 )
                 msg.db_id = db_id
                 logger.debug(f"Message persisted to DB with db_id={db_id}")

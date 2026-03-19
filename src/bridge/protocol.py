@@ -30,8 +30,10 @@ def encode_request(
     return json.dumps(req.model_dump(exclude_none=True))
 
 
-def decode_response(data: str) -> JsonRpcResponse | JsonRpcEvent:
+def decode_response(data: str) -> JsonRpcResponse | JsonRpcEvent | None:
     parsed = json.loads(data)
+    if parsed.get("jsonrpc") != "2.0":
+        return None
     if "id" in parsed and ("result" in parsed or "error" in parsed):
         return JsonRpcResponse(**parsed)
     return JsonRpcEvent(**parsed)

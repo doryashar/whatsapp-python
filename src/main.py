@@ -13,6 +13,7 @@ from .admin.log_buffer import (
     LogBufferHandler,
     set_ws_manager,
     queue_broadcast,
+    shutdown_broadcast,
 )
 from .api import router, admin_router
 from .api.chatwoot_routes import (
@@ -79,6 +80,13 @@ def create_task_with_logging(coro, name: str = "unnamed") -> asyncio.Task:
 
 
 async def _restart_bridge(tenant, reason: str = "restart") -> bool:
+    if tenant._restarting:
+        logger.debug(
+            f"Restart already in progress for {tenant.name}, skipping",
+            extra={"tenant": tenant.name},
+        )
+        return False
+
     if not tenant.has_valid_auth():
         logger.warning(
             f"No valid auth for {tenant.name}, cannot restart",
@@ -93,47 +101,59 @@ async def _restart_bridge(tenant, reason: str = "restart") -> bool:
         )
         return False
 
-    if tenant.bridge:
-        try:
-            await tenant.bridge.stop()
-        except Exception as e:
-            logger.warning(f"Error stopping bridge for {tenant.name}: {e}")
+    async with tenant._restart_lock:
+        if tenant._restarting:
+            logger.debug(
+                f"Restart already in progress for {tenant.name}, skipping",
+                extra={"tenant": tenant.name},
+            )
+            return False
 
-    try:
-        await asyncio.sleep(settings.restart_cooldown_seconds)
-
-        auth_dir = tenant.get_auth_dir(settings.auth_dir)
-        new_bridge = BaileysBridge(
-            auth_dir=auth_dir,
-            auto_login=True,
-            tenant_id=tenant.api_key_hash,
-        )
-
-        if tenant_manager._event_handler:
-            new_bridge.on_event(tenant_manager._event_handler)
-
-        await new_bridge.start()
-
-        tenant.bridge = new_bridge
+        tenant._restarting = True
         tenant_manager.record_restart(tenant, reason)
-        tenant_manager.reset_health_failures(tenant)
 
-        logger.info(
-            f"Bridge restarted successfully for {tenant.name}",
-            extra={
-                "tenant": tenant.name,
-                "new_pid": new_bridge._process.pid if new_bridge._process else None,
-            },
-        )
-        return True
+        try:
+            if tenant.bridge:
+                try:
+                    await tenant.bridge.stop()
+                except Exception as e:
+                    logger.warning(f"Error stopping bridge for {tenant.name}: {e}")
 
-    except Exception as e:
-        logger.error(
-            f"Failed to restart bridge for {tenant.name}: {e}",
-            extra={"tenant": tenant.name},
-            exc_info=True,
-        )
-        return False
+            await asyncio.sleep(settings.restart_cooldown_seconds)
+
+            auth_dir = tenant.get_auth_dir(settings.auth_dir)
+            new_bridge = BaileysBridge(
+                auth_dir=auth_dir,
+                auto_login=True,
+                tenant_id=tenant.api_key_hash,
+            )
+
+            if tenant_manager._event_handler:
+                new_bridge.on_event(tenant_manager._event_handler)
+
+            await new_bridge.start()
+
+            tenant.bridge = new_bridge
+            tenant_manager.reset_health_failures(tenant)
+
+            logger.info(
+                f"Bridge restarted successfully for {tenant.name}",
+                extra={
+                    "tenant": tenant.name,
+                    "new_pid": new_bridge._process.pid if new_bridge._process else None,
+                },
+            )
+            return True
+
+        except Exception as e:
+            logger.error(
+                f"Failed to restart bridge for {tenant.name}: {e}",
+                extra={"tenant": tenant.name},
+                exc_info=True,
+            )
+            return False
+        finally:
+            tenant._restarting = False
 
 
 async def handle_bridge_crash(tenant):
@@ -274,6 +294,7 @@ async def lifespan(app: FastAPI):
         pass
 
     logger.info("Shutting down WhatsApp API...")
+    await shutdown_broadcast()
     await tenant_manager.close()
     logger.info("Shutdown complete")
 
@@ -320,10 +341,17 @@ async def handle_contacts_sync(tenant: "Tenant", contacts: list[dict]):
         try:
             phone = contact.get("phone")
             jid = contact.get("jid")
-            if not phone or not jid:
+            if not jid:
                 continue
 
-            normalized_phone = normalize_phone(phone)
+            is_group = contact.get("is_group", False)
+            if not phone:
+                if is_group:
+                    phone = jid.split("@")[0] if "@" in jid else jid
+                else:
+                    continue
+
+            normalized_phone = normalize_phone(phone) if not is_group else phone
             if not normalized_phone:
                 continue
 
@@ -332,7 +360,7 @@ async def handle_contacts_sync(tenant: "Tenant", contacts: list[dict]):
                 phone=normalized_phone,
                 name=contact.get("name"),
                 chat_jid=jid,
-                is_group=contact.get("is_group", False),
+                is_group=is_group,
             )
             synced_count += 1
         except Exception as e:
@@ -611,6 +639,94 @@ def _handle_chatwoot_message_event(
     )
 
 
+MIME_TO_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "video/mp4": ".mp4",
+    "audio/ogg": ".ogg",
+    "audio/mpeg": ".mp3",
+    "application/pdf": ".pdf",
+}
+
+MAX_MEDIA_SIZE = 20 * 1024 * 1024
+
+
+async def _download_and_cache_media(
+    tenant: "Tenant",
+    message_id: str,
+    media_url: str,
+    msg_type: str,
+    mimetype: str,
+    filename: str,
+) -> None:
+    if not media_url or not message_id:
+        return
+
+    try:
+        import httpx
+
+        safe_id = message_id.replace("/", "_").replace("\\", "_")[:64]
+        ext = MIME_TO_EXT.get(mimetype, f".{msg_type}" if msg_type else ".bin")
+        media_dir = settings.data_dir / "media" / tenant.api_key_hash
+        media_dir.mkdir(parents=True, exist_ok=True)
+        file_path = media_dir / f"{safe_id}{ext}"
+
+        if file_path.exists():
+            await _update_media_url_in_db(tenant, message_id, str(file_path))
+            return
+
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            async with client.stream("GET", media_url) as resp:
+                if resp.status_code != 200:
+                    logger.warning(
+                        f"Media download failed: status={resp.status_code} for {message_id}"
+                    )
+                    return
+
+                content_length = resp.headers.get("content-length")
+                if content_length and int(content_length) > MAX_MEDIA_SIZE:
+                    logger.warning(
+                        f"Media too large: {content_length} bytes for {message_id}, skipping"
+                    )
+                    return
+
+                chunks = []
+                total = 0
+                async for chunk in resp.aiter_bytes(chunk_size=65536):
+                    total += len(chunk)
+                    if total > MAX_MEDIA_SIZE:
+                        logger.warning(
+                            f"Media exceeded {MAX_MEDIA_SIZE} bytes during download for {message_id}"
+                        )
+                        return
+                    chunks.append(chunk)
+
+                file_path.write_bytes(b"".join(chunks))
+                logger.debug(f"Media cached: {file_path} ({total} bytes)")
+
+        await _update_media_url_in_db(tenant, message_id, str(file_path))
+
+    except Exception as e:
+        logger.warning(f"Failed to cache media for {message_id}: {e}")
+
+
+async def _update_media_url_in_db(
+    tenant: "Tenant", message_id: str, local_path: str
+) -> None:
+    if not tenant_manager._db:
+        return
+    try:
+        await tenant_manager._db.update_message_media_url(
+            tenant_hash=tenant.api_key_hash,
+            message_id=message_id,
+            media_url=local_path,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to update media URL in DB: {e}")
+
+
 def _store_message(event_type: str, tenant: "Tenant", params: dict[str, Any]) -> None:
     if tenant.message_store is None:
         logger.warning(f"Message store not initialized for tenant {tenant.name}")
@@ -618,13 +734,15 @@ def _store_message(event_type: str, tenant: "Tenant", params: dict[str, Any]) ->
 
     if event_type == "sent":
         from_jid = tenant.self_jid or params.get("from", "")
-        chat_jid = params.get("to", "")
+        chat_jid = params.get("chat_jid") or params.get("to", "")
         is_outbound = True
     else:
         from_jid = params.get("from", "")
         chat_jid = params.get("chat_jid") or params.get("from", "")
         is_outbound = tenant.self_jid and from_jid == tenant.self_jid
     direction = "outbound" if is_outbound else "inbound"
+
+    media_url = params.get("media_url")
 
     msg = StoredMessage(
         id=params.get("id") or params.get("message_id", ""),
@@ -636,13 +754,14 @@ def _store_message(event_type: str, tenant: "Tenant", params: dict[str, Any]) ->
         msg_type=params.get("type", "text"),
         timestamp=params.get("timestamp", 0),
         direction=direction,
-        media_url=params.get("media_url"),
+        media_url=media_url,
         mimetype=params.get("mimetype"),
         filename=params.get("filename"),
         latitude=params.get("latitude"),
         longitude=params.get("longitude"),
         location_name=params.get("location_name"),
         location_address=params.get("location_address"),
+        chat_name=params.get("chat_name"),
     )
     if hasattr(tenant.message_store, "add_with_persist"):
         create_task_with_logging(
@@ -650,6 +769,21 @@ def _store_message(event_type: str, tenant: "Tenant", params: dict[str, Any]) ->
         )
     else:
         tenant.message_store.add(msg)
+
+    if media_url and msg.id:
+        msg_type = params.get("type", "text")
+        if msg_type in ("image", "video", "audio", "sticker", "document"):
+            create_task_with_logging(
+                _download_and_cache_media(
+                    tenant=tenant,
+                    message_id=msg.id,
+                    media_url=media_url,
+                    msg_type=msg_type,
+                    mimetype=params.get("mimetype") or "",
+                    filename=params.get("filename") or "",
+                ),
+                name="cache_media",
+            )
 
 
 def _broadcast_to_websockets(
@@ -673,12 +807,17 @@ def _broadcast_to_websockets(
             name="admin_broadcast_state",
         )
     elif event_type in ["message", "sent"]:
+        sender_name = (params.get("push_name") or "").strip()
+        if not sender_name:
+            jid = params.get("from") or ""
+            sender_name = jid.split("@")[0] if "@" in jid else jid[:30]
         create_task_with_logging(
             admin_ws_manager.broadcast(
                 "new_message",
                 {
                     "tenant_hash": tenant_id,
                     "tenant_name": tenant.name,
+                    "sender_name": sender_name,
                     "message": params,
                 },
             ),
@@ -775,6 +914,33 @@ def _capture_event_to_log_buffer(
     elif event_type in ("message_deleted", "message_read"):
         message = f"{event_type} for {tenant.name}"
 
+    safe_details: dict[str, Any] = {"event_type": event_type}
+    if event_type == "message":
+        safe_details["from"] = params.get("from", "")[:40]
+        safe_details["chat_jid"] = params.get("chat_jid", "")[:40]
+        safe_details["type"] = params.get("type", "text")
+        safe_details["has_media"] = bool(params.get("media_url"))
+    elif event_type == "sent":
+        safe_details["to"] = params.get("to", "")[:40]
+        safe_details["type"] = params.get("type", "text")
+        safe_details["has_media"] = bool(params.get("media_url"))
+    elif event_type == "connected":
+        safe_details["jid"] = params.get("jid", "")[:30]
+        safe_details["phone"] = params.get("phone", "")[:20]
+    elif event_type == "disconnected":
+        safe_details["reason"] = params.get("reason")
+        safe_details["reason_name"] = params.get("reason_name")
+    elif event_type == "qr":
+        safe_details["has_qr"] = bool(params.get("qr"))
+    elif event_type in ("contacts", "chats_history"):
+        safe_details["count"] = params.get("total_messages") or params.get(
+            "contacts", []
+        )
+        if isinstance(safe_details["count"], list):
+            safe_details["count"] = len(safe_details["count"])
+    else:
+        safe_details = {"event_type": event_type}
+
     entry = LogEntry(
         id=0,
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -783,7 +949,7 @@ def _capture_event_to_log_buffer(
         source=source,
         message=message,
         tenant=tenant.name,
-        details={"event_type": event_type},
+        details=safe_details,
     )
     log_buffer_inst.add_sync(entry)
 
@@ -797,6 +963,54 @@ def _capture_event_to_log_buffer(
             "source": entry.source,
             "message": entry.message,
             "tenant": entry.tenant,
+            "details": entry.details,
+        },
+    )
+
+
+def _capture_frontend_error_to_log_buffer(msg: dict[str, Any]) -> None:
+    from datetime import datetime, timezone
+
+    payload = msg.get("data", msg)
+    message = payload.get("message", "Unknown frontend error")
+    source = payload.get("source")
+    lineno = payload.get("lineno")
+    colno = payload.get("colno")
+
+    short_msg = message
+    if source and lineno:
+        short_msg = f"{message} ({source}:{lineno}:{colno or 0})"
+
+    entry = LogEntry(
+        id=0,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        type="event",
+        level="ERROR",
+        source="frontend.ws",
+        message=short_msg,
+        details={
+            "error_type": payload.get("type"),
+            "source": source,
+            "lineno": lineno,
+            "colno": colno,
+            "stack": payload.get("stack"),
+            "url": payload.get("url"),
+            "user_agent": payload.get("user_agent"),
+        },
+    )
+    log_buffer_inst.add_sync(entry)
+
+    queue_broadcast(
+        "app_event",
+        {
+            "id": entry.id,
+            "timestamp": entry.timestamp,
+            "type": entry.type,
+            "level": entry.level,
+            "source": entry.source,
+            "message": entry.message,
+            "tenant": "",
+            "details": entry.details,
         },
     )
 
@@ -949,8 +1163,11 @@ async def admin_ws_events(
             data = await websocket.receive_text()
             try:
                 msg = json.loads(data)
-                if msg.get("type") == "ping":
+                msg_type = msg.get("type")
+                if msg_type == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
+                elif msg_type == "frontend_error":
+                    _capture_frontend_error_to_log_buffer(msg)
             except json.JSONDecodeError:
                 pass
     except WebSocketDisconnect:

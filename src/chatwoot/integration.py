@@ -58,7 +58,6 @@ class TTLLRUCache:
 
 class ChatwootIntegration:
     LOCK_TIMEOUT = 5.0
-    LOCK_POLL_DELAY = 0.0
     CONNECTION_NOTIFICATION_COOLDOWN = 300.0
 
     def __init__(
@@ -296,7 +295,9 @@ class ChatwootIntegration:
             logger.warning(f"Could not extract group ID from jid: {chat_jid}")
             return False
 
-        group_name = event_data.get("group_name", group_phone)
+        group_name = (
+            event_data.get("group_name") or event_data.get("chat_name") or group_phone
+        )
         group_contact_name = f"{group_name} (GROUP)"
 
         logger.debug(
@@ -406,8 +407,9 @@ class ChatwootIntegration:
             content = text if text else None
 
         if is_edited and content:
-            edited_text = event_data.get("edited_text", content)
-            content = f"\n\n*Edited:*\n{edited_text}"
+            edited_text = event_data.get("edited_text")
+            if edited_text and edited_text != content:
+                content = f"{content}\n\n*Edited to:*\n{edited_text}"
 
         return content
 

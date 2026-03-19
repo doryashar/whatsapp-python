@@ -1,10 +1,97 @@
+// Frontend Error Reporting
+(function() {
+    var _lastErrorKey = '';
+    var _lastErrorTime = 0;
+    var _dedupWindow = 5000;
+
+    function _errorKey(message, source, lineno) {
+        return (message || '') + '|' + (source || '') + '|' + (lineno || 0);
+    }
+
+    window.reportFrontendError = function(errorInfo) {
+        var key = _errorKey(errorInfo.message, errorInfo.source, errorInfo.lineno);
+        var now = Date.now();
+        if (key === _lastErrorKey && (now - _lastErrorTime) < _dedupWindow) {
+            return;
+        }
+        _lastErrorKey = key;
+        _lastErrorTime = now;
+
+        var payload = {
+            type: 'frontend_error',
+            data: {
+                message: errorInfo.message || 'Unknown error',
+                source: errorInfo.source || null,
+                lineno: errorInfo.lineno || null,
+                colno: errorInfo.colno || null,
+                stack: errorInfo.stack || null,
+                error_type: errorInfo.error_type || null,
+                url: window.location.href,
+                user_agent: navigator.userAgent,
+            }
+        };
+
+        if (window.adminWS && window.adminWS.connected) {
+            try {
+                window.adminWS.ws.send(JSON.stringify(payload));
+                return;
+            } catch (e) {
+                // fall through to fetch
+            }
+        }
+
+        if (navigator.sendBeacon) {
+            try {
+                navigator.sendBeacon(
+                    '/admin/api/frontend-errors',
+                    new Blob([JSON.stringify(payload.data)], {type: 'application/json'})
+                );
+                return;
+            } catch (e) {
+                // fall through to fetch
+            }
+        }
+
+        try {
+            fetch('/admin/api/frontend-errors', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload.data),
+                keepalive: true,
+            }).catch(function() {});
+        } catch (e) {}
+    };
+
+    window.addEventListener('error', function(event) {
+        window.reportFrontendError({
+            message: event.message,
+            source: event.filename || event.sourceURL,
+            lineno: event.lineno,
+            colno: event.colno,
+            stack: event.error && event.error.stack ? event.error.stack : null,
+            error_type: 'Error',
+        });
+    });
+
+    window.addEventListener('unhandledrejection', function(event) {
+        var reason = event.reason;
+        var message = reason instanceof Error ? reason.message : String(reason);
+        var stack = reason instanceof Error ? reason.stack : null;
+        window.reportFrontendError({
+            message: 'Unhandled Promise Rejection: ' + message,
+            stack: stack,
+            error_type: 'UnhandledRejection',
+        });
+    });
+})();
+
 // Admin WebSocket Client for Real-time Updates
 
 class AdminWebSocket {
     constructor() {
         this.ws = null;
         this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 5;
+        this.maxReconnectAttempts = Infinity;
         this.reconnectDelay = 1000; // Start with 1 second
         this.maxReconnectDelay = 30000; // Max 30 seconds
         this.heartbeatInterval = null;
@@ -90,18 +177,30 @@ class AdminWebSocket {
                 );
                 break;
 
+            case 'tenant_list_changed':
+                if (typeof htmx !== 'undefined') {
+                    const tenantsList = document.querySelector('#tenants-list');
+                    if (tenantsList) htmx.trigger(tenantsList, 'load');
+                    const statsGrid = document.querySelector('.grid');
+                    if (statsGrid) htmx.trigger(statsGrid, 'load');
+                }
+                break;
+
             case 'new_message':
                 if (typeof htmx !== 'undefined') {
                     const messagesList = document.querySelector('#messages-list');
                     if (messagesList) htmx.trigger(messagesList, 'load');
                     const statsGrid = document.querySelector('.grid');
                     if (statsGrid) htmx.trigger(statsGrid, 'load');
+                    const tabsContainer = document.querySelector('#messages-tabs-container');
+                    if (tabsContainer) htmx.trigger(tabsContainer, 'load');
                 }
                 const preview = message.data.message.text ?
                     message.data.message.text.substring(0, 50) :
                     'Media message';
+                const senderName = message.data.sender_name || 'Unknown';
                 this.showNotification(
-                    `New message from ${message.data.tenant_name}: ${preview}`,
+                    `New message from ${senderName} to ${message.data.tenant_name}: ${preview}`,
                     'success'
                 );
                 break;
@@ -133,9 +232,15 @@ class AdminWebSocket {
                 break;
 
             case 'qr_generated':
-                // Show QR code for tenant connection
                 console.log('QR event received:', message.data);
                 this.showQRCode(message.data);
+                break;
+
+            case 'log_entry':
+            case 'app_event':
+                if (typeof appendLogEntry === 'function') {
+                    appendLogEntry(message.data);
+                }
                 break;
 
             case 'pong':
@@ -165,12 +270,13 @@ class AdminWebSocket {
         }
 
         this.reconnectAttempts++;
+        const maxBackoff = Math.min(this.reconnectAttempts, 10);
         const delay = Math.min(
-            this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1),
+            this.reconnectDelay * Math.pow(2, maxBackoff - 1),
             this.maxReconnectDelay
         );
 
-        console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+        console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
 
         setTimeout(() => {
             this.connect();
@@ -282,7 +388,7 @@ class AdminWebSocket {
 }
 
 // Global instance
-let adminWS = null;
+var adminWS = null;
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {

@@ -2,6 +2,7 @@ import secrets
 import hashlib
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from typing import Optional, Callable, Any
 from dataclasses import dataclass, field
@@ -41,6 +42,12 @@ class Tenant:
     last_restart_at: Optional[datetime] = None
     last_restart_reason: Optional[str] = None
     enabled: bool = True
+    settings: Optional[dict] = None
+    _restarting: bool = False
+    _restart_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
+    def get_auto_mark_read(self) -> bool:
+        return self.settings is None or self.settings.get("auto_mark_read", True)
 
     def __post_init__(self):
         if self.message_store is None:
@@ -111,6 +118,7 @@ class TenantManager:
                 creds_json=data.get("creds_json"),
                 chatwoot_config=data.get("chatwoot_config"),
                 enabled=data.get("enabled", True),
+                settings=data.get("settings"),
             )
             self._tenants[tenant.api_key_hash] = tenant
             logger.debug(
@@ -200,6 +208,15 @@ class TenantManager:
     async def clear_creds(self, tenant: Tenant) -> None:
         tenant.creds_json = None
         tenant.has_auth = False
+
+        auth_dir = tenant.get_auth_dir(self._base_auth_dir)
+        if auth_dir.exists():
+            try:
+                shutil.rmtree(auth_dir)
+                logger.info(f"Auth directory deleted for tenant: {tenant.name}")
+            except Exception as e:
+                logger.error(f"Failed to delete auth directory for {tenant.name}: {e}")
+
         if self._db:
             await self._db.clear_creds(tenant.api_key_hash)
             logger.info(f"Credentials cleared from database for tenant: {tenant.name}")
@@ -303,6 +320,7 @@ class TenantManager:
                 auth_dir=auth_dir,
                 tenant_id=tenant.api_key_hash,
                 auto_login=settings.auto_login,
+                auto_mark_read=tenant.get_auto_mark_read(),
             )
             if self._event_handler:
                 tenant.bridge.on_event(self._event_handler)
@@ -362,6 +380,41 @@ class TenantManager:
         except ValueError:
             logger.debug(f"Webhook not found: {url}")
             return False
+
+    async def update_tenant_settings(
+        self, tenant: Tenant, settings_update: dict
+    ) -> tuple[bool, bool]:
+        old_auto_mark_read = tenant.get_auto_mark_read()
+
+        current_settings = tenant.settings or {}
+        new_settings = {**current_settings, **settings_update}
+        tenant.settings = new_settings
+
+        if self._db:
+            await self._db.save_settings(tenant.api_key_hash, new_settings)
+
+        logger.info(f"Updated settings for tenant {tenant.name}: {settings_update}")
+
+        new_auto_mark_read = tenant.get_auto_mark_read()
+        needs_restart = (
+            old_auto_mark_read != new_auto_mark_read and tenant.bridge is not None
+        )
+
+        if needs_restart:
+            logger.info(
+                f"Auto mark read setting changed for tenant {tenant.name}, "
+                f"restarting bridge to apply changes"
+            )
+            try:
+                if tenant.bridge:
+                    await tenant.bridge.stop()
+                tenant.bridge = None
+                await self.get_or_create_bridge(tenant)
+                logger.info(f"Bridge restarted for tenant {tenant.name}")
+            except Exception as e:
+                logger.error(f"Failed to restart bridge for {tenant.name}: {e}")
+
+        return True, needs_restart
 
     def reset_health_failures(self, tenant: Tenant) -> None:
         tenant.health_check_failures = 0

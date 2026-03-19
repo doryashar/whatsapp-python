@@ -11,9 +11,23 @@ from ..tenant import tenant_manager
 from ..middleware import rate_limiter
 from ..utils import is_safe_webhook_url
 from .auth import AdminSession, require_admin_session, get_session_id
+from .log_buffer import LogEntry
 from .websocket import admin_ws_manager
 
 logger = get_logger("whatsapp.admin")
+
+
+def _resolve_media_url(media_url: str, msg: dict) -> str:
+    if not media_url:
+        return ""
+    if media_url.startswith("/") or media_url.startswith("."):
+        import os
+
+        basename = os.path.basename(media_url)
+        name_part = os.path.splitext(basename)[0]
+        tenant_hash = msg.get("tenant_hash") or ""
+        return f"/admin/media/{tenant_hash}/{name_part}"
+    return media_url
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -32,6 +46,69 @@ async def get_websocket_js():
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
     return response
+
+
+@router.get("/media/{tenant_hash}/{message_id}")
+async def get_media_file(
+    tenant_hash: str,
+    message_id: str,
+    session_id: str = Depends(require_admin_session),
+):
+    import re
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+    from ..config import settings
+
+    if not re.match(r"^[a-zA-Z0-9_-]+$", tenant_hash):
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail="Invalid tenant hash")
+
+    safe_id = message_id.replace("/", "_").replace("\\", "_")[:64]
+    media_dir = settings.data_dir / "media" / tenant_hash
+
+    if not media_dir.exists():
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="Media not found")
+
+    for ext in (
+        ".jpg",
+        ".png",
+        ".webp",
+        ".gif",
+        ".mp4",
+        ".ogg",
+        ".mp3",
+        ".pdf",
+        ".bin",
+        ".image",
+        ".video",
+        ".audio",
+        ".sticker",
+        ".document",
+    ):
+        file_path = media_dir / f"{safe_id}{ext}"
+        if file_path.exists():
+            media_types = {
+                ".jpg": "image/jpeg",
+                ".png": "image/png",
+                ".webp": "image/webp",
+                ".gif": "image/gif",
+                ".mp4": "video/mp4",
+                ".ogg": "audio/ogg",
+                ".mp3": "audio/mpeg",
+                ".pdf": "application/pdf",
+            }
+            return FileResponse(
+                file_path,
+                media_type=media_types.get(ext, "application/octet-stream"),
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+
+    from fastapi import HTTPException
+
+    raise HTTPException(status_code=404, detail="Media not found")
 
 
 class TenantCreate(BaseModel):
@@ -158,7 +235,7 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
             }}
         }}
     </script>
-    <script src="/admin/static/websocket.js?v=4"></script>
+    <script src="/admin/static/websocket.js?v=5"></script>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
     <div class="flex h-screen">
@@ -182,6 +259,10 @@ async def admin_login_page(request: Request):
             status_code=503,
         )
 
+    error_msg = ""
+    if request.query_params.get("error"):
+        error_msg = """<div class="bg-red-500/20 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg mb-4">Invalid password. Please try again.</div>"""
+
     html = """
 <!DOCTYPE html>
 <html lang="en">
@@ -203,6 +284,7 @@ async def admin_login_page(request: Request):
             <p class="text-gray-400 mt-2">WhatsApp API Dashboard</p>
         </div>
         <form method="POST" action="/admin/login" class="space-y-6">
+            {error_msg}
             <div>
                 <label class="block text-sm font-medium text-gray-300 mb-2">Password</label>
                 <input type="password" name="password" required
@@ -220,7 +302,7 @@ async def admin_login_page(request: Request):
     </div>
 </body>
 </html>
-"""
+""".format(error_msg=error_msg)
     return HTMLResponse(content=html)
 
 
@@ -241,7 +323,7 @@ async def admin_login(
     session_id = await admin_session.create_session(request, password, existing_session)
 
     if not session_id:
-        raise HTTPException(status_code=401, detail="Invalid password")
+        return RedirectResponse(url="/admin/login?error=1", status_code=302)
 
     response = RedirectResponse(url="/admin/dashboard", status_code=302)
     response.set_cookie(
@@ -1092,6 +1174,51 @@ function sendMsgAsTenant(hash) {
         }
     }).catch(e => alert('Error: ' + e));
 }
+async function syncContacts(hash) {
+    if (!confirm('Sync contacts from WhatsApp?')) return;
+    try {
+        const response = await fetch('/admin/api/tenants/' + hash + '/sync-contacts', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        const data = await response.json();
+        if (response.ok) {
+            alert('Contacts synced!\\nSynced: ' + data.synced + '\\nFailed: ' + data.failed + '\\nTotal: ' + data.total);
+            htmx.trigger('#tenants-list', 'load');
+        } else {
+            alert(data.detail || 'Failed to sync contacts');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+async function syncMessages(hash) {
+    if (!confirm('Sync chat history from WhatsApp? This may take a while.')) return;
+    const btn = event.target;
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Syncing...';
+    try {
+        const response = await fetch('/admin/api/tenants/' + hash + '/sync-messages', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        const data = await response.json();
+        if (response.ok) {
+            const errorInfo = data.errors > 0 ? '\\nErrors: ' + data.errors : '';
+            alert('Messages synced!\\nStored: ' + data.stored + '\\nDuplicates: ' + data.duplicates + errorInfo + '\\nChats: ' + data.chats_count);
+            htmx.trigger('#tenants-list', 'load');
+        } else {
+            alert(data.detail || 'Failed to sync messages');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
 """
     html = PAGE_TEMPLATE.format(
         title="Tenants",
@@ -1154,7 +1281,7 @@ async def admin_messages_page(
     </div>
     
     <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
-        <div id="messages-list" hx-get="/admin/fragments/messages?limit=50" hx-trigger="load" class="divide-y divide-gray-700">
+        <div id="messages-list" hx-get="/admin/fragments/messages?limit=50" hx-trigger="load, every 30s" class="divide-y divide-gray-700">
             <div class="p-6 text-center text-gray-500">Loading...</div>
         </div>
     </div>
@@ -1241,6 +1368,16 @@ function switchChatTab(chatJid, btn) {
     btn.classList.remove('bg-gray-700', 'text-gray-300');
     btn.classList.add('bg-whatsapp', 'text-white');
     searchMessages();
+}
+
+function toggleMediaExpand(img, uid) {
+    if (img.style.maxHeight === 'none' || img.dataset.expanded === 'true') {
+        img.style.maxHeight = '8rem';
+        img.dataset.expanded = 'false';
+    } else {
+        img.style.maxHeight = 'none';
+        img.dataset.expanded = 'true';
+    }
 }
 
 function onTenantFilterChange() {
@@ -1676,20 +1813,21 @@ async def admin_logs_page(
                 <option value="whatsapp.api">API</option>
                 <option value="whatsapp.tenant">Tenant</option>
                 <option value="whatsapp.database">Database</option>
+                <option value="frontend">Frontend</option>
             </select>
 
             <div class="flex items-center gap-1 border-l border-gray-600 pl-3">
+                <button onclick="toggleEventsFilter()" id="events-btn" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition flex items-center gap-1" title="Show Events Only">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    <span id="events-label">Events</span>
+                </button>
                 <button onclick="togglePause()" id="pause-btn" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition flex items-center gap-1" title="Pause/Resume">
                     <svg id="pause-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                     <span id="pause-label">Pause</span>
                 </button>
-                <button onclick="toggleAutoScroll()" id="scroll-btn" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition flex items-center gap-1" title="Auto-scroll">
+                <button onclick="toggleAutoScroll()" id="scroll-btn" class="px-3 py-2 bg-whatsapp/20 hover:bg-gray-600 text-white text-sm rounded-lg transition flex items-center gap-1" title="Auto-scroll">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path></svg>
                     <span id="scroll-label">Auto-scroll</span>
-                </button>
-                <button onclick="toggleTruncate()" id="truncate-btn" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition flex items-center gap-1" title="Truncate lines">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h8m-8 6h16"></path></svg>
-                    <span id="truncate-label">Truncate</span>
                 </button>
                 <button onclick="clearLogs()" class="px-3 py-2 bg-red-600/20 hover:bg-red-600/40 text-red-400 text-sm rounded-lg transition flex items-center gap-1" title="Clear all logs">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
@@ -1709,10 +1847,9 @@ async def admin_logs_page(
     script = """
 let logPaused = false;
 let autoScroll = true;
-let truncateEnabled = true;
-let truncateLimit = 200;
 let logEntryCount = 0;
 let logFilterTimeout = null;
+let logEntriesById = {};
 
 function getLevelColor(level) {
     const colors = {
@@ -1725,11 +1862,10 @@ function getLevelColor(level) {
     return colors[level] || 'text-gray-300';
 }
 
-function getSourceColor(source) {
-    if (source === 'bridge') return 'text-cyan-600';
-    if (source === 'webhook') return 'text-purple-600';
-    if (source === 'security') return 'text-orange-600';
-    return 'text-gray-600';
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 function formatTimestamp(ts) {
@@ -1738,18 +1874,6 @@ function formatTimestamp(ts) {
         const d = new Date(ts);
         return d.toLocaleTimeString('en-US', {hour12: false}) + '.' + String(d.getMilliseconds()).padStart(3, '0');
     } catch(e) { return ts; }
-}
-
-function truncate(text, limit) {
-    if (!truncateEnabled || !text) return text;
-    if (text.length <= limit) return text;
-    return text.substring(0, limit) + '...';
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
 }
 
 function appendLogEntry(entry) {
@@ -1768,26 +1892,25 @@ function appendLogEntry(entry) {
     if (sourceFilter && !entry.source.toLowerCase().includes(sourceFilter.toLowerCase())) return;
     if (searchVal && !entry.message.toLowerCase().includes(searchVal) && !entry.source.toLowerCase().includes(searchVal)) return;
 
+    logEntriesById[entry.id] = entry;
+
     const line = document.createElement('div');
-    line.className = 'flex hover:bg-gray-900/50 px-3 py-0.5 border-b border-gray-900/50';
+    line.className = 'hover:bg-gray-900/50 px-3 py-0.5 border-b border-gray-900/50 cursor-pointer';
     line.dataset.id = entry.id;
     line.dataset.type = entry.type;
     line.dataset.level = entry.level;
     line.dataset.source = entry.source;
+    line.onclick = function() { showEntryDetails(entry.id); };
 
-    let msg = escapeHtml(truncate(entry.message, truncateLimit));
+    let msg = escapeHtml(entry.message);
     if (searchVal) {
         const re = new RegExp('(' + searchVal.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&') + ')', 'gi');
         msg = msg.replace(re, '<mark class="bg-yellow-500/30 text-yellow-200 rounded px-0.5">$1</mark>');
     }
 
-    const tenantBadge = entry.tenant ? '<span class="text-gray-600 mx-1">[' + escapeHtml(entry.tenant) + ']</span>' : '';
-
     line.innerHTML =
-        '<span class="text-gray-600 select-none">' + formatTimestamp(entry.timestamp) + '</span> ' +
-        '<span class="' + getLevelColor(entry.level) + ' select-none w-12 inline-block">[' + entry.level.padEnd(7) + ']</span> ' +
-        '<span class="' + getSourceColor(entry.source) + ' select-none w-32 inline-block truncate">[' + escapeHtml(entry.source) + ']</span>' +
-        tenantBadge +
+        '<span class="text-gray-600 select-none inline-block" style="width:13ch">' + formatTimestamp(entry.timestamp) + ' </span>' +
+        '<span class="' + getLevelColor(entry.level) + ' select-none inline-block" style="width:9ch">[' + escapeHtml(entry.level) + ']</span> ' +
         '<span class="' + getLevelColor(entry.level) + '">' + msg + '</span>';
 
     stream.appendChild(line);
@@ -1800,7 +1923,9 @@ function appendLogEntry(entry) {
 
     const maxLines = 500;
     while (stream.children.length > maxLines) {
-        stream.removeChild(stream.firstChild);
+        const removed = stream.removeChild(stream.firstChild);
+        const removedId = parseInt(removed.dataset.id);
+        if (removedId) delete logEntriesById[removedId];
     }
 }
 
@@ -1822,6 +1947,7 @@ function loadInitialLogs() {
             const stream = document.getElementById('log-stream');
             stream.innerHTML = '';
             logEntryCount = 0;
+            logEntriesById = {};
             if (data.entries && data.entries.length > 0) {
                 data.entries.forEach(entry => appendLogEntry(entry));
             } else {
@@ -1840,6 +1966,29 @@ function debounceLogFilter() {
 }
 
 function filterLogs() {
+    syncEventsButton();
+    loadInitialLogs();
+}
+
+function syncEventsButton() {
+    const typeFilter = document.getElementById('log-type-filter').value;
+    const btn = document.getElementById('events-btn');
+    const label = document.getElementById('events-label');
+    if (typeFilter === 'event') {
+        label.textContent = 'All';
+        btn.classList.add('bg-cyan-600/30');
+        btn.classList.remove('bg-gray-700');
+    } else {
+        label.textContent = 'Events';
+        btn.classList.remove('bg-cyan-600/30');
+        btn.classList.add('bg-gray-700');
+    }
+}
+
+function toggleEventsFilter() {
+    const select = document.getElementById('log-type-filter');
+    select.value = select.value === 'event' ? '' : 'event';
+    syncEventsButton();
     loadInitialLogs();
 }
 
@@ -1868,30 +2017,26 @@ function toggleAutoScroll() {
     if (autoScroll) {
         label.textContent = 'Auto-scroll';
         btn.classList.remove('bg-yellow-600/30');
-        btn.classList.add('bg-gray-700');
+        btn.classList.add('bg-whatsapp/20');
         const stream = document.getElementById('log-stream');
         stream.scrollTop = stream.scrollHeight;
     } else {
         label.textContent = 'Scroll off';
         btn.classList.add('bg-yellow-600/30');
-        btn.classList.remove('bg-gray-700');
+        btn.classList.remove('bg-whatsapp/20');
     }
 }
 
-function toggleTruncate() {
-    truncateEnabled = !truncateEnabled;
-    const btn = document.getElementById('truncate-btn');
-    const label = document.getElementById('truncate-label');
-    if (truncateEnabled) {
-        label.textContent = 'Truncate';
-        btn.classList.remove('bg-yellow-600/30');
-        btn.classList.add('bg-gray-700');
-    } else {
-        label.textContent = 'Full';
-        btn.classList.add('bg-yellow-600/30');
-        btn.classList.remove('bg-gray-700');
-    }
-    loadInitialLogs();
+function showEntryDetails(entryId) {
+    const entry = logEntriesById[entryId];
+    if (!entry) return;
+    const jsonEl = document.getElementById('entry-detail-json');
+    jsonEl.textContent = JSON.stringify(entry, null, 2);
+    document.getElementById('entry-detail-modal').classList.remove('hidden');
+}
+
+function hideEntryDetails() {
+    document.getElementById('entry-detail-modal').classList.add('hidden');
 }
 
 function clearLogs() {
@@ -1901,19 +2046,35 @@ function clearLogs() {
         .then(data => {
             document.getElementById('log-stream').innerHTML = '<div class="p-4 text-center text-gray-600">Logs cleared</div>';
             logEntryCount = 0;
+            logEntriesById = {};
             document.getElementById('log-count').textContent = '0 entries';
         })
         .catch(() => {});
 }
 
 document.addEventListener('DOMContentLoaded', () => { loadInitialLogs(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideEntryDetails(); });
 """
 
     html = PAGE_TEMPLATE.format(
         title="Logs",
         sidebar=get_sidebar("logs"),
         content=content,
-        modals="",
+        modals="""
+<div id="entry-detail-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-50" onclick="if(event.target===this)hideEntryDetails()">
+    <div class="bg-gray-800 rounded-xl border border-gray-700 w-full max-w-2xl max-h-[80vh] flex flex-col mx-4">
+        <div class="flex items-center justify-between px-5 py-4 border-b border-gray-700">
+            <h3 class="text-lg font-semibold text-white">Entry Details</h3>
+            <button onclick="hideEntryDetails()" class="text-gray-400 hover:text-white transition">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+        </div>
+        <div class="overflow-y-auto p-5 flex-1">
+            <pre id="entry-detail-json" class="font-mono text-sm text-gray-300 whitespace-pre-wrap break-words"></pre>
+        </div>
+    </div>
+</div>
+""",
         script=script,
     )
     return HTMLResponse(content=html)
@@ -2032,7 +2193,7 @@ async def admin_tenant_details_page(
         
         <div id="tab-content-messages" class="tab-content">
             <div class="p-4 border-b border-gray-700 bg-gray-900/50">
-                <div class="flex gap-4">
+                <div class="flex gap-4 items-center">
                     <input type="text" id="send-to" placeholder="Recipient phone or JID" 
                            class="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white">
                     <input type="text" id="send-text" placeholder="Message..." 
@@ -2040,6 +2201,10 @@ async def admin_tenant_details_page(
                            onkeypress="if(event.key==='Enter')sendMessage()">
                     <button onclick="sendMessage()" class="px-6 py-2 bg-whatsapp hover:bg-whatsappDark text-white rounded-lg font-medium">
                         Send
+                    </button>
+                    <button onclick="syncTenantMessages()" class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium text-sm flex items-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                        Sync Messages
                     </button>
                 </div>
             </div>
@@ -2049,6 +2214,12 @@ async def admin_tenant_details_page(
         </div>
         
         <div id="tab-content-contacts" class="tab-content hidden">
+            <div class="p-4 border-b border-gray-700 bg-gray-900/50 flex justify-end">
+                <button onclick="syncTenantContacts()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium text-sm flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                    Sync Contacts
+                </button>
+            </div>
             <div id="tenant-contacts" hx-get="/admin/fragments/tenant-contacts/{tenant_hash}" hx-trigger="load" class="divide-y divide-gray-700">
                 <div class="p-6 text-center text-gray-500">Loading contacts...</div>
             </div>
@@ -2333,6 +2504,63 @@ async function loadTenantSettings() {
 }
 
 document.addEventListener('DOMContentLoaded', loadTenantSettings);
+
+async function syncTenantContacts() {
+    if (!confirm('Sync contacts from WhatsApp?')) return;
+    const btn = event.target;
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Syncing...';
+    try {
+        const response = await fetch('/admin/api/tenants/"""
+        + tenant_hash
+        + """/sync-contacts', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        const data = await response.json();
+        if (response.ok) {
+            showNotification('Contacts synced: ' + data.synced + ' synced, ' + data.failed + ' failed', 'success');
+            htmx.trigger('#tenant-contacts', 'load');
+        } else {
+            showNotification(data.detail || 'Failed to sync contacts', 'error');
+        }
+    } catch (e) {
+        showNotification('Error: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+async function syncTenantMessages() {
+    if (!confirm('Sync chat history from WhatsApp? This may take a while.')) return;
+    const btn = event.target;
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Syncing...';
+    try {
+        const response = await fetch('/admin/api/tenants/"""
+        + tenant_hash
+        + """/sync-messages', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        });
+        const data = await response.json();
+        if (response.ok) {
+            const errorInfo = data.errors > 0 ? ', ' + data.errors + ' errors' : '';
+            showNotification('Messages synced: ' + data.stored + ' stored, ' + data.duplicates + ' duplicates' + errorInfo, 'success');
+            htmx.trigger('#tenant-messages', 'load');
+        } else {
+            showNotification(data.detail || 'Failed to sync messages', 'error');
+        }
+    } catch (e) {
+        showNotification('Error: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
 """
     )
 
@@ -2557,6 +2785,8 @@ async def get_tenants_fragment(session_id: str = Depends(require_admin_session))
             </div>
             <div class="flex items-center gap-2" onclick="event.stopPropagation()">
                 {enable_disable_btn}
+                <button onclick="syncContacts('{t.api_key_hash}')" class="px-3 py-1 text-sm text-blue-400 hover:bg-blue-500/20 rounded transition" title="Sync contacts from WhatsApp">Sync Contacts</button>
+                <button onclick="syncMessages('{t.api_key_hash}')" class="px-3 py-1 text-sm text-green-400 hover:bg-green-500/20 rounded transition" title="Sync chat history from WhatsApp">Sync Messages</button>
                 <a href="/admin/tenants/{t.api_key_hash}" class="px-3 py-1 text-sm text-whatsapp hover:bg-whatsapp/10 rounded transition">
                     View
                 </a>
@@ -2638,23 +2868,33 @@ async def get_messages_fragment(
 
     tenants = {t.api_key_hash: t.name for t in tenant_manager.list_tenants()}
 
-    # Build contact name lookup for display
+    # Build contact name lookups for display
     contact_lookup = {}
+    sender_lookup = {}
     if messages:
         _tenant_set: set[str] = set()
         _chat_set: set[str] = set()
+        _sender_set: set[str] = set()
         for msg in messages:
             t = msg.get("tenant_hash")
             c = msg.get("chat_jid")
+            s = msg.get("from_jid")
             if t:
                 _tenant_set.add(str(t))
             if c:
                 _chat_set.add(str(c))
+            if s:
+                _sender_set.add(str(s))
         unique_tenants = list(_tenant_set)
         unique_chats = list(_chat_set)
+        unique_senders = list(_sender_set)
         if unique_tenants and unique_chats:
             contact_lookup = await db.get_contact_names_for_chats(
                 unique_tenants, unique_chats
+            )
+        if unique_tenants and unique_senders:
+            sender_lookup = await db.get_contact_names_for_senders(
+                unique_tenants, unique_senders
             )
 
     if not messages:
@@ -2673,6 +2913,97 @@ async def get_messages_fragment(
         count_header = f'<div class="px-6 py-3 bg-gray-700/50 text-sm text-gray-400 border-b border-gray-700">{total} message{"s" if total != 1 else ""}</div>'
 
     html_parts = [count_header]
+
+    def render_compact_media(msg):
+        mt = msg.get("msg_type") or "text"
+        raw_url = msg.get("media_url")
+        if not raw_url or mt == "text":
+            return ""
+        url = _resolve_media_url(raw_url, msg)
+        caption = msg.get("text") or ""
+        uid = (msg.get("message_id") or "")[:12]
+
+        if mt == "image":
+            escaped_caption = (
+                caption.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            )
+            caption_html = (
+                f'<div class="text-xs text-gray-400 mt-1">{escaped_caption}</div>'
+                if caption
+                else ""
+            )
+            return f'''<div class="mt-2">
+                <img src="{url}" alt="Image" class="max-w-full rounded max-h-32 object-cover cursor-pointer hover:opacity-90 transition" onclick="toggleMediaExpand(this, '{uid}')" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='flex'" />
+                <div class="hidden items-center gap-2 text-xs text-gray-500 p-2 bg-gray-600 rounded">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                    Image unavailable (expired)
+                </div>
+                {caption_html}
+            </div>'''
+        elif mt == "video":
+            escaped_caption = (
+                caption.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            )
+            caption_html = (
+                f'<div class="text-xs text-gray-400 mt-1">{escaped_caption}</div>'
+                if caption
+                else ""
+            )
+            return f'''<div class="mt-2 flex items-center gap-2 p-2 bg-gray-600 rounded">
+                <svg class="w-5 h-5 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                <div class="flex-1 min-w-0">
+                    <div class="text-xs text-gray-300">Video message</div>
+                    {caption_html}
+                </div>
+                <a href="{url}" target="_blank" class="text-xs text-blue-400 hover:text-blue-300 shrink-0">Play</a>
+            </div>'''
+        elif mt == "audio":
+            return f'''<div class="mt-2 flex items-center gap-2 p-2 bg-gray-600 rounded">
+                <svg class="w-5 h-5 text-purple-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path></svg>
+                <audio controls class="flex-1 h-8"><source src="{url}"></audio>
+            </div>'''
+        elif mt == "document":
+            fname = msg.get("filename") or "Document"
+            escaped_fname = (
+                fname.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            )
+            return f'''<div class="mt-2">
+                <a href="{url}" target="_blank" class="flex items-center gap-2 p-2 bg-gray-600 rounded hover:bg-gray-500 transition">
+                    <svg class="w-5 h-5 text-blue-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                    <span class="text-xs text-gray-300 truncate">{escaped_fname}</span>
+                    <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                </a>
+            </div>'''
+        elif mt == "location":
+            lat = msg.get("latitude")
+            lon = msg.get("longitude")
+            loc_name = msg.get("location_name") or ""
+            if lat and lon:
+                display = loc_name or f"{lat:.4f}, {lon:.4f}"
+                escaped_display = (
+                    display.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                )
+                maps_url = f"https://maps.google.com/?q={lat},{lon}"
+                return f'''<div class="mt-2">
+                    <a href="{maps_url}" target="_blank" class="flex items-center gap-2 p-2 bg-gray-600 rounded hover:bg-gray-500 transition">
+                        <svg class="w-5 h-5 text-yellow-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                        <span class="text-xs text-gray-300 truncate">{escaped_display}</span>
+                    </a>
+                </div>'''
+        elif mt == "sticker":
+            return f'''<div class="mt-2">
+                <img src="{url}" alt="Sticker" class="max-w-20 max-h-20 object-contain" onerror="this.style.display='none'" />
+            </div>'''
+        else:
+            return f'''<div class="mt-2">
+                <a href="{url}" target="_blank" class="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                    Download ({mt})
+                </a>
+            </div>'''
+
     for msg in messages:
         t_hash = msg.get("tenant_hash") or ""
         tenant_name = tenants.get(t_hash, "Unknown")
@@ -2703,7 +3034,7 @@ async def get_messages_fragment(
 
         text = raw_text[:100] + "..." if len(raw_text) > 100 else raw_text
 
-        if not text and msg_type != "text":
+        if not text and msg_type != "text" and not media_url:
             text = f"<i class='text-gray-500'>[{msg_type.title()} message]</i>"
 
         if search:
@@ -2725,27 +3056,24 @@ async def get_messages_fragment(
             timestamp = "-"
         is_group = msg.get("is_group") or False
 
-        # Build display name: push_name or from_jid stripped
+        # Build display name: push_name > sender_lookup > from_jid
         from_jid = msg.get("from_jid") or ""
         push_name = msg.get("push_name") or ""
         if push_name and push_name.strip():
             display_name = push_name.strip()
         else:
-            display_name = from_jid.split("@")[0] if "@" in from_jid else from_jid[:30]
+            sender_info = sender_lookup.get((t_hash, from_jid))
+            if sender_info and sender_info.get("name"):
+                display_name = sender_info["name"][:30]
+            else:
+                display_name = (
+                    from_jid.split("@")[0] if "@" in from_jid else from_jid[:30]
+                )
 
-        # Build context bracket: [GROUP_NAME] or [private]
+        # Build context bracket: Chat: group_name for groups
         chat_jid_val = msg.get("chat_jid") or ""
         contact_info = contact_lookup.get((t_hash, chat_jid_val))
-        if is_group:
-            group_name = "group"
-            if contact_info and contact_info.get("name"):
-                group_name = contact_info["name"][:30]
-            context_bracket = f'<span class="text-xs text-orange-400 font-medium">[{group_name}]</span>'
-        else:
-            context_bracket = '<span class="text-xs text-gray-500">[private]</span>'
 
-        # Reply button data attributes
-        msg_id_val = msg.get("message_id") or ""
         escaped_display = (
             display_name.replace("&", "&amp;")
             .replace("<", "&lt;")
@@ -2753,6 +3081,69 @@ async def get_messages_fragment(
             .replace("'", "&#39;")
             .replace('"', "&quot;")
         )
+
+        is_outbound = msg.get("direction") == "outbound"
+        if is_outbound:
+            recipient_name = ""
+            recipient_phone = (
+                chat_jid_val.split("@")[0] if "@" in chat_jid_val else chat_jid_val
+            )
+            if contact_info and contact_info.get("name"):
+                recipient_name = contact_info["name"][:30]
+            if recipient_name and recipient_name != recipient_phone:
+                escaped_recipient = (
+                    recipient_name.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                    .replace("'", "&#39;")
+                    .replace('"', "&quot;")
+                )
+                label_html = f'<span class="font-medium text-white">To: {escaped_recipient}</span>'
+            else:
+                escaped_phone = (
+                    recipient_phone.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                    .replace("'", "&#39;")
+                    .replace('"', "&quot;")
+                )
+                label_html = (
+                    f'<span class="font-medium text-white">To: {escaped_phone}</span>'
+                )
+        else:
+            label_html = (
+                f'<span class="font-medium text-white">From: {escaped_display}</span>'
+            )
+
+        escaped_chat_jid = (
+            chat_jid_val.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("'", "&#39;")
+            .replace('"', "&quot;")
+        )
+        phone_number = (
+            chat_jid_val.split("@")[0] if "@" in chat_jid_val else chat_jid_val
+        )
+        phone_display = (
+            phone_number.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("'", "&#39;")
+            .replace('"', "&quot;")
+        )
+        meta_info = f'<div class="text-xs text-gray-600 whitespace-nowrap">{phone_display}</div><div class="text-xs text-gray-600 whitespace-nowrap">{escaped_chat_jid}</div>'
+
+        if is_group:
+            group_name = "group"
+            if contact_info and contact_info.get("name"):
+                group_name = contact_info["name"][:30]
+            context_bracket = f'<span class="text-xs text-orange-400 font-medium">Chat: {group_name}</span>'
+        else:
+            context_bracket = '<span class="text-xs text-gray-500">Chat: private</span>'
+
+        # Reply button data attributes
+        msg_id_val = msg.get("message_id") or ""
         escaped_text_for_quote = (
             (raw_text[:80] if raw_text else "")
             .replace("&", "&amp;")
@@ -2761,8 +3152,6 @@ async def get_messages_fragment(
             .replace("'", "&#39;")
             .replace('"', "&quot;")
             .replace("\n", " ")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
         )
 
         html_parts.append(f"""
@@ -2770,12 +3159,13 @@ async def get_messages_fragment(
     <div class="flex items-start justify-between gap-4">
         <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2 flex-wrap">
-                <span class="font-medium text-white">{escaped_display}</span>
+                {label_html}
                 {context_bracket}
                 {direction_badge}
                 {msg_type_badge if msg_type_badge else f'<span class="text-xs text-gray-500">{msg_type}</span>'}
             </div>
             {"<div class='mt-2 text-sm text-gray-300 truncate'>" + text + "</div>" if text else ""}
+            {render_compact_media(msg)}
         </div>
         <div class="flex items-center gap-2 shrink-0">
             <button onclick="openReplyModal(this)" 
@@ -2789,6 +3179,7 @@ async def get_messages_fragment(
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"/></svg>
             </button>
             <div class="text-xs text-gray-500 whitespace-nowrap">{timestamp}</div>
+            {meta_info}
         </div>
     </div>
 </div>
@@ -3075,15 +3466,15 @@ async def get_chatwoot_tenants_fragment(
             </div>
         </div>
         <div class="flex items-center gap-2">
-            <button onclick="toggleChatwootForTenant('{tenant.api_key_hash[:16]}', {str(enabled).lower()})"
+            <button onclick="toggleChatwootForTenant('{tenant.api_key_hash}', {str(enabled).lower()})"
                     class="px-3 py-1 text-sm {"text-yellow-400 hover:bg-yellow-500/20" if enabled else "text-green-400 hover:bg-green-500/20"} rounded transition">
                 {"Disable" if enabled else "Enable"}
             </button>
-            <button onclick="showChatwootTenantConfig('{tenant.api_key_hash[:16]}')"
+            <button onclick="showChatwootTenantConfig('{tenant.api_key_hash}')"
                     class="px-3 py-1 text-sm text-gray-400 hover:text-white hover:bg-gray-600 rounded transition">
                 Configure
             </button>
-            {"<button onclick=\"syncChatwootContacts('" + tenant.api_key_hash[:16] + '\')" class="px-3 py-1 text-sm text-blue-400 hover:bg-blue-500/20 rounded transition">Sync Contacts</button>' + ("<button onclick=\"syncChatwootMessages('" + tenant.api_key_hash[:16] + '\')" class="px-3 py-1 text-sm text-green-400 hover:bg-green-500/20 rounded transition">Sync Messages</button>' if config.get("import_messages") else "") if enabled else ""}
+            {"<button onclick=\"syncChatwootContacts('" + tenant.api_key_hash + '\')" class="px-3 py-1 text-sm text-blue-400 hover:bg-blue-500/20 rounded transition">Sync Contacts</button>' + ("<button onclick=\"syncChatwootMessages('" + tenant.api_key_hash + '\')" class="px-3 py-1 text-sm text-green-400 hover:bg-green-500/20 rounded transition">Sync Messages</button>' if config.get("import_messages") else "") if enabled else ""}
         </div>
     </div>
 </div>
@@ -3156,6 +3547,29 @@ async def get_tenant_panel_fragment(
         messages, _ = await db.list_messages(tenant_hash=tenant_hash, limit=50)
         recent_chats = await db.get_recent_chats(tenant_hash, limit=20)
 
+    sender_lookup = {}
+    chat_lookup = {}
+    if db and messages:
+        _sender_set: set[str] = set()
+        _chat_set: set[str] = set()
+        for msg in messages:
+            s = msg.get("from_jid")
+            c = msg.get("chat_jid")
+            if s:
+                _sender_set.add(str(s))
+            if c:
+                _chat_set.add(str(c))
+        unique_senders = list(_sender_set)
+        unique_chats = list(_chat_set)
+        if unique_senders:
+            sender_lookup = await db.get_contact_names_for_senders(
+                [tenant_hash], unique_senders
+            )
+        if unique_chats:
+            chat_lookup = await db.get_contact_names_for_chats(
+                [tenant_hash], unique_chats
+            )
+
     messages_html = ""
     if messages:
         for msg in reversed(messages):
@@ -3169,30 +3583,52 @@ async def get_tenant_panel_fragment(
             else:
                 timestamp = ""
 
-            push_name = msg.get("push_name") or ""
-            if not push_name:
-                from_jid = msg.get("from_jid") or ""
-                phone = from_jid.split("@")[0] if "@" in from_jid else from_jid
-                push_name = phone if phone else "Unknown"
+            from_jid = msg.get("from_jid") or ""
+            push_name = (msg.get("push_name") or "").strip()
+            if push_name:
+                display_name = push_name
+            else:
+                sender_info = sender_lookup.get((tenant_hash, from_jid))
+                if sender_info and sender_info.get("name"):
+                    display_name = sender_info["name"][:30]
+                else:
+                    phone = from_jid.split("@")[0] if "@" in from_jid else from_jid
+                    display_name = phone if phone else "Unknown"
+
+            is_group = msg.get("is_group") or False
+            chat_jid_val = msg.get("chat_jid") or ""
+            chat_info = chat_lookup.get((tenant_hash, chat_jid_val))
+            if is_group:
+                group_name = "group"
+                if chat_info and chat_info.get("name"):
+                    group_name = chat_info["name"][:30]
+                chat_label = f"Chat: {group_name}"
+            else:
+                chat_label = None
 
             if is_inbound:
+                header = f"From: {display_name}"
+                if chat_label:
+                    header += f" | <span class='text-orange-400'>{chat_label}</span>"
                 messages_html += f"""
 <div class="flex gap-2 mb-3">
     <div class="max-w-[80%] bg-gray-700 rounded-2xl rounded-tl-sm px-4 py-2">
-        <div class='text-xs text-whatsapp mb-1'>{push_name}</div>
+        <div class='text-xs text-whatsapp mb-1'>{header}</div>
         <div class="text-sm text-gray-100">{text}</div>
         <div class="text-xs text-gray-400 mt-1 text-right">{timestamp}</div>
     </div>
 </div>"""
             else:
-                chat_jid = msg.get("chat_jid") or ""
                 recipient_phone = (
-                    chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
+                    chat_jid_val.split("@")[0] if "@" in chat_jid_val else chat_jid_val
                 )
-                recipient_name = push_name if push_name else recipient_phone
+                chat_contact = chat_lookup.get((tenant_hash, chat_jid_val))
+                recipient_name = display_name if display_name else recipient_phone
+                if chat_contact and chat_contact.get("name") and not push_name:
+                    recipient_name = chat_contact["name"][:30]
                 recipient_display = (
                     f"{recipient_name} ({recipient_phone})"
-                    if push_name
+                    if recipient_name != recipient_phone
                     else recipient_phone
                 )
 
@@ -3285,7 +3721,8 @@ async def get_tenant_messages_fragment(
 
     def render_media_content(msg):
         msg_type = msg.get("msg_type") or "text"
-        media_url = msg.get("media_url")
+        raw_media_url = msg.get("media_url")
+        media_url = _resolve_media_url(raw_media_url, msg) if raw_media_url else ""
         mimetype = msg.get("mimetype") or ""
         filename = msg.get("filename") or ""
         caption = msg.get("text") or ""
@@ -3405,6 +3842,29 @@ async def get_tenant_messages_fragment(
 
         return media_html
 
+    sender_lookup = {}
+    chat_lookup = {}
+    if messages:
+        _sender_set: set[str] = set()
+        _chat_set: set[str] = set()
+        for msg in messages:
+            s = msg.get("from_jid")
+            c = msg.get("chat_jid")
+            if s:
+                _sender_set.add(str(s))
+            if c:
+                _chat_set.add(str(c))
+        unique_senders = list(_sender_set)
+        unique_chats = list(_chat_set)
+        if unique_senders:
+            sender_lookup = await db.get_contact_names_for_senders(
+                [tenant_hash], unique_senders
+            )
+        if unique_chats:
+            chat_lookup = await db.get_contact_names_for_chats(
+                [tenant_hash], unique_chats
+            )
+
     html_parts = []
     for msg in reversed(messages):
         is_inbound = msg.get("direction") != "outbound"
@@ -3417,30 +3877,54 @@ async def get_tenant_messages_fragment(
         else:
             timestamp = ""
 
-        push_name = msg.get("push_name") or ""
-        if not push_name:
-            from_jid = msg.get("from_jid") or ""
-            phone = from_jid.split("@")[0] if "@" in from_jid else from_jid
-            push_name = phone if phone else "Unknown"
+        from_jid = msg.get("from_jid") or ""
+        push_name = (msg.get("push_name") or "").strip()
+        if push_name:
+            display_name = push_name
+        else:
+            sender_info = sender_lookup.get((tenant_hash, from_jid))
+            if sender_info and sender_info.get("name"):
+                display_name = sender_info["name"][:30]
+            else:
+                phone = from_jid.split("@")[0] if "@" in from_jid else from_jid
+                display_name = phone if phone else "Unknown"
+
+        is_group = msg.get("is_group") or False
+        chat_jid_val = msg.get("chat_jid") or ""
+        chat_info = chat_lookup.get((tenant_hash, chat_jid_val))
+        if is_group:
+            group_name = "group"
+            if chat_info and chat_info.get("name"):
+                group_name = chat_info["name"][:30]
+            chat_label = f"Chat: {group_name}"
+        else:
+            chat_label = None
 
         content_html = render_media_content(msg)
 
         if is_inbound:
+            header = f"From: {display_name}"
+            if chat_label:
+                header += f" | <span class='text-orange-400'>{chat_label}</span>"
             html_parts.append(f"""
 <div class="flex gap-2 mb-3 px-4">
     <div class="max-w-[80%] bg-gray-700 rounded-2xl rounded-tl-sm px-4 py-2">
-        <div class='text-xs text-whatsapp mb-1'>{push_name}</div>
+        <div class='text-xs text-whatsapp mb-1'>{header}</div>
         {content_html}
         <div class="text-xs text-gray-400 mt-1 text-right">{timestamp}</div>
     </div>
 </div>""")
         else:
-            chat_jid = msg.get("chat_jid") or ""
-            recipient_phone = chat_jid.split("@")[0] if "@" in chat_jid else chat_jid
-            recipient_name = push_name if push_name else recipient_phone
+            recipient_phone = (
+                chat_jid_val.split("@")[0] if "@" in chat_jid_val else chat_jid_val
+            )
+            chat_contact = chat_lookup.get((tenant_hash, chat_jid_val))
+            recipient_name = display_name if display_name else recipient_phone
+            if chat_contact and chat_contact.get("name") and not push_name:
+                recipient_name = chat_contact["name"][:30]
             recipient_display = (
                 f"{recipient_name} ({recipient_phone})"
-                if push_name
+                if recipient_name != recipient_phone
                 else recipient_phone
             )
 
@@ -3675,6 +4159,14 @@ async def create_tenant_api(
     session_id: str = Depends(require_admin_session),
 ):
     tenant, api_key = await tenant_manager.create_tenant(name)
+    admin_ws_manager.broadcast(
+        "tenant_list_changed",
+        {
+            "action": "created",
+            "tenant_hash": tenant.api_key_hash,
+            "tenant_name": tenant.name,
+        },
+    )
     return {
         "status": "created",
         "tenant": {
@@ -3732,7 +4224,17 @@ async def delete_tenant_api(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
+    tenant_name = tenant.name
     deleted = await tenant_manager.delete_tenant_by_hash(tenant_hash)
+    if deleted:
+        admin_ws_manager.broadcast(
+            "tenant_list_changed",
+            {
+                "action": "deleted",
+                "tenant_hash": tenant_hash,
+                "tenant_name": tenant_name,
+            },
+        )
     return {"status": "deleted" if deleted else "not_found"}
 
 
@@ -3745,11 +4247,19 @@ async def reconnect_tenant(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    if tenant.bridge:
-        await tenant.bridge.stop()
+    if tenant._restarting:
+        raise HTTPException(status_code=409, detail="Reconnect already in progress")
 
-    bridge = await tenant_manager.get_or_create_bridge(tenant)
-    await bridge.login()
+    try:
+        if tenant.bridge:
+            await tenant.bridge.stop()
+            tenant.bridge = None
+
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        await bridge.login()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reconnect failed: {str(e)}")
+
     return {"status": "reconnecting"}
 
 
@@ -3762,6 +4272,11 @@ async def clear_tenant_credentials(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
+    if tenant.bridge:
+        await tenant.bridge.stop()
+        tenant.bridge = None
+
+    tenant.connection_state = "disconnected"
     await tenant_manager.clear_creds(tenant)
     return {"status": "credentials_cleared"}
 
@@ -3791,6 +4306,14 @@ async def toggle_tenant_enabled(
         await tenant.bridge.stop()
         tenant.connection_state = "disconnected"
 
+    admin_ws_manager.broadcast(
+        "tenant_list_changed",
+        {
+            "action": "updated",
+            "tenant_hash": tenant_hash,
+            "tenant_name": tenant.name,
+        },
+    )
     return {"status": "updated", "enabled": request.enabled}
 
 
@@ -4029,6 +4552,66 @@ async def clear_logs_api(
     return {"status": "cleared", "removed": count}
 
 
+class FrontendError(BaseModel):
+    message: str
+    source: Optional[str] = None
+    lineno: Optional[int] = None
+    colno: Optional[int] = None
+    stack: Optional[str] = None
+    type: Optional[str] = None
+    url: Optional[str] = None
+    user_agent: Optional[str] = None
+
+
+@api_router.post("/frontend-errors", status_code=204)
+async def report_frontend_error(
+    error: FrontendError,
+    session_id: str = Depends(require_admin_session),
+):
+    from datetime import datetime, timezone
+    from ..main import log_buffer_inst
+    from ..admin.log_buffer import queue_broadcast
+
+    short_msg = error.message
+    if error.source and error.lineno:
+        short_msg = (
+            f"{error.message} ({error.source}:{error.lineno}:{error.colno or 0})"
+        )
+
+    entry = LogEntry(
+        id=0,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        type="event",
+        level="ERROR",
+        source="frontend.http",
+        message=short_msg,
+        details={
+            "error_type": error.type,
+            "source": error.source,
+            "lineno": error.lineno,
+            "colno": error.colno,
+            "stack": error.stack,
+            "url": error.url,
+            "user_agent": error.user_agent,
+        },
+    )
+    log_buffer_inst.add_sync(entry)
+
+    queue_broadcast(
+        "app_event",
+        {
+            "id": entry.id,
+            "timestamp": entry.timestamp,
+            "type": entry.type,
+            "level": entry.level,
+            "source": entry.source,
+            "message": entry.message,
+            "tenant": "",
+            "details": entry.details,
+        },
+    )
+
+
 # Bulk Operations
 
 
@@ -4059,8 +4642,19 @@ async def bulk_reconnect_tenants(
                 results.append({"hash": hash, "status": "not_found"})
                 continue
 
+            if tenant._restarting:
+                results.append(
+                    {
+                        "hash": hash,
+                        "status": "skipped",
+                        "reason": "reconnect already in progress",
+                    }
+                )
+                continue
+
             if tenant.bridge:
                 await tenant.bridge.stop()
+                tenant.bridge = None
 
             bridge = await tenant_manager.get_or_create_bridge(tenant)
             await bridge.login()
@@ -4096,6 +4690,7 @@ async def bulk_delete_tenants(
         except Exception as e:
             results.append({"hash": hash, "status": "error", "error": str(e)})
 
+    admin_ws_manager.broadcast("tenant_list_changed", {"action": "bulk_updated"})
     return {
         "processed": len(results),
         "deleted": sum(1 for r in results if r["status"] == "deleted"),
@@ -4133,6 +4728,64 @@ async def bulk_delete_messages(
         "deleted_ids": deleted,
         "failed_ids": failed,
     }
+
+
+@api_router.delete("/messages/all")
+async def delete_all_messages(
+    tenant_hash: str = Query(...),
+    session_id: str = Depends(require_admin_session),
+):
+    db = tenant_manager._db
+    if not db:
+        raise HTTPException(status_code=503, detail="Database not available")
+    try:
+        counts = await db.delete_tenant_messages(tenant_hash)
+        return {
+            "status": "ok",
+            "deleted_messages": counts["messages"],
+            "deleted_contacts": counts["contacts"],
+        }
+    except Exception as e:
+        logger.error(f"Failed to delete all messages for tenant {tenant_hash}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/sync-history/{tenant_hash}")
+async def admin_sync_history(
+    tenant_hash: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    session_id: str = Depends(require_admin_session),
+):
+    from ..utils.history import store_chat_messages
+
+    tenant = tenant_manager.get_tenant_by_hash(tenant_hash)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if not tenant_manager._db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        bridge = await tenant_manager.get_or_create_bridge(tenant)
+        result = await bridge.get_chats_with_messages(limit_per_chat=limit)
+        chats = result.get("chats", [])
+        total_messages = result.get("total_messages", 0)
+        stats = {"stored": 0, "duplicates": 0, "errors": 0}
+        if tenant.message_store and tenant_manager._db:
+            stats = await store_chat_messages(tenant, result, tenant_manager._db)
+        logger.info(
+            f"Admin sync for {tenant.name}: stored={stats['stored']}, duplicates={stats['duplicates']}"
+        )
+        return {
+            "status": "synced",
+            "chats_count": len(chats),
+            "total_messages": total_messages,
+            "stored": stats["stored"],
+            "duplicates": stats["duplicates"],
+            "errors": stats["errors"],
+        }
+    except Exception as e:
+        logger.error(f"Admin sync failed for {tenant_hash}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @api_router.post("/webhooks/bulk/test")
@@ -4286,7 +4939,7 @@ async def list_chatwoot_tenants_api(session_id: str = Depends(require_admin_sess
         config = getattr(tenant, "chatwoot_config", None) or {}
         result.append(
             {
-                "tenant_hash": tenant.api_key_hash[:16],
+                "tenant_hash": tenant.api_key_hash,
                 "tenant_name": tenant.name,
                 "chatwoot_enabled": config.get("enabled", False),
                 "chatwoot_url": config.get("url"),
@@ -4304,11 +4957,7 @@ async def set_tenant_chatwoot_config(
 ):
     from ..chatwoot import ChatwootConfig, ChatwootClient, ChatwootAPIError
 
-    tenant = None
-    for t in tenant_manager.list_tenants():
-        if t.api_key_hash == tenant_hash:
-            tenant = t
-            break
+    tenant = tenant_manager._tenants.get(tenant_hash)
 
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -4336,7 +4985,7 @@ async def set_tenant_chatwoot_config(
         client = ChatwootClient(cw_config)
         try:
             inbox_name = f"WhatsApp - {tenant.name}"
-            webhook_url = f"{settings.base_url.rstrip('/')}/webhooks/chatwoot/{tenant.api_key_hash[:16]}/outgoing"
+            webhook_url = f"{settings.base_url.rstrip('/')}/webhooks/chatwoot/{tenant.api_key_hash}/outgoing"
 
             existing_inbox_id = existing_config.get("inbox_id")
             if not existing_inbox_id:
@@ -4395,11 +5044,7 @@ async def sync_tenant_chatwoot_contacts(
 ):
     from ..chatwoot import ChatwootConfig, ChatwootClient
 
-    tenant = None
-    for t in tenant_manager.list_tenants():
-        if t.api_key_hash == tenant_hash:
-            tenant = t
-            break
+    tenant = tenant_manager._tenants.get(tenant_hash)
 
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -4474,11 +5119,7 @@ async def sync_tenant_chatwoot_messages(
 ):
     from ..chatwoot import ChatwootConfig, ChatwootSyncService
 
-    tenant = None
-    for t in tenant_manager.list_tenants():
-        if t.api_key_hash == tenant_hash:
-            tenant = t
-            break
+    tenant = tenant_manager._tenants.get(tenant_hash)
 
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -4527,16 +5168,116 @@ async def sync_tenant_chatwoot_messages(
         await sync_service.close()
 
 
+@api_router.post("/tenants/{tenant_hash}/sync-contacts")
+async def sync_tenant_contacts(
+    tenant_hash: str,
+    session_id: str = Depends(require_admin_session),
+):
+    from ..main import handle_contacts_sync
+
+    tenant = tenant_manager._tenants.get(tenant_hash)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    if not tenant.bridge or tenant.connection_state != "connected":
+        raise HTTPException(
+            status_code=400, detail="Tenant must be connected to sync contacts"
+        )
+
+    try:
+        result = await tenant.bridge.get_contacts()
+        contacts = result.get("contacts", [])
+
+        synced = 0
+        failed = 0
+        if tenant_manager._db and contacts:
+            from ..utils.phone import normalize_phone
+
+            for contact in contacts:
+                try:
+                    phone = contact.get("phone")
+                    jid = contact.get("jid")
+                    if not phone or not jid:
+                        continue
+                    normalized_phone = normalize_phone(phone)
+                    if not normalized_phone:
+                        continue
+                    await tenant_manager._db.upsert_contact(
+                        tenant_hash=tenant.api_key_hash,
+                        phone=normalized_phone,
+                        name=contact.get("name"),
+                        chat_jid=jid,
+                        is_group=contact.get("is_group", False),
+                    )
+                    synced += 1
+                except Exception:
+                    failed += 1
+
+            logger.info(
+                f"Manual contact sync for {tenant.name}: synced={synced}, failed={failed}"
+            )
+
+        return {"synced": synced, "failed": failed, "total": len(contacts)}
+    except Exception as e:
+        logger.error(f"Contact sync failed for {tenant.name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+
+@api_router.post("/tenants/{tenant_hash}/sync-messages")
+async def sync_tenant_messages(
+    tenant_hash: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    session_id: str = Depends(require_admin_session),
+):
+    from ..utils.history import store_chat_messages
+
+    tenant = tenant_manager._tenants.get(tenant_hash)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    if not tenant.bridge or tenant.connection_state != "connected":
+        raise HTTPException(
+            status_code=400, detail="Tenant must be connected to sync messages"
+        )
+
+    if not tenant.message_store:
+        raise HTTPException(
+            status_code=400, detail="Message store is not enabled for this tenant"
+        )
+
+    if not tenant_manager._db:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    try:
+        result = await tenant.bridge.fetch_chat_history(limit_per_chat=limit)
+        chats = result.get("chats", [])
+        total_messages = result.get("total_messages", 0)
+
+        stats = await store_chat_messages(tenant, result, tenant_manager._db)
+
+        logger.info(
+            f"Manual message sync for {tenant.name}: "
+            f"stored={stats['stored']}, duplicates={stats['duplicates']}, errors={stats['errors']}"
+        )
+
+        return {
+            "stored": stats["stored"],
+            "duplicates": stats["duplicates"],
+            "errors": stats["errors"],
+            "chats_count": len(chats),
+            "total_messages": total_messages,
+        }
+    except Exception as e:
+        logger.error(f"Message sync failed for {tenant.name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+
 @api_router.delete("/tenants/{tenant_hash}/chatwoot")
 async def disable_tenant_chatwoot(
     tenant_hash: str,
     session_id: str = Depends(require_admin_session),
 ):
-    tenant = None
-    for t in tenant_manager.list_tenants():
-        if t.api_key_hash == tenant_hash:
-            tenant = t
-            break
+    tenant = tenant_manager._tenants.get(tenant_hash)
 
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")

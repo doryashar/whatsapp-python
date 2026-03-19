@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     restart_window_seconds: int = Field(default=300, alias="RESTART_WINDOW_SECONDS")
     restart_cooldown_seconds: int = Field(default=10, alias="RESTART_COOLDOWN_SECONDS")
 
+    admin_log_buffer_size: int = Field(
+        default=2000, ge=1, alias="ADMIN_LOG_BUFFER_SIZE"
+    )
+
     cors_origins: list[str] = Field(default_factory=list, alias="CORS_ORIGINS")
     trusted_proxies: list[str] = Field(
         default_factory=lambda: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],

@@ -1,7 +1,7 @@
 import secrets
 import hashlib
 import hmac
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from typing import Optional
 from fastapi import Request, HTTPException, Cookie
 
@@ -15,6 +15,7 @@ logger = get_logger("whatsapp.admin")
 
 class AdminSession:
     SESSION_DURATION_HOURS = 24
+    REFRESH_THRESHOLD_HOURS = 4
 
     def __init__(self, db: Database):
         self._db = db
@@ -41,7 +42,7 @@ class AdminSession:
             await self._db.delete_admin_session(existing_session_id)
 
         session_id = secrets.token_urlsafe(32)
-        expires_at = datetime.now() + timedelta(hours=self.SESSION_DURATION_HOURS)
+        expires_at = datetime.now(UTC) + timedelta(hours=self.SESSION_DURATION_HOURS)
 
         ip = get_client_ip(request)
         await self._db.create_admin_session(
@@ -68,7 +69,29 @@ class AdminSession:
         return False
 
     async def _refresh_session(self, session_id: str) -> None:
-        new_expires = datetime.now() + timedelta(hours=self.SESSION_DURATION_HOURS)
+        from datetime import timedelta
+
+        session = await self._db.get_admin_session(session_id)
+        if not session:
+            return
+
+        expires_at = session.get("expires_at")
+        if expires_at is not None:
+            if isinstance(expires_at, str):
+                try:
+                    expires_at = datetime.fromisoformat(expires_at)
+                except (ValueError, TypeError):
+                    expires_at = None
+            if isinstance(expires_at, datetime):
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=UTC)
+                remaining_hours = (
+                    expires_at - datetime.now(UTC)
+                ).total_seconds() / 3600
+                if remaining_hours > self.REFRESH_THRESHOLD_HOURS:
+                    return
+
+        new_expires = datetime.now(UTC) + timedelta(hours=self.SESSION_DURATION_HOURS)
         await self._db.update_admin_session_expiry(session_id, new_expires)
 
     async def get_session(
@@ -114,5 +137,11 @@ async def require_admin_session(
         if request.headers.get("accept", "").startswith("text/html"):
             raise HTTPException(status_code=302, headers={"Location": "/admin/login"})
         raise HTTPException(status_code=401, detail="Session expired")
+
+    try:
+        admin_sess = AdminSession(db)
+        await admin_sess._refresh_session(session_id)
+    except Exception:
+        pass
 
     return session_id

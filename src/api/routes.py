@@ -1083,7 +1083,7 @@ async def sync_history(
     logger.info(f"Manual history sync: tenant={tenant.name}, limit={limit}")
     try:
         bridge = await tenant_manager.get_or_create_bridge(tenant)
-        result = await bridge.get_chats_with_messages(limit_per_chat=limit)
+        result = await bridge.fetch_chat_history(limit_per_chat=limit)
 
         chats = result.get("chats", [])
         total_messages = result.get("total_messages", 0)

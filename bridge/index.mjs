@@ -23,7 +23,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUTH_DIR = process.env.WHATSAPP_AUTH_DIR || path.join(__dirname, "..", "data", "auth");
 
 const AUTO_MARK_READ = process.env.AUTO_MARK_READ !== "false";
-const logger = pino({ level: process.env.DEBUG === "true" ? "debug" : "silent" });
+const logger = pino({ level: process.env.DEBUG === "true" ? "debug" : "silent" }, pino.destination(process.stderr));
 
 let sock = null;
 let currentQr = null;
@@ -36,7 +36,7 @@ let instanceSettings = {
   always_online: false,
   read_messages: false,
   read_status: false,
-  sync_full_history: false,
+  sync_full_history: process.env.SYNC_FULL_HISTORY !== "false",
 };
 
 const DISCONNECT_REASONS = {
@@ -214,6 +214,138 @@ async function exportAuthState() {
   return authData;
 }
 
+const chatStore = new Map();
+const contactStore = new Map();
+const messageStore = new Map();
+const MAX_MESSAGES_PER_CHAT = 100;
+
+function _upsertChat(chat) {
+  if (!chat || !chat.id) return;
+  chatStore.set(chat.id, { ...chat, name: chat.name || chat.subject || null });
+}
+
+function _upsertContact(contact) {
+  if (!contact || !contact.id) return;
+  contactStore.set(contact.id, contact);
+}
+
+function _upsertMessage(msg) {
+  if (!msg || !msg.key) return;
+  const jid = msg.key.remoteJid;
+  if (!jid) return;
+  let msgs = messageStore.get(jid);
+  if (!msgs) {
+    msgs = [];
+    messageStore.set(jid, msgs);
+  }
+  const existingIdx = msgs.findIndex(m => m.key.id === msg.key.id);
+  if (existingIdx >= 0) {
+    msgs[existingIdx] = msg;
+  } else {
+    msgs.push(msg);
+    if (msgs.length > MAX_MESSAGES_PER_CHAT) {
+      msgs.splice(0, msgs.length - MAX_MESSAGES_PER_CHAT);
+    }
+  }
+}
+
+function _getChatName(jid) {
+  if (!jid) return null;
+  const chat = chatStore.get(jid);
+  if (chat) {
+    return chat.name || chat.subject || null;
+  }
+  return null;
+}
+
+let syncPerformed = false;
+let syncTimeoutId = null;
+
+async function _fetchContactsFromStore() {
+  const contacts = [];
+  for (const [jid, contact] of contactStore) {
+    if (jid && !jid.endsWith('@broadcast') && jid !== 'status@broadcast') {
+      const isGroup = isJidGroup(jid);
+      const chatName = _getChatName(jid);
+      const name = contact.name || contact.notify || chatName || null;
+      contacts.push({
+        jid: jid,
+        name: name,
+        phone: isGroup ? null : jid.split('@')[0].split(':')[0],
+        is_group: isGroup,
+      });
+    }
+  }
+  return contacts;
+}
+
+async function _fetchChatsWithMessagesFromStore(limit = 50) {
+  const chats = [];
+  let totalMessages = 0;
+
+  for (const [jid, chat] of chatStore) {
+    if (jid.endsWith('@broadcast') || jid === 'status@broadcast') {
+      continue;
+    }
+
+    const isGroup = isJidGroup(jid);
+    const chatData = {
+      jid: jid,
+      name: chat.name || chat.subject || null,
+      is_group: isGroup,
+      unread_count: chat.unreadCount || 0,
+      timestamp: chat.conversationTimestamp || 0,
+      messages: [],
+    };
+
+    const chatMessages = messageStore.get(jid);
+    if (chatMessages && chatMessages.length > 0) {
+      const messagesToFetch = chatMessages.slice(-limit);
+      
+      for (const msg of messagesToFetch) {
+        if (!msg || !msg.key) continue;
+
+        const content = extractMessageContent(msg);
+        const messageData = {
+          id: msg.key.id,
+          from_me: msg.key.fromMe || false,
+          from: msg.key.fromMe ? selfInfo?.jid : (isGroup ? msg.key.participant : jid),
+          chat_jid: jid,
+          is_group: isGroup,
+          push_name: msg.pushName || null,
+          text: content.text || "",
+          type: content.type || "text",
+          timestamp: msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now(),
+        };
+
+        chatData.messages.push(messageData);
+        totalMessages++;
+      }
+    }
+
+    chats.push(chatData);
+  }
+
+  return { chats, totalMessages: totalMessages };
+}
+
+async function _performSyncAfterConnect() {
+  if (syncPerformed) return;
+  syncPerformed = true;
+
+  try {
+    const contacts = await _fetchContactsFromStore();
+    logger.info({ contactCount: contacts.length }, "Syncing contacts after connect");
+    sendEvent("contacts", { contacts });
+
+    const { chats, totalMessages } = await _fetchChatsWithMessagesFromStore(50);
+    logger.info({ chatCount: chats.length, messageCount: totalMessages }, "Syncing chats history after connect");
+    sendEvent("chats_history", { chats, total_messages: totalMessages });
+  } catch (err) {
+    logger.error({ err: err.message }, "Failed to perform sync after connect");
+  }
+}
+
 async function createSocket() {
   await ensureAuthDir();
 
@@ -231,10 +363,10 @@ async function createSocket() {
     logger,
     printQRInTerminal: false,
     browser: ["Chrome (Linux)", "Chrome", "120.0.0"],
-    syncFullHistory: false,
+    syncFullHistory: instanceSettings.sync_full_history,
     markOnlineOnConnect: true,
     connectTimeoutMs: 60_000,
-    keepAliveIntervalMs: 25_000,
+    keepAliveIntervalMs: 10_000,
     retryRequestDelayMs: 250,
     maxMsgRetryCount: 5,
     fireInitQueries: true,
@@ -312,35 +444,6 @@ async function createSocket() {
         should_reconnect: statusCode !== DisconnectReason.loggedOut,
       });
 
-      // Auto-reconnect for certain errors
-      const reconnectableCodes = [408, 409, 428, 429, 430, 431, 432, 436, 440, 500, 504, 515, 516, 518, 519, 520];
-      if (reconnectableCodes.includes(statusCode)) {
-        const delay = statusCode === 515 ? 5000 : 3000; // Longer delay for timeout
-        logger.info({ statusCode, delay }, "Scheduling auto-reconnect");
-        
-        // Clean up old socket first
-        try {
-          if (sock) {
-            sock.ev.removeAllListeners();
-            sock.ws?.close();
-            sock = null;
-          }
-        } catch (cleanupErr) {
-          logger.debug({ err: cleanupErr.message }, "Error during socket cleanup");
-        }
-        
-        setTimeout(async () => {
-          try {
-            logger.info("Attempting auto-reconnect...");
-            sendEvent("reconnecting", { reason: statusCode });
-            await createSocket();
-          } catch (err) {
-            logger.error({ err: err.message, stack: err.stack }, "Auto-reconnect failed");
-            sendEvent("reconnect_failed", { reason: statusCode, error: err.message });
-          }
-        }, delay);
-      }
-
       if (statusCode === DisconnectReason.loggedOut) {
         logger.info("Logged out, clearing auth directory");
         fs.rmSync(AUTH_DIR, { recursive: true, force: true });
@@ -361,96 +464,140 @@ async function createSocket() {
       logger.info({ jid: selfInfo.jid, phone: selfInfo.phone, isNewLogin }, "Connected successfully");
       sendEvent("connected", selfInfo);
 
-      // Fetch contacts after successful connection
-      setTimeout(async () => {
+      syncPerformed = false;
+      if (syncTimeoutId) {
+        clearTimeout(syncTimeoutId);
+        syncTimeoutId = null;
+      }
+
+      syncTimeoutId = setTimeout(() => {
+        logger.info("Sync fallback timer fired (messaging-history.set did not arrive)");
+        _performSyncAfterConnect();
+      }, 30_000);
+
+      (async () => {
         try {
-          const contacts = [];
-          
-          // Get all contacts from the store
-          if (sock.store && sock.store.contacts) {
-            for (const [jid, contact] of sock.store.contacts) {
-              if (jid && !jid.endsWith('@broadcast') && jid !== 'status@broadcast') {
-                const isGroup = isJidGroup(jid);
-                contacts.push({
-                  jid: jid,
-                  name: contact.name || contact.notify || null,
-                  phone: isGroup ? null : jid.split('@')[0].split(':')[0],
-                  is_group: isGroup,
-                });
-              }
-            }
+          const groups = await sock.groupFetchAllParticipating();
+          for (const [jid, metadata] of Object.entries(groups)) {
+            chatStore.set(jid, {
+              id: jid,
+              name: metadata.subject || null,
+              subject: metadata.subject || null,
+              isGroup: true,
+              participantCount: metadata.participants?.length || 0,
+            });
           }
-
-          logger.info({ contactCount: contacts.length }, "Fetched contacts on connection");
-          sendEvent("contacts", { contacts });
-
-          setTimeout(async () => {
-            try {
-              const chats = [];
-              let totalMessages = 0;
-
-              if (sock.store && sock.store.chats) {
-                for (const [jid, chat] of sock.store.chats) {
-                  if (jid.endsWith('@broadcast') || jid === 'status@broadcast') {
-                    continue;
-                  }
-
-                  const isGroup = isJidGroup(jid);
-                  const chatData = {
-                    jid: jid,
-                    name: chat.name || chat.subject || null,
-                    is_group: isGroup,
-                    unread_count: chat.unreadCount || 0,
-                    timestamp: chat.conversationTimestamp || 0,
-                    messages: [],
-                  };
-
-                  if (sock.store.messages) {
-                    const chatMessages = sock.store.messages.get(jid);
-                    if (chatMessages && chatMessages.length > 0) {
-                      const messagesToFetch = chatMessages.slice(-50);
-                      
-                      for (const msg of messagesToFetch) {
-                        if (!msg || !msg.key) continue;
-
-                        const content = extractMessageContent(msg);
-                        const messageData = {
-                          id: msg.key.id,
-                          from_me: msg.key.fromMe || false,
-                          from: msg.key.fromMe ? selfInfo?.jid : (isGroup ? msg.key.participant : jid),
-                          chat_jid: jid,
-                          is_group: isGroup,
-                          push_name: msg.pushName || null,
-                          text: content.text || "",
-                          type: content.type || "text",
-                          timestamp: msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now(),
-                        };
-
-                        chatData.messages.push(messageData);
-                        totalMessages++;
-                      }
-                    }
-                  }
-
-                  chats.push(chatData);
-                }
-              }
-
-              logger.info({ chatCount: chats.length, messageCount: totalMessages }, "Fetched chats history on connection");
-              sendEvent("chats_history", { chats, total_messages: totalMessages });
-            } catch (err) {
-              logger.error({ err: err.message }, "Failed to fetch chats history on connection");
-            }
-          }, 3000);
+          logger.info({ groupCount: Object.keys(groups).length }, "Group metadata fetched and stored");
         } catch (err) {
-          logger.error({ err: err.message }, "Failed to fetch contacts on connection");
+          logger.error({ err: err.message }, "Failed to fetch group metadata after connect");
         }
-      }, 2000);
+      })();
     }
 
     if (receivedPendingNotifications) {
       logger.debug("Received pending notifications - connection stable");
     }
+  });
+
+  sock.ev.on("chats.upsert", (chats) => {
+    for (const chat of chats) _upsertChat(chat);
+  });
+
+  sock.ev.on("chats.update", (updates) => {
+    for (const update of updates) {
+      const existing = chatStore.get(update.id);
+      if (existing) {
+        chatStore.set(update.id, { ...existing, ...update, name: update.name || update.subject || existing.name || null });
+      } else {
+        _upsertChat(update);
+      }
+    }
+  });
+
+  sock.ev.on("chats.delete", (deletedJids) => {
+    for (const jid of deletedJids) {
+      chatStore.delete(jid);
+    }
+  });
+
+  sock.ev.on("contacts.upsert", (contacts) => {
+    for (const contact of contacts) _upsertContact(contact);
+  });
+
+  sock.ev.on("contacts.update", (updates) => {
+    for (const update of updates) {
+      const existing = contactStore.get(update.id);
+      if (existing) {
+        contactStore.set(update.id, { ...existing, ...update });
+      } else {
+        _upsertContact(update);
+      }
+    }
+  });
+
+  sock.ev.on("groups.upsert", (groups) => {
+    for (const group of groups) {
+      chatStore.set(group.id, { ...group, name: group.subject || group.name || null });
+    }
+  });
+
+  sock.ev.on("groups.update", (updates) => {
+    for (const update of updates) {
+      const existing = chatStore.get(update.id);
+      if (existing) {
+        chatStore.set(update.id, { ...existing, ...update, name: update.subject || update.name || existing.name || null });
+      } else {
+        chatStore.set(update.id, { ...update, name: update.subject || update.name || null });
+      }
+    }
+  });
+
+  sock.ev.on("messages.upsert", ({ messages, type }) => {
+    if (type === "notify") {
+      for (const msg of messages) _upsertMessage(msg);
+    }
+  });
+
+  sock.ev.on("messages.update", (updates) => {
+    for (const update of updates) {
+      if (update.update?.status === 4) {
+        continue;
+      }
+    }
+  });
+
+  sock.ev.on("messaging-history.set", ({ chats, contacts, messages, isLatest }) => {
+    logger.info(
+      { chatCount: chats?.length, contactCount: contacts?.length, msgCount: messages?.length, isLatest },
+      "Received messaging-history.set - populating in-memory stores"
+    );
+
+    if (chats) {
+      for (const chat of chats) {
+        _upsertChat(chat);
+      }
+      logger.info({ chatStoreSize: chatStore.size }, "Chat store populated from messaging-history");
+    }
+
+    if (contacts) {
+      for (const contact of contacts) {
+        _upsertContact(contact);
+      }
+      logger.info({ contactStoreSize: contactStore.size }, "Contact store populated from messaging-history");
+    }
+
+    if (messages) {
+      for (const msg of messages) {
+        _upsertMessage(msg);
+      }
+      logger.info({ messageStoreSize: messageStore.size }, "Message store populated from messaging-history");
+    }
+
+    if (syncTimeoutId) {
+      clearTimeout(syncTimeoutId);
+      syncTimeoutId = null;
+    }
+    _performSyncAfterConnect();
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
@@ -467,12 +614,15 @@ async function createSocket() {
       const isGroup = isJidGroup(remoteJid);
       const content = extractMessageContent(msg);
 
+      const chatName = _getChatName(remoteJid) || msg.pushName || null;
+
       const eventData = {
         id: msg.key.id,
         from: isGroup ? msg.key.participant : remoteJid,
         chat_jid: remoteJid,
         is_group: isGroup,
         push_name: msg.pushName || null,
+        chat_name: chatName,
         text: content.text,
         type: content.type,
         timestamp: msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now(),
@@ -644,9 +794,15 @@ const methods = {
     const timestamp = typeof result?.messageTimestamp === 'object' 
       ? result.messageTimestamp.low 
       : (result?.messageTimestamp || Date.now());
+    const sentIsGroup = isJidGroup(jid);
+    const sentChatName = _getChatName(jid) || null;
+
     sendEvent("sent", { 
       message_id: messageId, 
       to: jid, 
+      chat_jid: jid,
+      is_group: sentIsGroup,
+      chat_name: sentChatName,
       text: text || "",
       type: msgType,
       timestamp: timestamp
@@ -751,18 +907,16 @@ const methods = {
     try {
       const contacts = [];
       
-      // Get all contacts from the store
-      if (sock.store && sock.store.contacts) {
-        for (const [jid, contact] of sock.store.contacts) {
-          if (jid && !jid.endsWith('@broadcast') && jid !== 'status@broadcast') {
-            const isGroup = isJidGroup(jid);
-            contacts.push({
-              jid: jid,
-              name: contact.name || contact.notify || null,
-              phone: isGroup ? null : jid.split('@')[0].split(':')[0],
-              is_group: isGroup,
-            });
-          }
+      for (const [jid, contact] of contactStore) {
+        if (jid && !jid.endsWith('@broadcast') && jid !== 'status@broadcast') {
+          const isGroup = isJidGroup(jid);
+          const chatName = _getChatName(jid);
+          contacts.push({
+            jid: jid,
+            name: contact.name || contact.notify || chatName || null,
+            phone: isGroup ? null : jid.split('@')[0].split(':')[0],
+            is_group: isGroup,
+          });
         }
       }
 
@@ -785,28 +939,102 @@ const methods = {
       const chats = [];
       let totalMessages = 0;
 
-      if (sock.store && sock.store.chats) {
-        for (const [jid, chat] of sock.store.chats) {
-          if (jid.endsWith('@broadcast') || jid === 'status@broadcast') {
-            continue;
+      for (const [jid, chat] of chatStore) {
+        if (jid.endsWith('@broadcast') || jid === 'status@broadcast') {
+          continue;
+        }
+
+        const isGroup = isJidGroup(jid);
+        const chatData = {
+          jid: jid,
+          name: chat.name || chat.subject || null,
+          is_group: isGroup,
+          unread_count: chat.unreadCount || 0,
+          timestamp: chat.conversationTimestamp || 0,
+          messages: [],
+        };
+
+        const chatMessages = messageStore.get(jid);
+        if (chatMessages && chatMessages.length > 0) {
+          const messagesToFetch = chatMessages.slice(-limit);
+          
+          for (const msg of messagesToFetch) {
+            if (!msg || !msg.key) continue;
+
+            const content = extractMessageContent(msg);
+            const messageData = {
+              id: msg.key.id,
+              from_me: msg.key.fromMe || false,
+              from: msg.key.fromMe ? selfInfo?.jid : (isGroup ? msg.key.participant : jid),
+              chat_jid: jid,
+              is_group: isGroup,
+              push_name: msg.pushName || null,
+              text: content.text || "",
+              type: content.type || "text",
+              timestamp: msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now(),
+            };
+
+            chatData.messages.push(messageData);
+            totalMessages++;
           }
+        }
 
-          const isGroup = isJidGroup(jid);
-          const chatData = {
-            jid: jid,
-            name: chat.name || chat.subject || null,
-            is_group: isGroup,
-            unread_count: chat.unreadCount || 0,
-            timestamp: chat.conversationTimestamp || 0,
-            messages: [],
-          };
+        chats.push(chatData);
+      }
 
-          if (sock.store.messages) {
-            const chatMessages = sock.store.messages.get(jid);
-            if (chatMessages && chatMessages.length > 0) {
-              const messagesToFetch = chatMessages.slice(-limit);
-              
-              for (const msg of messagesToFetch) {
+      logger.info({ chatCount: chats.length, messageCount: totalMessages }, "Fetched chats with messages");
+      return { chats, total_messages: totalMessages };
+    } catch (err) {
+      logger.error({ err: err.message }, "Failed to fetch chats with messages");
+      throw err;
+    }
+  },
+
+  async fetch_chat_history(params) {
+    const { limit_per_chat = 50, max_chats = 100 } = params || {};
+    const FETCH_DELAY_MS = 200;
+    const MAX_CONCURRENT = 5;
+
+    if (!sock || connectionState !== "connected") {
+      throw new Error("Not connected to WhatsApp");
+    }
+
+    try {
+      const chats = [];
+      let totalMessages = 0;
+
+      if (chatStore.size > 0) {
+        const chatEntries = [...chatStore.entries()]
+          .filter(([jid]) => !jid.endsWith('@broadcast') && jid !== 'status@broadcast')
+          .slice(0, max_chats);
+
+        for (let i = 0; i < chatEntries.length; i += MAX_CONCURRENT) {
+          const batch = chatEntries.slice(i, i + MAX_CONCURRENT);
+
+          const results = await Promise.allSettled(
+            batch.map(async ([jid, chat]) => {
+              const isGroup = isJidGroup(jid);
+              const chatData = {
+                jid: jid,
+                name: chat.name || chat.subject || null,
+                is_group: isGroup,
+                unread_count: chat.unreadCount || 0,
+                timestamp: chat.conversationTimestamp || 0,
+                messages: [],
+              };
+
+              let history = [];
+              try {
+                history = await sock.fetchChatHistory(jid, undefined, limit_per_chat);
+              } catch (fetchErr) {
+                logger.debug({ jid, err: fetchErr.message }, "fetchChatHistory failed, falling back to store");
+              }
+
+              const msgsToProcess = history.length > 0
+                ? history
+                : (messageStore.get(jid)?.slice(-limit_per_chat) || []);
+
+              for (const msg of msgsToProcess) {
                 if (!msg || !msg.key) continue;
 
                 const content = extractMessageContent(msg);
@@ -823,19 +1051,29 @@ const methods = {
                 };
 
                 chatData.messages.push(messageData);
-                totalMessages++;
               }
+
+              return chatData;
+            })
+          );
+
+          for (const result of results) {
+            if (result.status === 'fulfilled') {
+              chats.push(result.value);
+              totalMessages += result.value.messages.length;
             }
           }
 
-          chats.push(chatData);
+          if (i + MAX_CONCURRENT < chatEntries.length) {
+            await new Promise(resolve => setTimeout(resolve, FETCH_DELAY_MS));
+          }
         }
       }
 
-      logger.info({ chatCount: chats.length, messageCount: totalMessages }, "Fetched chats with messages");
+      logger.info({ chatCount: chats.length, messageCount: totalMessages }, "Fetched chat history (active fetch)");
       return { chats, total_messages: totalMessages };
     } catch (err) {
-      logger.error({ err: err.message }, "Failed to fetch chats with messages");
+      logger.error({ err: err.message }, "Failed to fetch chat history");
       throw err;
     }
   },
@@ -1040,29 +1278,27 @@ const methods = {
     try {
       const groups = [];
       
-      if (sock.store && sock.store.chats) {
-        for (const [jid, chat] of sock.store.chats) {
-          if (isJidGroup(jid)) {
-            const groupInfo = {
-              jid: jid,
-              name: chat.name || chat.subject || null,
-            };
-            
-            if (get_participants) {
-              try {
-                const metadata = await sock.groupMetadata(jid);
-                groupInfo.participants = metadata.participants.map(p => ({
-                  jid: p.id,
-                  admin: p.admin || null,
-                }));
-                groupInfo.size = metadata.size;
-              } catch (err) {
-                logger.debug({ err: err.message, jid }, "Could not fetch group metadata");
-              }
+      for (const [jid, chat] of chatStore) {
+        if (isJidGroup(jid)) {
+          const groupInfo = {
+            jid: jid,
+            name: chat.name || chat.subject || null,
+          };
+          
+          if (get_participants) {
+            try {
+              const metadata = await sock.groupMetadata(jid);
+              groupInfo.participants = metadata.participants.map(p => ({
+                jid: p.id,
+                admin: p.admin || null,
+              }));
+              groupInfo.size = metadata.size;
+            } catch (err) {
+              logger.debug({ err: err.message, jid }, "Could not fetch group metadata");
             }
-            
-            groups.push(groupInfo);
           }
+          
+          groups.push(groupInfo);
         }
       }
 
@@ -1774,11 +2010,9 @@ const methods = {
 
 async function getAllContactJids() {
   const jids = [];
-  if (sock.store && sock.store.contacts) {
-    for (const [jid] of sock.store.contacts) {
-      if (jid && !jid.endsWith("@broadcast") && jid !== "status@broadcast" && !isJidGroup(jid)) {
-        jids.push(jid);
-      }
+  for (const [jid] of contactStore) {
+    if (jid && !jid.endsWith("@broadcast") && jid !== "status@broadcast" && !isJidGroup(jid)) {
+      jids.push(jid);
     }
   }
   return jids;

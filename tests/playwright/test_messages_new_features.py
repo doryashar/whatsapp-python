@@ -29,7 +29,6 @@ def group_and_individual_messages(db_session, test_tenant):
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
     from src.tenant import tenant_manager
-    from src.store.messages import StoredMessage
 
     tenant_hash = test_tenant["hash"]
     loop = get_event_loop()
@@ -60,34 +59,40 @@ def group_and_individual_messages(db_session, test_tenant):
 
     msgs = []
     for i in range(3):
-        msg = StoredMessage(
-            id=f"pw_group_msg_{i}_{secrets.token_hex(4)}",
-            from_jid=f"5550001@s.whatsapp.net",
-            chat_jid=group_jid,
-            is_group=True,
-            push_name=f"Sender {i}",
-            text=f"Group message {i}",
-            msg_type="text",
-            timestamp=int(datetime.now().timestamp() * 1000) - (i * 60000),
-            direction="inbound" if i % 2 == 0 else "outbound",
+        msg_id = f"pw_group_msg_{i}_{secrets.token_hex(4)}"
+        loop.run_until_complete(
+            db_session.save_message(
+                tenant_hash=tenant_hash,
+                message_id=msg_id,
+                from_jid=f"5550001@s.whatsapp.net",
+                chat_jid=group_jid,
+                is_group=True,
+                push_name=f"Sender {i}",
+                text=f"Group message {i}",
+                msg_type="text",
+                timestamp=int(datetime.now().timestamp() * 1000) - (i * 60000),
+                direction="inbound" if i % 2 == 0 else "outbound",
+            )
         )
-        loop.run_until_complete(db_session.save_message(tenant_hash, msg))
-        msgs.append(msg)
+        msgs.append(msg_id)
 
     for i in range(3):
-        msg = StoredMessage(
-            id=f"pw_ind_msg_{i}_{secrets.token_hex(4)}",
-            from_jid=f"555{i:04d}@s.whatsapp.net",
-            chat_jid=f"555{i:04d}@s.whatsapp.net",
-            is_group=False,
-            push_name=f"Contact Individual {i}",
-            text=f"Private message {i}",
-            msg_type="text",
-            timestamp=int(datetime.now().timestamp() * 1000) - ((i + 3) * 60000),
-            direction="inbound",
+        msg_id = f"pw_ind_msg_{i}_{secrets.token_hex(4)}"
+        loop.run_until_complete(
+            db_session.save_message(
+                tenant_hash=tenant_hash,
+                message_id=msg_id,
+                from_jid=f"555{i:04d}@s.whatsapp.net",
+                chat_jid=f"555{i:04d}@s.whatsapp.net",
+                is_group=False,
+                push_name=f"Contact Individual {i}",
+                text=f"Private message {i}",
+                msg_type="text",
+                timestamp=int(datetime.now().timestamp() * 1000) - ((i + 3) * 60000),
+                direction="inbound",
+            )
         )
-        loop.run_until_complete(db_session.save_message(tenant_hash, msg))
-        msgs.append(msg)
+        msgs.append(msg_id)
 
     yield {
         "messages": msgs,
@@ -96,16 +101,30 @@ def group_and_individual_messages(db_session, test_tenant):
         "tenant_hash": tenant_hash,
     }
 
-    loop.run_until_complete(db_session.clear_tenant_messages(tenant_hash))
-
 
 class TestMessageDisplayFormat:
+    def test_from_label_shows_sender_name(
+        self, authenticated_page: Page, test_tenant, group_and_individual_messages
+    ):
+        authenticated_page.goto(f"{BASE_URL}/admin/messages")
+
+        from_label = authenticated_page.locator("text=From: Sender 0")
+        expect(from_label.first).to_be_visible(timeout=5000)
+
+    def test_from_label_shows_contact_name(
+        self, authenticated_page: Page, test_tenant, group_and_individual_messages
+    ):
+        authenticated_page.goto(f"{BASE_URL}/admin/messages")
+
+        from_label = authenticated_page.locator("text=From: Contact Individual 0")
+        expect(from_label.first).to_be_visible(timeout=5000)
+
     def test_private_label_visible(
         self, authenticated_page: Page, test_tenant, group_and_individual_messages
     ):
         authenticated_page.goto(f"{BASE_URL}/admin/messages")
 
-        label = authenticated_page.locator("text=[private]")
+        label = authenticated_page.locator("text=Chat: private")
         expect(label.first).to_be_visible(timeout=5000)
 
     def test_raw_jid_not_shown(
@@ -149,7 +168,7 @@ class TestMessageDisplayFormat:
         authenticated_page.goto(f"{BASE_URL}/admin/messages")
 
         group_label = authenticated_page.locator(
-            f"text=[{group_and_individual_messages['group_name']}]"
+            f"text=Chat: {group_and_individual_messages['group_name']}"
         )
         expect(group_label.first).to_be_visible(timeout=5000)
 
@@ -522,3 +541,174 @@ class TestRegression:
 
         assert search_input.input_value() == ""
         assert len(request_captured) > 0
+
+
+class TestOutboundLabelDisplay:
+    def test_outbound_shows_to_label(
+        self, authenticated_page: Page, test_tenant, group_and_individual_messages
+    ):
+        authenticated_page.goto(f"{BASE_URL}/admin/messages")
+        authenticated_page.wait_for_timeout(2000)
+
+        to_label = authenticated_page.locator("text=/^To:/")
+        expect(to_label.first).to_be_visible(timeout=5000)
+
+    def test_inbound_shows_from_label(
+        self, authenticated_page: Page, test_tenant, group_and_individual_messages
+    ):
+        authenticated_page.goto(f"{BASE_URL}/admin/messages")
+        authenticated_page.wait_for_timeout(2000)
+
+        from_label = authenticated_page.locator("text=/^From:/")
+        expect(from_label.first).to_be_visible(timeout=5000)
+
+    def test_to_label_shows_contact_name(
+        self, authenticated_page: Page, db_session, test_tenant
+    ):
+        tenant_hash = test_tenant["hash"]
+        loop = get_event_loop()
+
+        loop.run_until_complete(
+            db_session.upsert_contact(
+                tenant_hash=tenant_hash,
+                phone="5550001",
+                name="Outbound Contact",
+                chat_jid="5550001@s.whatsapp.net",
+                is_group=False,
+            )
+        )
+
+        loop.run_until_complete(
+            db_session.save_message(
+                tenant_hash=tenant_hash,
+                message_id=f"pw_outbound_{secrets.token_hex(8)}",
+                from_jid="9876543210@s.whatsapp.net",
+                chat_jid="5550001@s.whatsapp.net",
+                is_group=False,
+                push_name="",
+                text="Outbound to contact",
+                msg_type="text",
+                timestamp=int(datetime.now().timestamp() * 1000),
+                direction="outbound",
+            )
+        )
+
+        authenticated_page.goto(f"{BASE_URL}/admin/messages")
+        authenticated_page.wait_for_timeout(2000)
+
+        to_with_name = authenticated_page.locator("text=To: Outbound Contact")
+        expect(to_with_name.first).to_be_visible(timeout=5000)
+
+    def test_mixed_messages_correct_labels(
+        self, authenticated_page: Page, test_tenant, group_and_individual_messages
+    ):
+        authenticated_page.goto(f"{BASE_URL}/admin/messages")
+        authenticated_page.wait_for_timeout(2000)
+
+        from_labels = authenticated_page.locator("text=/^From:/")
+        to_labels = authenticated_page.locator("text=/^To:/")
+
+        expect(from_labels.first).to_be_visible(timeout=5000)
+        expect(to_labels.first).to_be_visible(timeout=5000)
+
+    def test_outbound_no_from_label_present(
+        self, authenticated_page: Page, db_session, test_tenant
+    ):
+        tenant_hash = test_tenant["hash"]
+        loop = get_event_loop()
+
+        loop.run_until_complete(
+            db_session.save_message(
+                tenant_hash=tenant_hash,
+                message_id=f"pw_only_out_{secrets.token_hex(8)}",
+                from_jid="9876543210@s.whatsapp.net",
+                chat_jid="5559999@s.whatsapp.net",
+                is_group=False,
+                push_name="",
+                text="Only outbound msg",
+                msg_type="text",
+                timestamp=int(datetime.now().timestamp() * 1000),
+                direction="outbound",
+            )
+        )
+
+        authenticated_page.goto(f"{BASE_URL}/admin/messages")
+        authenticated_page.wait_for_timeout(2000)
+
+        to_label = authenticated_page.locator("text=/^To:/")
+        expect(to_label.first).to_be_visible(timeout=5000)
+
+        msg_rows = authenticated_page.locator("#messages-list .p-4")
+        if msg_rows.count() > 0:
+            row_text = msg_rows.first.text_content()
+            assert "From:" not in (row_text or "")
+
+
+class TestPhoneAndChatIdMeta:
+    def test_phone_number_visible_beside_timestamp(
+        self, authenticated_page: Page, test_tenant, group_and_individual_messages
+    ):
+        authenticated_page.goto(f"{BASE_URL}/admin/messages")
+        authenticated_page.wait_for_timeout(2000)
+
+        msg_rows = authenticated_page.locator("#messages-list .p-4")
+        expect(msg_rows.first).to_be_visible(timeout=5000)
+
+        phone_numbers = authenticated_page.locator("#messages-list .text-gray-600")
+        expect(phone_numbers.first).to_be_visible(timeout=5000)
+
+    def test_chat_jid_visible_beside_phone(
+        self, authenticated_page: Page, test_tenant, group_and_individual_messages
+    ):
+        authenticated_page.goto(f"{BASE_URL}/admin/messages")
+        authenticated_page.wait_for_timeout(2000)
+
+        messages_area = authenticated_page.locator("#messages-list")
+        expect(messages_area.first).to_be_visible(timeout=5000)
+
+        jid_element = authenticated_page.locator(
+            "#messages-list >> text=/\\d+@s\\.whatsapp\\.net/"
+        )
+        expect(jid_element.first).to_be_visible(timeout=5000)
+
+    def test_meta_info_has_correct_styling(
+        self, authenticated_page: Page, test_tenant, group_and_individual_messages
+    ):
+        authenticated_page.goto(f"{BASE_URL}/admin/messages")
+        authenticated_page.wait_for_timeout(2000)
+
+        meta_elements = authenticated_page.locator("#messages-list .text-gray-600")
+        expect(meta_elements.first).to_have_class(
+            lambda cls: "text-gray-600" in cls and "whitespace-nowrap" in cls,
+            timeout=5000,
+        )
+
+    def test_all_messages_show_meta_info(
+        self, authenticated_page: Page, test_tenant, group_and_individual_messages
+    ):
+        authenticated_page.goto(f"{BASE_URL}/admin/messages")
+        authenticated_page.wait_for_timeout(2000)
+
+        msg_rows = authenticated_page.locator("#messages-list .p-4")
+        count = msg_rows.count()
+        if count == 0:
+            pytest.skip("No message rows found")
+
+        meta_divs = authenticated_page.locator("#messages-list .p-4 .text-gray-600")
+        meta_count = meta_divs.count()
+
+        assert meta_count >= count, (
+            f"Expected at least {count} meta elements, got {meta_count}"
+        )
+
+    def test_group_message_shows_group_jid(
+        self, authenticated_page: Page, test_tenant, group_and_individual_messages
+    ):
+        authenticated_page.goto(f"{BASE_URL}/admin/messages")
+        authenticated_page.wait_for_timeout(2000)
+
+        group_jid = group_and_individual_messages["group_jid"]
+        jid_element = authenticated_page.locator(
+            f"#messages-list >> text=/{group_jid.split('@')[0]}@g\\.us/"
+        )
+        expect(jid_element.first).to_be_visible(timeout=5000)

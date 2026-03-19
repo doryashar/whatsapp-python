@@ -730,6 +730,31 @@ class Database:
 
         return deleted_counts
 
+    async def delete_tenant_messages(self, tenant_hash: str) -> dict[str, int]:
+        deleted_counts = {"messages": 0, "contacts": 0}
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM messages WHERE tenant_hash = $1", tenant_hash
+                )
+                deleted_counts["messages"] = int(result.split()[-1])
+                result = await conn.execute(
+                    "DELETE FROM contacts WHERE tenant_hash = $1", tenant_hash
+                )
+                deleted_counts["contacts"] = int(result.split()[-1])
+        else:
+            cursor = await self._pool.execute(
+                "DELETE FROM messages WHERE tenant_hash = ?", (tenant_hash,)
+            )
+            deleted_counts["messages"] = cursor.rowcount
+            await self._pool.commit()
+            cursor = await self._pool.execute(
+                "DELETE FROM contacts WHERE tenant_hash = ?", (tenant_hash,)
+            )
+            deleted_counts["contacts"] = cursor.rowcount
+            await self._pool.commit()
+        return deleted_counts
+
     async def update_webhooks(self, api_key_hash: str, webhook_urls: list[str]) -> None:
         logger.debug(
             f"Updating webhooks for tenant: hash={api_key_hash[:16]}..., count={len(webhook_urls)}"
@@ -1042,6 +1067,7 @@ class Database:
         longitude: Optional[float] = None,
         location_name: Optional[str] = None,
         location_address: Optional[str] = None,
+        chat_name: Optional[str] = None,
     ) -> Optional[int]:
         from ..utils.phone import normalize_phone, extract_phone_from_jid
 
@@ -1108,15 +1134,42 @@ class Database:
         phone = extract_phone_from_jid(chat_jid)
         normalized_phone = normalize_phone(phone)
         if normalized_phone:
+            if is_group and chat_name:
+                contact_name = chat_name
+            elif not is_group and push_name and push_name.strip():
+                contact_name = push_name.strip()
+            else:
+                contact_name = None
             await self.upsert_contact(
                 tenant_hash=tenant_hash,
                 phone=normalized_phone,
-                name=push_name,
+                name=contact_name,
                 chat_jid=chat_jid,
                 is_group=is_group,
             )
 
         return msg_id
+
+    async def update_message_media_url(
+        self,
+        tenant_hash: str,
+        message_id: str,
+        media_url: str,
+    ) -> None:
+        if self._is_postgres:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE messages SET media_url = $1 WHERE tenant_hash = $2 AND message_id = $3",
+                    media_url,
+                    tenant_hash,
+                    message_id,
+                )
+        else:
+            await self._pool.execute(
+                "UPDATE messages SET media_url = ? WHERE tenant_hash = ? AND message_id = ?",
+                (media_url, tenant_hash, message_id),
+            )
+            await self._pool.commit()
 
     async def list_messages(
         self,
@@ -1727,12 +1780,12 @@ class Database:
                     for row in rows
                 ]
 
-    async def get_contact_names_for_chats(
+    async def _query_contact_names(
         self,
         tenant_hashes: list[str],
-        chat_jids: list[str],
+        jids: list[str],
     ) -> dict:
-        if not tenant_hashes or not chat_jids:
+        if not tenant_hashes or not jids:
             return {}
         if self._is_postgres:
             async with self._pool.acquire() as conn:
@@ -1743,7 +1796,7 @@ class Database:
                     WHERE tenant_hash = ANY($1) AND chat_jid = ANY($2)
                     """,
                     tenant_hashes,
-                    chat_jids,
+                    jids,
                 )
                 return {
                     (row["tenant_hash"], row["chat_jid"]): {
@@ -1754,19 +1807,33 @@ class Database:
                 }
         else:
             placeholders_tenant = ",".join("?" for _ in tenant_hashes)
-            placeholders_chat = ",".join("?" for _ in chat_jids)
+            placeholders_jid = ",".join("?" for _ in jids)
             query = f"""
                 SELECT tenant_hash, chat_jid, name, is_group
                 FROM contacts
-                WHERE tenant_hash IN ({placeholders_tenant}) AND chat_jid IN ({placeholders_chat})
+                WHERE tenant_hash IN ({placeholders_tenant}) AND chat_jid IN ({placeholders_jid})
             """
-            params = [*tenant_hashes, *chat_jids]
+            params = [*tenant_hashes, *jids]
             async with self._pool.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
                 return {
                     (row[0], row[1]): {"name": row[2], "is_group": bool(row[3])}
                     for row in rows
                 }
+
+    async def get_contact_names_for_chats(
+        self,
+        tenant_hashes: list[str],
+        chat_jids: list[str],
+    ) -> dict:
+        return await self._query_contact_names(tenant_hashes, chat_jids)
+
+    async def get_contact_names_for_senders(
+        self,
+        tenant_hashes: list[str],
+        sender_jids: list[str],
+    ) -> dict:
+        return await self._query_contact_names(tenant_hashes, sender_jids)
 
     async def save_webhook_attempt(
         self,

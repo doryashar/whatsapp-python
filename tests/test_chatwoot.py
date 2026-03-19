@@ -730,6 +730,143 @@ class TestGroupMessages:
         group_contact_name = f"{group_name} (GROUP)"
         assert group_contact_name == "Test Group (GROUP)"
 
+    @pytest.mark.asyncio
+    async def test_group_message_uses_chat_name_when_group_name_missing(
+        self, config, mock_tenant, mock_bridge
+    ):
+        integration = ChatwootIntegration(config, mock_tenant, mock_bridge)
+
+        with patch.object(
+            integration._client,
+            "find_or_create_contact",
+            new_callable=AsyncMock,
+            return_value=ChatwootContact(
+                id=1, phone_number="+120363123456", name="My Family (GROUP)"
+            ),
+        ) as mock_contact:
+            with patch.object(
+                integration._client,
+                "get_or_create_conversation",
+                new_callable=AsyncMock,
+                return_value=ChatwootConversation(
+                    id=1, account_id=1, inbox_id=1, contact_id=1, status="open"
+                ),
+            ):
+                with patch.object(
+                    integration._client,
+                    "create_message",
+                    new_callable=AsyncMock,
+                    return_value=ChatwootMessage(
+                        id=1, content="Hello", conversation_id=1, account_id=1
+                    ),
+                ):
+                    result = await integration.handle_message(
+                        {
+                            "from": "1234567890@s.whatsapp.net",
+                            "chat_jid": "120363123456@g.us",
+                            "is_group": True,
+                            "chat_name": "My Family",
+                            "text": "Hello",
+                        }
+                    )
+
+                    assert result is True
+                    mock_contact.assert_called_once()
+                    call_kwargs = mock_contact.call_args[1]
+                    assert "My Family (GROUP)" == call_kwargs["name"]
+
+    @pytest.mark.asyncio
+    async def test_group_message_prefers_group_name_over_chat_name(
+        self, config, mock_tenant, mock_bridge
+    ):
+        integration = ChatwootIntegration(config, mock_tenant, mock_bridge)
+
+        mock_contact = patch.object(
+            integration._client,
+            "find_or_create_contact",
+            new_callable=AsyncMock,
+            return_value=ChatwootContact(
+                id=1, phone_number="+120363123456", name="Priority Group (GROUP)"
+            ),
+        )
+        mock_conversation = patch.object(
+            integration._client,
+            "get_or_create_conversation",
+            new_callable=AsyncMock,
+            return_value=ChatwootConversation(
+                id=1, account_id=1, inbox_id=1, contact_id=1, status="open"
+            ),
+        )
+        mock_message = patch.object(
+            integration._client,
+            "create_message",
+            new_callable=AsyncMock,
+            return_value=ChatwootMessage(
+                id=1, content="Hello", conversation_id=1, account_id=1
+            ),
+        )
+
+        with mock_contact as contact_mock, mock_conversation, mock_message:
+            result = await integration.handle_message(
+                {
+                    "from": "1234567890@s.whatsapp.net",
+                    "chat_jid": "120363123456@g.us",
+                    "is_group": True,
+                    "group_name": "Priority Group",
+                    "chat_name": "Old Group",
+                    "text": "Hello",
+                }
+            )
+
+            assert result is True
+            call_kwargs = contact_mock.call_args[1]
+            assert "Priority Group (GROUP)" == call_kwargs["name"]
+
+    @pytest.mark.asyncio
+    async def test_group_message_falls_back_to_phone_when_no_names(
+        self, config, mock_tenant, mock_bridge
+    ):
+        integration = ChatwootIntegration(config, mock_tenant, mock_bridge)
+
+        mock_contact = patch.object(
+            integration._client,
+            "find_or_create_contact",
+            new_callable=AsyncMock,
+            return_value=ChatwootContact(
+                id=1, phone_number="+120363123456", name="+120363123456 (GROUP)"
+            ),
+        )
+        mock_conversation = patch.object(
+            integration._client,
+            "get_or_create_conversation",
+            new_callable=AsyncMock,
+            return_value=ChatwootConversation(
+                id=1, account_id=1, inbox_id=1, contact_id=1, status="open"
+            ),
+        )
+        mock_message = patch.object(
+            integration._client,
+            "create_message",
+            new_callable=AsyncMock,
+            return_value=ChatwootMessage(
+                id=1, content="Hello", conversation_id=1, account_id=1
+            ),
+        )
+
+        with mock_contact as contact_mock, mock_conversation, mock_message:
+            result = await integration.handle_message(
+                {
+                    "from": "1234567890@s.whatsapp.net",
+                    "chat_jid": "120363123456@g.us",
+                    "is_group": True,
+                    "text": "Hello",
+                }
+            )
+
+            assert result is True
+            call_kwargs = contact_mock.call_args[1]
+            assert "+120363123456 (GROUP)" == call_kwargs["name"]
+
 
 class TestWAToCWMarkdownConversion:
     @pytest.fixture
@@ -878,7 +1015,48 @@ class TestMessageEditHandling:
             },
             is_edited=True,
         )
-        assert result == "\n\n*Edited:*\nEdited message"
+        assert result == "Original message\n\n*Edited to:*\nEdited message"
+
+    def test_prepare_message_content_edited_no_edited_text(
+        self, config, mock_tenant, mock_bridge
+    ):
+        integration = ChatwootIntegration(config, mock_tenant, mock_bridge)
+        result = integration._prepare_message_content(
+            {
+                "type": "text",
+                "text": "Original message",
+                "is_edited": True,
+            },
+            is_edited=True,
+        )
+        assert result == "Original message"
+
+    def test_prepare_message_content_edited_same_text(
+        self, config, mock_tenant, mock_bridge
+    ):
+        integration = ChatwootIntegration(config, mock_tenant, mock_bridge)
+        result = integration._prepare_message_content(
+            {
+                "type": "text",
+                "text": "Same message",
+                "is_edited": True,
+                "edited_text": "Same message",
+            },
+            is_edited=True,
+        )
+        assert result == "Same message"
+
+    def test_prepare_message_content_not_edited(self, config, mock_tenant, mock_bridge):
+        integration = ChatwootIntegration(config, mock_tenant, mock_bridge)
+        result = integration._prepare_message_content(
+            {
+                "type": "text",
+                "text": "Normal message",
+            },
+            is_edited=False,
+        )
+        assert result == "Normal message"
+        assert "*Edited to:*" not in result
 
 
 class TestMessageDeletedHandler:

@@ -1,6 +1,8 @@
 import os
 import hashlib
 import secrets
+import tempfile
+from pathlib import Path
 from typing import Generator
 from unittest.mock import patch
 from datetime import datetime
@@ -24,13 +26,16 @@ BASE_URL = os.environ.get("TEST_BASE_URL", "http://localhost:8080")
 
 def get_event_loop():
     import asyncio
+    import nest_asyncio
 
     try:
         loop = asyncio.get_running_loop()
+        nest_asyncio.apply(loop)
+        return loop
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    return loop
+        return loop
 
 
 @pytest.fixture
@@ -40,9 +45,15 @@ def db_session():
     rate_limiter._minute_requests.clear()
     rate_limiter._hour_requests.clear()
 
-    db = Database(":memory:")
+    shared_data_dir = os.environ.get("PW_SHARED_DATA_DIR", "")
+    if shared_data_dir:
+        tmp_dir = shared_data_dir
+        db = Database("", Path(tmp_dir))
+    else:
+        tmp_dir = tempfile.mkdtemp()
+        db = Database("sqlite:///:memory:", Path(tmp_dir))
     loop = get_event_loop()
-    loop.run_until_complete(db.init())
+    loop.run_until_complete(db.connect())
     yield db
 
     rate_limiter._blocked_ips.clear()
@@ -133,23 +144,24 @@ def test_messages(db_session: Database, test_tenant: dict):
     loop = get_event_loop()
 
     for i in range(5):
-        msg = StoredMessage(
-            id=f"msg_{i}_{secrets.token_hex(8)}",
-            from_jid=f"123456789{i}@s.whatsapp.net",
-            chat_jid=f"123456789{i}@s.whatsapp.net",
-            is_group=False,
-            push_name=f"Contact {i}",
-            text=f"Test message {i}",
-            msg_type="text",
-            timestamp=int(datetime.now().timestamp() * 1000) - (i * 60000),
-            direction="inbound" if i % 2 == 0 else "outbound",
+        msg_id = f"msg_{i}_{secrets.token_hex(8)}"
+        loop.run_until_complete(
+            db_session.save_message(
+                tenant_hash=tenant_hash,
+                message_id=msg_id,
+                from_jid=f"123456789{i}@s.whatsapp.net",
+                chat_jid=f"123456789{i}@s.whatsapp.net",
+                is_group=False,
+                push_name=f"Contact {i}",
+                text=f"Test message {i}",
+                msg_type="text",
+                timestamp=int(datetime.now().timestamp() * 1000) - (i * 60000),
+                direction="inbound" if i % 2 == 0 else "outbound",
+            )
         )
-        loop.run_until_complete(db_session.save_message(tenant_hash, msg))
-        messages.append(msg)
+        messages.append({"id": msg_id, "from": f"123456789{i}@s.whatsapp.net"})
 
     yield messages
-
-    loop.run_until_complete(db_session.clear_tenant_messages(tenant_hash))
 
 
 @pytest.fixture
@@ -171,29 +183,28 @@ def webhook_test_tenant(test_tenant: dict):
 def create_admin_session_sync(db: Database) -> str:
     session_id = secrets.token_urlsafe(32)
     loop = get_event_loop()
+    from datetime import timedelta
+
+    expires_at = datetime.now() + timedelta(hours=24)
     loop.run_until_complete(
-        db.execute(
-            """INSERT INTO admin_sessions (session_id, created_at, expires_at, ip_address, user_agent)
-               VALUES ($1, NOW(), NOW() + INTERVAL '24 hours', '127.0.0.1', 'Playwright')""",
-            session_id,
+        db.create_admin_session(
+            session_id=session_id,
+            expires_at=expires_at,
+            user_agent="Playwright",
+            ip_address="127.0.0.1",
         )
     )
     return session_id
 
 
 @pytest.fixture
-def authenticated_page(page: Page, db_session: Database):
-    session_id = create_admin_session_sync(db_session)
-    page.context.add_cookies(
-        [
-            {
-                "name": "admin_session",
-                "value": session_id,
-                "domain": "localhost",
-                "path": "/",
-            }
-        ]
-    )
+def authenticated_page(page: Page):
+    admin_password = os.environ.get("ADMIN_PASSWORD", ADMIN_PASSWORD)
+    page.goto(f"{BASE_URL}/admin/login")
+    page.wait_for_selector('input[name="password"]', timeout=10000)
+    page.fill('input[name="password"]', admin_password)
+    page.click('button[type="submit"]')
+    page.wait_for_url("**/dashboard**", timeout=10000)
     yield page
 
 

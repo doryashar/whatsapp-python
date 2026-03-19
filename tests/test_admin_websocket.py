@@ -40,6 +40,7 @@ def mock_db():
             "ip_address": "127.0.0.1",
         }
     )
+    db.update_admin_session_expiry = AsyncMock(return_value=None)
     return db
 
 

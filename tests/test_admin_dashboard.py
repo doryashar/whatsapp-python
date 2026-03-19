@@ -89,8 +89,10 @@ async def test_admin_login_failure(setup_tenant_manager):
         response = await client.post(
             "/admin/login",
             data={"password": "wrong-password"},
+            follow_redirects=False,
         )
-        assert response.status_code == 401
+        assert response.status_code == 302
+        assert "/admin/login?error=1" in response.headers["location"]
 
 
 @pytest.mark.asyncio
@@ -240,8 +242,12 @@ class TestAdminSessionRefresh:
     @pytest.mark.asyncio
     async def test_validate_session_refreshes_expiry(self, mock_db):
         from src.admin.auth import AdminSession
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, UTC
 
+        near_expiry = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        mock_db.get_admin_session = AsyncMock(
+            return_value={"id": "test-session-id", "expires_at": near_expiry}
+        )
         mock_db.update_admin_session_expiry = AsyncMock()
         session = AdminSession(mock_db)
 
@@ -276,7 +282,7 @@ class TestAdminSessionRefresh:
     async def test_create_session_uses_duration_constant(self, mock_db):
         from src.admin.auth import AdminSession
         from unittest.mock import MagicMock
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, UTC
 
         session = AdminSession(mock_db)
         request = MagicMock()
@@ -288,7 +294,7 @@ class TestAdminSessionRefresh:
         call_args = mock_db.create_admin_session.call_args
         expires_at = call_args.kwargs["expires_at"]
         expected_delta = timedelta(hours=AdminSession.SESSION_DURATION_HOURS)
-        actual_delta = expires_at - datetime.now()
+        actual_delta = expires_at - datetime.now(UTC)
         tolerance = timedelta(seconds=5)
         assert abs(expected_delta - actual_delta) < tolerance
 

@@ -74,7 +74,22 @@ def media_messages(db_session: Database, media_tenant: dict):
         media_url="https://example.com/test_image.jpg",
         mimetype="image/jpeg",
     )
-    loop.run_until_complete(db_session.save_message(tenant_hash, image_msg))
+    loop.run_until_complete(
+        db_session.save_message(
+            tenant_hash=tenant_hash,
+            message_id=image_msg.id,
+            from_jid=image_msg.from_jid,
+            chat_jid=image_msg.chat_jid,
+            is_group=image_msg.is_group,
+            push_name=image_msg.push_name,
+            text=image_msg.text,
+            msg_type=image_msg.msg_type,
+            timestamp=image_msg.timestamp,
+            direction=image_msg.direction,
+            media_url=image_msg.media_url,
+            mimetype=image_msg.mimetype,
+        )
+    )
     messages.append(image_msg)
 
     video_msg = StoredMessage(
@@ -90,7 +105,22 @@ def media_messages(db_session: Database, media_tenant: dict):
         media_url="https://example.com/test_video.mp4",
         mimetype="video/mp4",
     )
-    loop.run_until_complete(db_session.save_message(tenant_hash, video_msg))
+    loop.run_until_complete(
+        db_session.save_message(
+            tenant_hash=tenant_hash,
+            message_id=video_msg.id,
+            from_jid=video_msg.from_jid,
+            chat_jid=video_msg.chat_jid,
+            is_group=video_msg.is_group,
+            push_name=video_msg.push_name,
+            text=video_msg.text,
+            msg_type=video_msg.msg_type,
+            timestamp=video_msg.timestamp,
+            direction=video_msg.direction,
+            media_url=video_msg.media_url,
+            mimetype=video_msg.mimetype,
+        )
+    )
     messages.append(video_msg)
 
     audio_msg = StoredMessage(
@@ -106,7 +136,22 @@ def media_messages(db_session: Database, media_tenant: dict):
         media_url="https://example.com/test_audio.ogg",
         mimetype="audio/ogg",
     )
-    loop.run_until_complete(db_session.save_message(tenant_hash, audio_msg))
+    loop.run_until_complete(
+        db_session.save_message(
+            tenant_hash=tenant_hash,
+            message_id=audio_msg.id,
+            from_jid=audio_msg.from_jid,
+            chat_jid=audio_msg.chat_jid,
+            is_group=audio_msg.is_group,
+            push_name=audio_msg.push_name,
+            text=audio_msg.text or "",
+            msg_type=audio_msg.msg_type,
+            timestamp=audio_msg.timestamp,
+            direction=audio_msg.direction,
+            media_url=audio_msg.media_url,
+            mimetype=audio_msg.mimetype,
+        )
+    )
     messages.append(audio_msg)
 
     doc_msg = StoredMessage(
@@ -123,7 +168,23 @@ def media_messages(db_session: Database, media_tenant: dict):
         mimetype="application/pdf",
         filename="Report_2024.pdf",
     )
-    loop.run_until_complete(db_session.save_message(tenant_hash, doc_msg))
+    loop.run_until_complete(
+        db_session.save_message(
+            tenant_hash=tenant_hash,
+            message_id=doc_msg.id,
+            from_jid=doc_msg.from_jid,
+            chat_jid=doc_msg.chat_jid,
+            is_group=doc_msg.is_group,
+            push_name=doc_msg.push_name,
+            text=doc_msg.text,
+            msg_type=doc_msg.msg_type,
+            timestamp=doc_msg.timestamp,
+            direction=doc_msg.direction,
+            media_url=doc_msg.media_url,
+            mimetype=doc_msg.mimetype,
+            filename=doc_msg.filename,
+        )
+    )
     messages.append(doc_msg)
 
     loc_msg = StoredMessage(
@@ -141,7 +202,24 @@ def media_messages(db_session: Database, media_tenant: dict):
         location_name="San Francisco",
         location_address="California St",
     )
-    loop.run_until_complete(db_session.save_message(tenant_hash, loc_msg))
+    loop.run_until_complete(
+        db_session.save_message(
+            tenant_hash=tenant_hash,
+            message_id=loc_msg.id,
+            from_jid=loc_msg.from_jid,
+            chat_jid=loc_msg.chat_jid,
+            is_group=loc_msg.is_group,
+            push_name=loc_msg.push_name,
+            text=loc_msg.text or "",
+            msg_type=loc_msg.msg_type,
+            timestamp=loc_msg.timestamp,
+            direction=loc_msg.direction,
+            latitude=loc_msg.latitude,
+            longitude=loc_msg.longitude,
+            location_name=loc_msg.location_name,
+            location_address=loc_msg.location_address,
+        )
+    )
     messages.append(loc_msg)
 
     text_msg = StoredMessage(
@@ -155,7 +233,20 @@ def media_messages(db_session: Database, media_tenant: dict):
         timestamp=ts,
         direction="inbound",
     )
-    loop.run_until_complete(db_session.save_message(tenant_hash, text_msg))
+    loop.run_until_complete(
+        db_session.save_message(
+            tenant_hash=tenant_hash,
+            message_id=text_msg.id,
+            from_jid=text_msg.from_jid,
+            chat_jid=text_msg.chat_jid,
+            is_group=text_msg.is_group,
+            push_name=text_msg.push_name,
+            text=text_msg.text,
+            msg_type=text_msg.msg_type,
+            timestamp=text_msg.timestamp,
+            direction=text_msg.direction,
+        )
+    )
     messages.append(text_msg)
 
     yield messages

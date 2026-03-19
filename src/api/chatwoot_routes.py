@@ -185,9 +185,7 @@ async def setup_inbox(request: ChatwootSetupRequest, tenant=Depends(get_tenant))
         webhook_token = secrets.token_urlsafe(32)
 
         base_url = getattr(tenant_manager, "_webhook_base_url", "http://localhost:8080")
-        webhook_url = (
-            f"{base_url}/webhooks/chatwoot/{tenant.api_key_hash[:16]}/outgoing"
-        )
+        webhook_url = f"{base_url}/webhooks/chatwoot/{tenant.api_key_hash}/outgoing"
 
         inbox = await client.create_inbox(
             name=request.inbox_name,
@@ -254,11 +252,7 @@ async def handle_outgoing(
     request: Request,
     x_webhook_signature: Optional[str] = Header(None),
 ):
-    tenant = None
-    for t in tenant_manager.list_tenants():
-        if t.api_key_hash[:16] == tenant_hash:
-            tenant = t
-            break
+    tenant = tenant_manager._tenants.get(tenant_hash)
 
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")

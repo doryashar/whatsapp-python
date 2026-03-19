@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -13,6 +14,8 @@ class TestHandleBridgeCrash:
         tenant.bridge._process = MagicMock()
         tenant.bridge._process.returncode = 1
         tenant.has_valid_auth = MagicMock(return_value=True)
+        tenant._restarting = False
+        tenant._restart_lock = asyncio.Lock()
 
         with patch("src.main.tenant_manager") as mock_manager:
             mock_manager.can_restart = MagicMock(return_value=True)

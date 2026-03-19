@@ -54,6 +54,7 @@ def mock_db():
     db.load_tenants = AsyncMock(return_value=[])
     db.delete_tenant = AsyncMock()
     db.get_contact_names_for_chats = AsyncMock(return_value={})
+    db.get_contact_names_for_senders = AsyncMock(return_value={})
     return db
 
 
@@ -102,7 +103,8 @@ class TestMessageDisplayFormat:
             assert resp.status_code == 200
             html = resp.text
             assert "Alice" in html
-            assert "[private]" in html
+            assert "From: Alice" in html
+            assert "Chat: private" in html
             assert "text-orange-400" not in html
 
     @pytest.mark.asyncio
@@ -129,6 +131,9 @@ class TestMessageDisplayFormat:
                 }
             }
         )
+        setup_tenant_manager._db.get_contact_names_for_senders = AsyncMock(
+            return_value={}
+        )
 
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -137,7 +142,9 @@ class TestMessageDisplayFormat:
             resp = await client.get("/admin/fragments/messages")
             html = resp.text
             assert "Bob" in html
-            assert "[Family Group]" in html
+            assert "From: Bob" in html
+            assert "Family Group" in html
+            assert "Chat: Family Group" in html
             assert "text-orange-400" in html
 
     @pytest.mark.asyncio
@@ -159,6 +166,9 @@ class TestMessageDisplayFormat:
         setup_tenant_manager._db.get_contact_names_for_chats = AsyncMock(
             return_value={}
         )
+        setup_tenant_manager._db.get_contact_names_for_senders = AsyncMock(
+            return_value={}
+        )
 
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -166,10 +176,45 @@ class TestMessageDisplayFormat:
             await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
             resp = await client.get("/admin/fragments/messages")
             html = resp.text
-            assert "[group]" in html
+            assert "Chat: group" in html
 
     @pytest.mark.asyncio
-    async def test_uses_push_name_over_jid(self, setup_tenant_manager, with_tenant):
+    async def test_uses_sender_contact_name_when_no_push_name(
+        self, setup_tenant_manager, with_tenant
+    ):
+        from src.main import app
+
+        tenant, _ = with_tenant
+        msgs = [
+            _make_message(
+                tenant_hash=tenant.api_key_hash,
+                push_name="",
+                from_jid="555123@s.whatsapp.net",
+            )
+        ]
+        setup_tenant_manager._db.list_messages = AsyncMock(return_value=(msgs, 1))
+        setup_tenant_manager._db.get_contact_names_for_senders = AsyncMock(
+            return_value={
+                (tenant.api_key_hash, "555123@s.whatsapp.net"): {
+                    "name": "Dave Smith",
+                    "is_group": False,
+                }
+            }
+        )
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+            resp = await client.get("/admin/fragments/messages")
+            html = resp.text
+            assert "From: Dave Smith" in html
+            assert "555123" not in html
+
+    @pytest.mark.asyncio
+    async def test_uses_push_name_over_contact_name(
+        self, setup_tenant_manager, with_tenant
+    ):
         from src.main import app
 
         tenant, _ = with_tenant
@@ -537,3 +582,315 @@ class TestMessagesPageStructure:
             )
             assert resp.status_code == 302
             assert resp.headers["location"] == "/admin/login"
+
+
+class TestOutboundLabelDisplay:
+    @pytest.mark.asyncio
+    async def test_outbound_shows_to_not_from(self, setup_tenant_manager, with_tenant):
+        from src.main import app
+
+        tenant, _ = with_tenant
+        msgs = [
+            _make_message(
+                tenant_hash=tenant.api_key_hash,
+                direction="outbound",
+                from_jid="9876543210@s.whatsapp.net",
+                chat_jid="5551234567@s.whatsapp.net",
+            )
+        ]
+        setup_tenant_manager._db.list_messages = AsyncMock(return_value=(msgs, 1))
+        setup_tenant_manager._db.get_contact_names_for_chats = AsyncMock(
+            return_value={}
+        )
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+            resp = await client.get("/admin/fragments/messages")
+            html = resp.text
+            assert "To: 5551234567" in html
+            assert "From: 9876543210" not in html
+
+    @pytest.mark.asyncio
+    async def test_outbound_with_contact_name_shows_name(
+        self, setup_tenant_manager, with_tenant
+    ):
+        from src.main import app
+
+        tenant, _ = with_tenant
+        msgs = [
+            _make_message(
+                tenant_hash=tenant.api_key_hash,
+                direction="outbound",
+                chat_jid="5551234567@s.whatsapp.net",
+            )
+        ]
+        setup_tenant_manager._db.list_messages = AsyncMock(return_value=(msgs, 1))
+        setup_tenant_manager._db.get_contact_names_for_chats = AsyncMock(
+            return_value={
+                (tenant.api_key_hash, "5551234567@s.whatsapp.net"): {
+                    "name": "John Doe",
+                    "is_group": False,
+                }
+            }
+        )
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+            resp = await client.get("/admin/fragments/messages")
+            html = resp.text
+            assert "To: John Doe" in html
+
+    @pytest.mark.asyncio
+    async def test_outbound_without_contact_shows_phone(
+        self, setup_tenant_manager, with_tenant
+    ):
+        from src.main import app
+
+        tenant, _ = with_tenant
+        msgs = [
+            _make_message(
+                tenant_hash=tenant.api_key_hash,
+                direction="outbound",
+                chat_jid="5559998888@s.whatsapp.net",
+                push_name="",
+            )
+        ]
+        setup_tenant_manager._db.list_messages = AsyncMock(return_value=(msgs, 1))
+        setup_tenant_manager._db.get_contact_names_for_chats = AsyncMock(
+            return_value={}
+        )
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+            resp = await client.get("/admin/fragments/messages")
+            html = resp.text
+            assert "To: 5559998888" in html
+
+    @pytest.mark.asyncio
+    async def test_outbound_contact_name_same_as_phone_shows_phone_only(
+        self, setup_tenant_manager, with_tenant
+    ):
+        from src.main import app
+
+        tenant, _ = with_tenant
+        msgs = [
+            _make_message(
+                tenant_hash=tenant.api_key_hash,
+                direction="outbound",
+                chat_jid="5551234567@s.whatsapp.net",
+            )
+        ]
+        setup_tenant_manager._db.list_messages = AsyncMock(return_value=(msgs, 1))
+        setup_tenant_manager._db.get_contact_names_for_chats = AsyncMock(
+            return_value={
+                (tenant.api_key_hash, "5551234567@s.whatsapp.net"): {
+                    "name": "5551234567",
+                    "is_group": False,
+                }
+            }
+        )
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+            resp = await client.get("/admin/fragments/messages")
+            html = resp.text
+            assert "To: 5551234567" in html
+            assert "To: 5551234567 (5551234567)" not in html
+
+    @pytest.mark.asyncio
+    async def test_outbound_recipient_name_escaped(
+        self, setup_tenant_manager, with_tenant
+    ):
+        from src.main import app
+
+        tenant, _ = with_tenant
+        msgs = [
+            _make_message(
+                tenant_hash=tenant.api_key_hash,
+                direction="outbound",
+                chat_jid="5551234567@s.whatsapp.net",
+            )
+        ]
+        setup_tenant_manager._db.list_messages = AsyncMock(return_value=(msgs, 1))
+        setup_tenant_manager._db.get_contact_names_for_chats = AsyncMock(
+            return_value={
+                (tenant.api_key_hash, "5551234567@s.whatsapp.net"): {
+                    "name": "O'Brien <script>",
+                    "is_group": False,
+                }
+            }
+        )
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+            resp = await client.get("/admin/fragments/messages")
+            html = resp.text
+            assert "To:" in html
+            assert "<script>" not in html
+            assert "&lt;script&gt;" in html
+
+    @pytest.mark.asyncio
+    async def test_inbound_still_shows_from(self, setup_tenant_manager, with_tenant):
+        from src.main import app
+
+        tenant, _ = with_tenant
+        msgs = [
+            _make_message(
+                tenant_hash=tenant.api_key_hash,
+                direction="inbound",
+                push_name="Alice",
+            )
+        ]
+        setup_tenant_manager._db.list_messages = AsyncMock(return_value=(msgs, 1))
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+            resp = await client.get("/admin/fragments/messages")
+            html = resp.text
+            assert "From: Alice" in html
+            assert "To:" not in html
+
+    @pytest.mark.asyncio
+    async def test_mixed_inbound_outbound_correct_labels(
+        self, setup_tenant_manager, with_tenant
+    ):
+        from src.main import app
+
+        tenant, _ = with_tenant
+        msgs = [
+            _make_message(
+                tenant_hash=tenant.api_key_hash,
+                direction="inbound",
+                push_name="Alice",
+                message_id="in_1",
+            ),
+            _make_message(
+                tenant_hash=tenant.api_key_hash,
+                direction="outbound",
+                chat_jid="5550001111@s.whatsapp.net",
+                message_id="out_1",
+            ),
+        ]
+        setup_tenant_manager._db.list_messages = AsyncMock(return_value=(msgs, 2))
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+            resp = await client.get("/admin/fragments/messages")
+            html = resp.text
+            assert "From: Alice" in html
+            assert "To: 5550001111" in html
+
+    @pytest.mark.asyncio
+    async def test_outbound_group_message_shows_to(
+        self, setup_tenant_manager, with_tenant
+    ):
+        from src.main import app
+
+        tenant, _ = with_tenant
+        msgs = [
+            _make_message(
+                tenant_hash=tenant.api_key_hash,
+                direction="outbound",
+                chat_jid="family@g.us",
+                is_group=True,
+                from_jid="9876543210@s.whatsapp.net",
+                push_name="",
+            )
+        ]
+        setup_tenant_manager._db.list_messages = AsyncMock(return_value=(msgs, 1))
+        setup_tenant_manager._db.get_contact_names_for_chats = AsyncMock(
+            return_value={
+                (tenant.api_key_hash, "family@g.us"): {
+                    "name": "Family Group",
+                    "is_group": True,
+                }
+            }
+        )
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+            resp = await client.get("/admin/fragments/messages")
+            html = resp.text
+            assert "To:" in html
+            assert "Chat: Family Group" in html
+
+
+class TestPhoneAndChatIdDisplay:
+    @pytest.mark.asyncio
+    async def test_phone_and_jid_html_escaped(self, setup_tenant_manager, with_tenant):
+        from src.main import app
+
+        tenant, _ = with_tenant
+        msgs = [
+            _make_message(
+                tenant_hash=tenant.api_key_hash,
+                chat_jid="555123&<special>@s.whatsapp.net",
+            )
+        ]
+        setup_tenant_manager._db.list_messages = AsyncMock(return_value=(msgs, 1))
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+            resp = await client.get("/admin/fragments/messages")
+            html = resp.text
+
+            assert "555123&amp;&lt;special&gt;" in html
+            assert "555123&<special>" not in html.replace(
+                'data-chat-jid="555123&<special>@s.whatsapp.net"', ""
+            )
+
+    @pytest.mark.asyncio
+    async def test_meta_info_styling_classes(self, setup_tenant_manager, with_tenant):
+        from src.main import app
+
+        tenant, _ = with_tenant
+        msgs = [_make_message(tenant_hash=tenant.api_key_hash)]
+        setup_tenant_manager._db.list_messages = AsyncMock(return_value=(msgs, 1))
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+            resp = await client.get("/admin/fragments/messages")
+            html = resp.text
+            assert "text-gray-600" in html
+            assert "whitespace-nowrap" in html
+
+    @pytest.mark.asyncio
+    async def test_chat_jid_without_at_sign(self, setup_tenant_manager, with_tenant):
+        from src.main import app
+
+        tenant, _ = with_tenant
+        msgs = [
+            _make_message(
+                tenant_hash=tenant.api_key_hash,
+                chat_jid="just_a_plain_id",
+            )
+        ]
+        setup_tenant_manager._db.list_messages = AsyncMock(return_value=(msgs, 1))
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post("/admin/login", data={"password": ADMIN_PASSWORD})
+            resp = await client.get("/admin/fragments/messages")
+            html = resp.text
+            assert ">just_a_plain_id<" in html

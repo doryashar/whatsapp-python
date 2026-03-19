@@ -127,14 +127,7 @@ def instrument_app(app):
 
 
 def get_logger(name: str = "whatsapp") -> logging.Logger:
-    global _logger
-    if _logger is None:
-        _logger = logging.getLogger(name)
-        _logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(JSONFormatter())
-        _logger.addHandler(handler)
-    return _logger
+    return logging.getLogger(name)
 
 
 def get_tracer(name: str = "whatsapp") -> trace.Tracer:
