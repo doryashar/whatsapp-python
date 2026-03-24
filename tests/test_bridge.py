@@ -86,4 +86,4 @@ class TestStderrLoopErrorHandling:
 
         await bridge._stderr_loop()
 
-        assert True
+        assert bridge._running is True

@@ -2048,12 +2048,13 @@ class Database:
                     ip_address,
                 )
         else:
+            utc_expires = expires_at.strftime("%Y-%m-%d %H:%M:%S")
             await self._pool.execute(
                 """
                 INSERT OR REPLACE INTO admin_sessions (id, expires_at, user_agent, ip_address)
                 VALUES (?, ?, ?, ?)
                 """,
-                (session_id, expires_at.isoformat(), user_agent, ip_address),
+                (session_id, utc_expires, user_agent, ip_address),
             )
             await self._pool.commit()
 
@@ -2104,9 +2105,10 @@ class Database:
                     session_id,
                 )
         else:
+            utc_expires = expires_at.strftime("%Y-%m-%d %H:%M:%S")
             await self._pool.execute(
                 "UPDATE admin_sessions SET expires_at = ? WHERE id = ?",
-                (expires_at.isoformat(), session_id),
+                (utc_expires, session_id),
             )
             await self._pool.commit()
 

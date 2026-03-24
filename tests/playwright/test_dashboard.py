@@ -68,7 +68,7 @@ class TestDashboardStats:
 class TestDashboardTenantOperations:
     def test_tenant_status_badges(self, authenticated_page: Page, test_tenant: dict):
         authenticated_page.goto(f"{BASE_URL}/admin/tenants")
-        authenticated_page.wait_for_timeout(3000)
+        authenticated_page.wait_for_load_state("networkidle")
 
         status_badge = authenticated_page.locator(
             f".bg-green-500, .bg-yellow-500, .bg-gray-500, .text-green-400, .text-yellow-400, .text-gray-400"
@@ -100,7 +100,7 @@ class TestDashboardBulkOperations:
         self, authenticated_page: Page, multiple_tenants: list
     ):
         authenticated_page.goto(f"{BASE_URL}/admin/tenants")
-        authenticated_page.wait_for_timeout(3000)
+        authenticated_page.wait_for_load_state("networkidle")
 
         select_all = authenticated_page.locator("#select-all-tenants")
         if select_all.count() == 0:
@@ -108,7 +108,7 @@ class TestDashboardBulkOperations:
         expect(select_all.first).to_be_visible()
 
         select_all.first.click()
-        authenticated_page.wait_for_timeout(500)
+        authenticated_page.wait_for_timeout(1000)
 
         tenant_checkboxes = authenticated_page.locator(
             "input[type='checkbox']:not(#select-all-tenants)"

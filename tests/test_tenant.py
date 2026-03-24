@@ -3,58 +3,13 @@ from unittest.mock import patch, AsyncMock, MagicMock
 from httpx import ASGITransport, AsyncClient
 
 from src.tenant import TenantManager, tenant_manager
+from tests.conftest import ADMIN_PASSWORD
 
 
 @pytest.fixture
 def fresh_tenant_manager():
     manager = TenantManager()
     return manager
-
-
-@pytest.fixture
-def mock_db():
-    db = MagicMock()
-    db.list_messages = AsyncMock(return_value=([], 0))
-    db.get_recent_chats = AsyncMock(return_value=[])
-    db.get_webhook_stats = AsyncMock(
-        return_value={"total": 0, "success_count": 0, "fail_count": 0}
-    )
-    db.create_admin_session = AsyncMock(return_value="test-session-id")
-    db.get_admin_session = AsyncMock(
-        return_value={
-            "id": "test-session-id",
-            "expires_at": "2099-01-01",
-            "user_agent": "test",
-            "ip_address": "127.0.0.1",
-        }
-    )
-    db.save_tenant = AsyncMock()
-    db.delete_tenant = AsyncMock()
-    return db
-
-
-@pytest.fixture(autouse=True)
-def setup_admin_api_key(monkeypatch, mock_db):
-    """Set admin password for all tests in this module"""
-    from src import config
-    from src.admin import auth as admin_auth
-    from src.tenant import tenant_manager
-
-    # Patch in both places
-    monkeypatch.setattr(config.settings, "admin_password", "test_admin_key")
-    monkeypatch.setattr(admin_auth.settings, "admin_password", "test_admin_key")
-    monkeypatch.setattr(config.settings, "debug", True)
-
-    # Setup mock database
-    original_db = tenant_manager._db
-    tenant_manager._db = mock_db
-
-    yield
-
-    monkeypatch.setattr(config.settings, "admin_password", None)
-    monkeypatch.setattr(admin_auth.settings, "admin_password", None)
-    monkeypatch.setattr(config.settings, "debug", False)
-    tenant_manager._db = original_db
 
 
 class TestTenantManager:
@@ -146,7 +101,7 @@ class TestTenantManager:
 
 
 @pytest.mark.asyncio
-async def test_admin_create_tenant():
+async def test_admin_create_tenant(setup_tenant_manager):
     from src.main import app
 
     async with AsyncClient(
@@ -154,7 +109,7 @@ async def test_admin_create_tenant():
     ) as client:
         # Login first to get session cookie
         login_response = await client.post(
-            "/admin/login", data={"password": "test_admin_key"}, follow_redirects=False
+            "/admin/login", data={"password": ADMIN_PASSWORD}, follow_redirects=False
         )
         assert login_response.status_code == 302
 
@@ -172,7 +127,7 @@ async def test_admin_create_tenant():
 
 
 @pytest.mark.asyncio
-async def test_admin_list_tenants():
+async def test_admin_list_tenants(setup_tenant_manager):
     from src.main import app
     from src.tenant import tenant_manager
 
@@ -183,7 +138,7 @@ async def test_admin_list_tenants():
     ) as client:
         # Login first to get session cookie
         login_response = await client.post(
-            "/admin/login", data={"password": "test_admin_key"}, follow_redirects=False
+            "/admin/login", data={"password": ADMIN_PASSWORD}, follow_redirects=False
         )
         assert login_response.status_code == 302
 

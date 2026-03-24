@@ -35,6 +35,20 @@ class TestChatwootConfiguration:
             if save_btn.count() > 0:
                 save_btn.first.click()
 
+                authenticated_page.wait_for_timeout(1000)
+                toast = authenticated_page.locator(
+                    '.toast, .notification, [class*="saved"], [class*="success"]'
+                )
+                try:
+                    expect(toast.first).to_be_visible(timeout=3000)
+                except AssertionError:
+                    pass
+
+                saved_value = url_input.first.input_value()
+                assert "chatwoot.example.com" in saved_value, (
+                    "Saved URL should persist in the input"
+                )
+
     def test_enable_chatwoot_for_tenant(
         self, authenticated_page: Page, test_tenant: dict
     ):
@@ -44,7 +58,14 @@ class TestChatwootConfiguration:
             'input[type="checkbox"][name*="enabled"]'
         )
         if enable_toggle.count() > 0:
+            was_checked = enable_toggle.first.is_checked()
             enable_toggle.first.click()
+
+            authenticated_page.wait_for_timeout(500)
+            is_now_checked = enable_toggle.first.is_checked()
+            assert was_checked != is_now_checked, (
+                "Chatwoot toggle state should change after click"
+            )
 
     def test_configure_sign_messages_option(
         self, authenticated_page: Page, test_tenant: dict
@@ -61,7 +82,14 @@ class TestChatwootConfiguration:
                 'input[name*="sign"], label:has-text("Sign")'
             )
             if sign_toggle.count() > 0:
+                was_checked = sign_toggle.first.is_checked()
                 sign_toggle.first.click()
+
+                authenticated_page.wait_for_timeout(500)
+                is_now_checked = sign_toggle.first.is_checked()
+                assert was_checked != is_now_checked, (
+                    "Sign messages toggle state should change"
+                )
 
     def test_configure_reopen_conversation_option(
         self, authenticated_page: Page, test_tenant: dict
@@ -76,7 +104,14 @@ class TestChatwootConfiguration:
                 'input[name*="reopen"], label:has-text("Reopen")'
             )
             if reopen_toggle.count() > 0:
+                was_checked = reopen_toggle.first.is_checked()
                 reopen_toggle.first.click()
+
+                authenticated_page.wait_for_timeout(500)
+                is_now_checked = reopen_toggle.first.is_checked()
+                assert was_checked != is_now_checked, (
+                    "Reopen conversation toggle state should change"
+                )
 
 
 class TestChatwootSyncActions:
@@ -89,6 +124,15 @@ class TestChatwootSyncActions:
         if sync_contacts_btn.count() > 0:
             sync_contacts_btn.first.click()
 
+            authenticated_page.wait_for_timeout(1000)
+            toast = authenticated_page.locator(
+                '.toast, .notification, [class*="sync"], [class*="contact"]'
+            )
+            try:
+                expect(toast.first).to_be_visible(timeout=3000)
+            except AssertionError:
+                pass
+
     def test_sync_messages_button(self, authenticated_page: Page, test_tenant: dict):
         authenticated_page.goto(f"{BASE_URL}/admin/chatwoot")
 
@@ -97,3 +141,12 @@ class TestChatwootSyncActions:
         )
         if sync_messages_btn.count() > 0:
             sync_messages_btn.first.click()
+
+            authenticated_page.wait_for_timeout(1000)
+            toast = authenticated_page.locator(
+                '.toast, .notification, [class*="sync"], [class*="message"]'
+            )
+            try:
+                expect(toast.first).to_be_visible(timeout=3000)
+            except AssertionError:
+                pass

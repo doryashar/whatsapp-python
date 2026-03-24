@@ -354,7 +354,7 @@ async def admin_logout(
 
 @router.get("/", response_class=HTMLResponse)
 async def admin_root():
-    return RedirectResponse(url="/admin/dashboard")
+    return RedirectResponse(url="/admin/dashboard", status_code=302)
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
@@ -586,12 +586,17 @@ async function bulkReconnect() {
     
     const data = await response.json();
     
-    alert(`Reconnect complete:\n✅ Successful: ${data.successful}\n❌ Failed: ${data.failed}`);
-    
-    // Clear selection and refresh
-    selectedTenants.clear();
-    updateBulkUI();
-    htmx.trigger('#tenants-list', 'load');
+    if (response.ok) {
+        alert(`Reconnect complete:\n✅ Successful: ${data.successful}\n❌ Failed: ${data.failed}`);
+        selectedTenants.clear();
+        updateBulkUI();
+        htmx.trigger('#tenants-list', 'load');
+    } else {
+        reportFetchError('BulkReconnect', data.detail || JSON.stringify(data));
+        alert('Reconnect failed: ' + (data.detail || JSON.stringify(data)));
+        selectedTenants.clear();
+        updateBulkUI();
+    }
 }
 
 async function bulkDelete() {
@@ -618,12 +623,17 @@ async function bulkDelete() {
     
     const data = await response.json();
     
-    alert(`Delete complete:\n✅ Deleted: ${data.deleted}\n❌ Failed: ${data.failed}`);
-    
-    // Clear selection and refresh
-    selectedTenants.clear();
-    updateBulkUI();
-    htmx.trigger('#tenants-list', 'load');
+    if (response.ok) {
+        alert(`Delete complete:\n✅ Deleted: ${data.deleted}\n❌ Failed: ${data.failed}`);
+        selectedTenants.clear();
+        updateBulkUI();
+        htmx.trigger('#tenants-list', 'load');
+    } else {
+        reportFetchError('BulkDelete', data.detail || JSON.stringify(data));
+        alert('Delete failed: ' + (data.detail || JSON.stringify(data)));
+        selectedTenants.clear();
+        updateBulkUI();
+    }
 }
 
 function showCreateTenantModal() {
@@ -642,123 +652,154 @@ function closeModalAndShowKey(event) {
         htmx.trigger('#tenants-list', 'load');
     }
 }
+async function toggleEnabled(hash, enabled) {
+    const method = enabled ? 'DELETE' : 'POST';
+    try {
+        const response = await fetch('/admin/api/tenants/' + hash + '/enabled', {
+            method: method,
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: enabled})
+        });
+        if (response.ok) {
+            htmx.trigger('#tenants-list', 'load');
+        } else {
+            const data = await response.json();
+            reportFetchError('ToggleEnabled', data.detail || 'Failed to toggle');
+            alert(data.detail || 'Failed to toggle');
+        }
+    } catch (e) {
+        reportFetchError('ToggleEnabled', e.message);
+    }
+}
+
+async function syncContacts(hash) {
+    try {
+        const response = await fetch('/admin/api/tenants/' + hash + '/sync-contacts', {method: 'POST', headers: {'Content-Type': 'application/json'}});
+        const data = await response.json();
+        if (response.ok) {
+            alert('Contacts synced: ' + data.synced + ' synced, ' + data.failed + ' failed');
+            htmx.trigger('#tenants-list', 'load');
+        } else {
+            reportFetchError('SyncContacts', data.detail || 'Failed');
+            alert(data.detail || 'Failed to sync contacts');
+        }
+    } catch (e) { reportFetchError('SyncContacts', e.message); }
+}
+
+async function syncMessages(hash) {
+    if (!confirm('Sync chat history? This may take a while.')) return;
+    try {
+        const response = await fetch('/admin/api/tenants/' + hash + '/sync-messages', {method: 'POST', headers: {'Content-Type': 'application/json'}});
+        const data = await response.json();
+        if (response.ok) {
+            alert('Messages synced: ' + data.stored + ' stored, ' + data.duplicates + ' duplicates');
+        } else {
+            reportFetchError('SyncMessages', data.detail || 'Failed');
+            alert(data.detail || 'Failed to sync messages');
+        }
+    } catch (e) { reportFetchError('SyncMessages', e.message); }
+}
+
 function showTenantActions(hash, name) {
     document.getElementById('tenant-actions-name').textContent = name;
     document.getElementById('btn-reconnect').setAttribute('hx-post', '/admin/api/tenants/' + hash + '/reconnect');
     document.getElementById('btn-clear-creds').setAttribute('hx-delete', '/admin/api/tenants/' + hash + '/credentials');
     document.getElementById('btn-delete').setAttribute('hx-delete', '/admin/api/tenants/' + hash);
-    document.getElementById('tenant-actions-modal').dataset.hash = hash;
     document.getElementById('new-webhook-url').value = '';
-    document.getElementById('tenant-actions-modal').classList.remove('hidden');
-    document.getElementById('tenant-actions-modal').classList.add('flex');
-    htmx.process(document.getElementById('tenant-actions-modal'));
+    document.getElementById('btn-add-webhook').setAttribute('onclick', "addWebhook('" + hash + "')");
+    const modal = document.getElementById('tenant-actions-modal');
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
 }
+
 function hideTenantActionsModal() {
-    document.getElementById('tenant-actions-modal').classList.add('hidden');
-    document.getElementById('tenant-actions-modal').classList.remove('flex');
+    const modal = document.getElementById('tenant-actions-modal');
+    if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); }
 }
-function addWebhook() {
-    const url = document.getElementById('new-webhook-url').value;
-    if (!url) { alert('Please enter a webhook URL'); return; }
-    const hash = document.getElementById('tenant-actions-modal').dataset.hash;
-    fetch('/admin/api/tenants/' + hash + '/webhooks', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({url: url})
-    }).then(r => r.json()).then(data => {
-        if (data.status === 'added') {
-            document.getElementById('new-webhook-url').value = '';
-            alert('Webhook added!');
-            htmx.trigger('#tenants-list', 'load');
-        } else {
-            alert('Failed: ' + (data.detail || JSON.stringify(data)));
-        }
-    }).catch(e => alert('Error: ' + e));
-}
-function handleAction(event, msg) {
-    if (event.detail.successful) {
-        alert(msg);
-        htmx.trigger('#tenants-list', 'load');
+
+function handleAction(event, label) {
+    if (event.detail && event.detail.successful) {
         hideTenantActionsModal();
+        alert(label + ' completed');
+        htmx.trigger('#tenants-list', 'load');
+    } else if (event.detail && !event.detail.successful) {
+        reportFetchError('TenantAction', 'Action failed');
     }
 }
+
 function handleDelete(event) {
-    if (event.detail.successful) {
+    if (event.detail && event.detail.successful) {
+        hideTenantActionsModal();
         alert('Tenant deleted');
         htmx.trigger('#tenants-list', 'load');
-        hideTenantActionsModal();
+    } else if (event.detail && !event.detail.successful) {
+        reportFetchError('DeleteTenant', 'Delete failed');
     }
 }
 
-async function toggleEnabled(hash, enabled) {
-    const action = enabled ? 'enable' : 'disable';
-    if (!confirm(`Are you sure you want to ${action} this tenant?`)) return;
-    
-    const response = await fetch('/admin/api/tenants/' + hash + '/enabled', {
-        method: 'PATCH',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({enabled: enabled})
-    });
-    
-    const data = await response.json();
-    if (response.ok) {
-        htmx.trigger('#tenants-list', 'load');
-    } else {
-        alert('Failed: ' + (data.detail || JSON.stringify(data)));
-    }
+async function addWebhook(hash) {
+    if (!hash) return;
+    const urlInput = document.getElementById('new-webhook-url');
+    if (!urlInput) return;
+    const url = urlInput.value;
+    if (!url) { alert('Please enter a webhook URL'); return; }
+    try {
+        const response = await fetch('/admin/api/tenants/' + hash + '/webhooks', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: url})
+        });
+        if (response.ok) {
+            urlInput.value = '';
+            htmx.trigger('#tenants-list', 'load');
+            const wh = document.querySelector('#webhooks-list');
+            if (wh) htmx.trigger(wh, 'load');
+        } else {
+            const data = await response.json();
+            reportFetchError('AddWebhook', data.detail || JSON.stringify(data));
+            alert(data.detail || 'Failed to add webhook');
+        }
+    } catch (e) { reportFetchError('AddWebhook', e.message); }
 }
 
-let expandedTenant = null;
-function toggleTenantPanel(hash) {
+async function toggleTenantPanel(hash) {
     const panel = document.getElementById('tenant-panel-' + hash);
     const chevron = document.getElementById('chevron-' + hash);
-    
-    if (expandedTenant && expandedTenant !== hash) {
-        const prevPanel = document.getElementById('tenant-panel-' + expandedTenant);
-        const prevChevron = document.getElementById('chevron-' + expandedTenant);
-        if (prevPanel) { prevPanel.classList.add('hidden'); prevPanel.innerHTML = ''; }
-        if (prevChevron) { prevChevron.classList.remove('rotate-90'); }
-    }
-    
+    if (!panel) return;
     if (panel.classList.contains('hidden')) {
         panel.classList.remove('hidden');
-        chevron.classList.add('rotate-90');
-        expandedTenant = hash;
-        htmx.ajax('GET', '/admin/fragments/tenant-panel/' + hash, {target: panel, swap: 'innerHTML'});
+        panel.innerHTML = '<div class="p-6 text-center text-gray-500">Loading...</div>';
+        if (chevron) chevron.style.transform = 'rotate(90deg)';
+        htmx.ajax('GET', '/admin/fragments/tenant-panel/' + hash, {target: '#tenant-panel-' + hash, swap: 'innerHTML'});
     } else {
         panel.classList.add('hidden');
-        chevron.classList.remove('rotate-90');
-        panel.innerHTML = '';
-        expandedTenant = null;
+        if (chevron) chevron.style.transform = '';
     }
 }
-function sendMsgAsTenant(hash) {
-    const chatSelect = document.getElementById('chat-select-' + hash);
+
+async function sendMsgAsTenant(hash) {
+    const jidSelect = document.getElementById('chat-select-' + hash);
     const manualJid = document.getElementById('manual-jid-' + hash);
-    const textInput = document.getElementById('msg-text-' + hash);
-    
-    const to = manualJid.value || chatSelect.value;
-    const text = textInput.value;
-    
-    if (!to) { alert('Please select or enter a recipient'); return; }
-    if (!text) { alert('Please enter a message'); return; }
-    
-    fetch('/admin/api/tenants/' + hash + '/send', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({to: to, text: text})
-    }).then(r => r.json()).then(data => {
-        if (data.status === 'sent') {
-            textInput.value = '';
-            htmx.ajax('GET', '/admin/fragments/tenant-panel/' + hash, {
-                target: document.getElementById('tenant-panel-' + hash),
-                swap: 'innerHTML'
-            });
-        } else {
-            alert('Failed: ' + (data.detail || JSON.stringify(data)));
-        }
-    }).catch(e => alert('Error: ' + e));
+    const msgText = document.getElementById('msg-text-' + hash);
+    const to = (jidSelect && jidSelect.value) ? jidSelect.value : (manualJid ? manualJid.value : '');
+    const text = msgText ? msgText.value : '';
+    if (!to || !text) { alert('Please enter recipient and message'); return; }
+    try {
+        const response = await fetch('/admin/api/tenants/' + hash + '/send', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({to: to, text: text})
+        });
+        const data = await response.json();
+        if (response.ok) { msgText.value = ''; htmx.trigger('#tenant-panel-' + hash, 'load'); }
+        else { reportFetchError('SendMsgAsTenant', data.detail || JSON.stringify(data)); alert(data.detail || JSON.stringify(data)); }
+    } catch (e) { reportFetchError('SendMsgAsTenant', e.message); }
 }
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        var m = document.getElementById('create-tenant-modal');
+        if (m && !m.classList.contains('hidden')) hideCreateTenantModal();
+        var t = document.getElementById('tenant-actions-modal');
+        if (t && !t.classList.contains('hidden')) hideTenantActionsModal();
+    }
+});
 """
     html = PAGE_TEMPLATE.format(
         title="Dashboard",
@@ -1001,12 +1042,17 @@ async function bulkReconnect() {
     
     const data = await response.json();
     
-    alert(`Reconnect complete:\n✅ Successful: ${data.successful}\n❌ Failed: ${data.failed}`);
-    
-    // Clear selection and refresh
-    selectedTenants.clear();
-    updateBulkUI();
-    htmx.trigger('#tenants-list', 'load');
+    if (response.ok) {
+        alert(`Reconnect complete:\n✅ Successful: ${data.successful}\n❌ Failed: ${data.failed}`);
+        selectedTenants.clear();
+        updateBulkUI();
+        htmx.trigger('#tenants-list', 'load');
+    } else {
+        reportFetchError('BulkReconnect', data.detail || JSON.stringify(data));
+        alert('Reconnect failed: ' + (data.detail || JSON.stringify(data)));
+        selectedTenants.clear();
+        updateBulkUI();
+    }
 }
 
 async function bulkDelete() {
@@ -1033,12 +1079,17 @@ async function bulkDelete() {
     
     const data = await response.json();
     
-    alert(`Delete complete:\n✅ Deleted: ${data.deleted}\n❌ Failed: ${data.failed}`);
-    
-    // Clear selection and refresh
-    selectedTenants.clear();
-    updateBulkUI();
-    htmx.trigger('#tenants-list', 'load');
+    if (response.ok) {
+        alert(`Delete complete:\n✅ Deleted: ${data.deleted}\n❌ Failed: ${data.failed}`);
+        selectedTenants.clear();
+        updateBulkUI();
+        htmx.trigger('#tenants-list', 'load');
+    } else {
+        reportFetchError('BulkDelete', data.detail || JSON.stringify(data));
+        alert('Delete failed: ' + (data.detail || JSON.stringify(data)));
+        selectedTenants.clear();
+        updateBulkUI();
+    }
 }
 
 function showCreateTenantModal() {
@@ -1057,168 +1108,154 @@ function closeModalAndShowKey(event) {
         htmx.trigger('#tenants-list', 'load');
     }
 }
+async function toggleEnabled(hash, enabled) {
+    const method = enabled ? 'DELETE' : 'POST';
+    try {
+        const response = await fetch('/admin/api/tenants/' + hash + '/enabled', {
+            method: method,
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: enabled})
+        });
+        if (response.ok) {
+            htmx.trigger('#tenants-list', 'load');
+        } else {
+            const data = await response.json();
+            reportFetchError('ToggleEnabled', data.detail || 'Failed to toggle');
+            alert(data.detail || 'Failed to toggle');
+        }
+    } catch (e) {
+        reportFetchError('ToggleEnabled', e.message);
+    }
+}
+
+async function syncContacts(hash) {
+    try {
+        const response = await fetch('/admin/api/tenants/' + hash + '/sync-contacts', {method: 'POST', headers: {'Content-Type': 'application/json'}});
+        const data = await response.json();
+        if (response.ok) {
+            alert('Contacts synced: ' + data.synced + ' synced, ' + data.failed + ' failed');
+            htmx.trigger('#tenants-list', 'load');
+        } else {
+            reportFetchError('SyncContacts', data.detail || 'Failed');
+            alert(data.detail || 'Failed to sync contacts');
+        }
+    } catch (e) { reportFetchError('SyncContacts', e.message); }
+}
+
+async function syncMessages(hash) {
+    if (!confirm('Sync chat history? This may take a while.')) return;
+    try {
+        const response = await fetch('/admin/api/tenants/' + hash + '/sync-messages', {method: 'POST', headers: {'Content-Type': 'application/json'}});
+        const data = await response.json();
+        if (response.ok) {
+            alert('Messages synced: ' + data.stored + ' stored, ' + data.duplicates + ' duplicates');
+        } else {
+            reportFetchError('SyncMessages', data.detail || 'Failed');
+            alert(data.detail || 'Failed to sync messages');
+        }
+    } catch (e) { reportFetchError('SyncMessages', e.message); }
+}
+
 function showTenantActions(hash, name) {
     document.getElementById('tenant-actions-name').textContent = name;
     document.getElementById('btn-reconnect').setAttribute('hx-post', '/admin/api/tenants/' + hash + '/reconnect');
     document.getElementById('btn-clear-creds').setAttribute('hx-delete', '/admin/api/tenants/' + hash + '/credentials');
     document.getElementById('btn-delete').setAttribute('hx-delete', '/admin/api/tenants/' + hash);
-    document.getElementById('tenant-actions-modal').dataset.hash = hash;
     document.getElementById('new-webhook-url').value = '';
-    document.getElementById('tenant-actions-modal').classList.remove('hidden');
-    document.getElementById('tenant-actions-modal').classList.add('flex');
-    htmx.process(document.getElementById('tenant-actions-modal'));
+    document.getElementById('btn-add-webhook').setAttribute('onclick', "addWebhook('" + hash + "')");
+    const modal = document.getElementById('tenant-actions-modal');
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
 }
+
 function hideTenantActionsModal() {
-    document.getElementById('tenant-actions-modal').classList.add('hidden');
-    document.getElementById('tenant-actions-modal').classList.remove('flex');
+    const modal = document.getElementById('tenant-actions-modal');
+    if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); }
 }
-function addWebhook() {
-    const url = document.getElementById('new-webhook-url').value;
-    if (!url) { alert('Please enter a webhook URL'); return; }
-    const hash = document.getElementById('tenant-actions-modal').dataset.hash;
-    fetch('/admin/api/tenants/' + hash + '/webhooks', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({url: url})
-    }).then(r => r.json()).then(data => {
-        if (data.status === 'added') {
-            document.getElementById('new-webhook-url').value = '';
-            alert('Webhook added!');
-            htmx.trigger('#tenants-list', 'load');
-        } else {
-            alert('Failed: ' + (data.detail || JSON.stringify(data)));
-        }
-    }).catch(e => alert('Error: ' + e));
-}
-function handleAction(event, msg) {
-    if (event.detail.successful) {
-        alert(msg);
-        htmx.trigger('#tenants-list', 'load');
+
+function handleAction(event, label) {
+    if (event.detail && event.detail.successful) {
         hideTenantActionsModal();
+        alert(label + ' completed');
+        htmx.trigger('#tenants-list', 'load');
+    } else if (event.detail && !event.detail.successful) {
+        reportFetchError('TenantAction', 'Action failed');
     }
 }
+
 function handleDelete(event) {
-    if (event.detail.successful) {
+    if (event.detail && event.detail.successful) {
+        hideTenantActionsModal();
         alert('Tenant deleted');
         htmx.trigger('#tenants-list', 'load');
-        hideTenantActionsModal();
+    } else if (event.detail && !event.detail.successful) {
+        reportFetchError('DeleteTenant', 'Delete failed');
     }
 }
 
-async function toggleEnabled(hash, enabled) {
-    const action = enabled ? 'enable' : 'disable';
-    if (!confirm(`Are you sure you want to ${action} this tenant?`)) return;
-    
-    const response = await fetch('/admin/api/tenants/' + hash + '/enabled', {
-        method: 'PATCH',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({enabled: enabled})
-    });
-    
-    const data = await response.json();
-    if (response.ok) {
-        htmx.trigger('#tenants-list', 'load');
-    } else {
-        alert('Failed: ' + (data.detail || JSON.stringify(data)));
-    }
+async function addWebhook(hash) {
+    if (!hash) return;
+    const urlInput = document.getElementById('new-webhook-url');
+    if (!urlInput) return;
+    const url = urlInput.value;
+    if (!url) { alert('Please enter a webhook URL'); return; }
+    try {
+        const response = await fetch('/admin/api/tenants/' + hash + '/webhooks', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: url})
+        });
+        if (response.ok) {
+            urlInput.value = '';
+            htmx.trigger('#tenants-list', 'load');
+            const wh = document.querySelector('#webhooks-list');
+            if (wh) htmx.trigger(wh, 'load');
+        } else {
+            const data = await response.json();
+            reportFetchError('AddWebhook', data.detail || JSON.stringify(data));
+            alert(data.detail || 'Failed to add webhook');
+        }
+    } catch (e) { reportFetchError('AddWebhook', e.message); }
 }
 
-let expandedTenant = null;
-function toggleTenantPanel(hash) {
+async function toggleTenantPanel(hash) {
     const panel = document.getElementById('tenant-panel-' + hash);
     const chevron = document.getElementById('chevron-' + hash);
-    
-    if (expandedTenant && expandedTenant !== hash) {
-        const prevPanel = document.getElementById('tenant-panel-' + expandedTenant);
-        const prevChevron = document.getElementById('chevron-' + expandedTenant);
-        if (prevPanel) { prevPanel.classList.add('hidden'); prevPanel.innerHTML = ''; }
-        if (prevChevron) { prevChevron.classList.remove('rotate-90'); }
-    }
-    
+    if (!panel) return;
     if (panel.classList.contains('hidden')) {
         panel.classList.remove('hidden');
-        chevron.classList.add('rotate-90');
-        expandedTenant = hash;
-        htmx.ajax('GET', '/admin/fragments/tenant-panel/' + hash, {target: panel, swap: 'innerHTML'});
+        panel.innerHTML = '<div class="p-6 text-center text-gray-500">Loading...</div>';
+        if (chevron) chevron.style.transform = 'rotate(90deg)';
+        htmx.ajax('GET', '/admin/fragments/tenant-panel/' + hash, {target: '#tenant-panel-' + hash, swap: 'innerHTML'});
     } else {
         panel.classList.add('hidden');
-        chevron.classList.remove('rotate-90');
-        panel.innerHTML = '';
-        expandedTenant = null;
-    }
-}
-function sendMsgAsTenant(hash) {
-    const chatSelect = document.getElementById('chat-select-' + hash);
-    const manualJid = document.getElementById('manual-jid-' + hash);
-    const textInput = document.getElementById('msg-text-' + hash);
-    
-    const to = manualJid.value || chatSelect.value;
-    const text = textInput.value;
-    
-    if (!to) { alert('Please select or enter a recipient'); return; }
-    if (!text) { alert('Please enter a message'); return; }
-    
-    fetch('/admin/api/tenants/' + hash + '/send', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({to: to, text: text})
-    }).then(r => r.json()).then(data => {
-        if (data.status === 'sent') {
-            textInput.value = '';
-            htmx.ajax('GET', '/admin/fragments/tenant-panel/' + hash, {
-                target: document.getElementById('tenant-panel-' + hash),
-                swap: 'innerHTML'
-            });
-        } else {
-            alert('Failed: ' + (data.detail || JSON.stringify(data)));
-        }
-    }).catch(e => alert('Error: ' + e));
-}
-async function syncContacts(hash) {
-    if (!confirm('Sync contacts from WhatsApp?')) return;
-    try {
-        const response = await fetch('/admin/api/tenants/' + hash + '/sync-contacts', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'}
-        });
-        const data = await response.json();
-        if (response.ok) {
-            alert('Contacts synced!\\nSynced: ' + data.synced + '\\nFailed: ' + data.failed + '\\nTotal: ' + data.total);
-            htmx.trigger('#tenants-list', 'load');
-        } else {
-            alert(data.detail || 'Failed to sync contacts');
-        }
-    } catch (e) {
-        alert('Error: ' + e.message);
+        if (chevron) chevron.style.transform = '';
     }
 }
 
-async function syncMessages(hash) {
-    if (!confirm('Sync chat history from WhatsApp? This may take a while.')) return;
-    const btn = event.target;
-    const originalText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Syncing...';
+async function sendMsgAsTenant(hash) {
+    const jidSelect = document.getElementById('chat-select-' + hash);
+    const manualJid = document.getElementById('manual-jid-' + hash);
+    const msgText = document.getElementById('msg-text-' + hash);
+    const to = (jidSelect && jidSelect.value) ? jidSelect.value : (manualJid ? manualJid.value : '');
+    const text = msgText ? msgText.value : '';
+    if (!to || !text) { alert('Please enter recipient and message'); return; }
     try {
-        const response = await fetch('/admin/api/tenants/' + hash + '/sync-messages', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'}
+        const response = await fetch('/admin/api/tenants/' + hash + '/send', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({to: to, text: text})
         });
         const data = await response.json();
-        if (response.ok) {
-            const errorInfo = data.errors > 0 ? '\\nErrors: ' + data.errors : '';
-            alert('Messages synced!\\nStored: ' + data.stored + '\\nDuplicates: ' + data.duplicates + errorInfo + '\\nChats: ' + data.chats_count);
-            htmx.trigger('#tenants-list', 'load');
-        } else {
-            alert(data.detail || 'Failed to sync messages');
-        }
-    } catch (e) {
-        alert('Error: ' + e.message);
-    } finally {
-        btn.disabled = false;
-        btn.textContent = originalText;
-    }
+        if (response.ok) { msgText.value = ''; htmx.trigger('#tenant-panel-' + hash, 'load'); }
+        else { reportFetchError('SendMsgAsTenant', data.detail || JSON.stringify(data)); alert(data.detail || JSON.stringify(data)); }
+    } catch (e) { reportFetchError('SendMsgAsTenant', e.message); }
 }
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        var m = document.getElementById('create-tenant-modal');
+        if (m && !m.classList.contains('hidden')) hideCreateTenantModal();
+        var t = document.getElementById('tenant-actions-modal');
+        if (t && !t.classList.contains('hidden')) hideTenantActionsModal();
+    }
+});
 """
     html = PAGE_TEMPLATE.format(
         title="Tenants",
@@ -1462,6 +1499,7 @@ async function sendReply() {
             closeReplyModal();
             searchMessages();
         } else {
+            reportFetchError('SendReply', data.detail || 'Failed to send');
             showToast(data.detail || 'Failed to send', true);
         }
     } catch (e) {
@@ -1641,6 +1679,7 @@ async function toggleChatwootForTenant(tenantHash, currentEnabled) {
             htmx.ajax('GET', '/admin/fragments/chatwoot/tenants', {target: '#chatwoot-tenants', swap: 'innerHTML'});
         } else {
             const data = await response.json();
+            reportFetchError('ToggleChatwoot', data.detail || 'Failed to update');
             alert(data.detail || 'Failed to update');
         }
     } catch (e) {
@@ -1691,6 +1730,7 @@ async function saveChatwootTenantConfig() {
                 htmx.ajax('GET', '/admin/fragments/chatwoot/tenants', {target: '#chatwoot-tenants', swap: 'innerHTML'});
             }, 500);
         } else {
+            reportFetchError('SaveChatwootConfig', data.detail || 'Failed to save');
             status.textContent = data.detail || 'Failed to save';
             status.className = 'text-sm text-red-400';
         }
@@ -1714,6 +1754,7 @@ async function syncChatwootContacts(tenantHash) {
         if (response.ok) {
             alert('Contacts synced!\\nCreated: ' + data.created + '\\nUpdated: ' + data.updated + '\\nSkipped: ' + data.skipped);
         } else {
+            reportFetchError('SyncChatwootContacts', data.detail || 'Failed to sync contacts');
             alert(data.detail || 'Failed to sync contacts');
         }
     } catch (e) {
@@ -1741,6 +1782,7 @@ async function syncChatwootMessages(tenantHash) {
             const errorInfo = data.errors > 0 ? '\\nErrors: ' + data.errors : '';
             alert('Messages synced!\\nSynced: ' + data.synced + '\\nSkipped: ' + data.skipped + errorInfo);
         } else {
+            reportFetchError('SyncChatwootMessages', data.detail || 'Failed to sync messages');
             alert(data.detail || 'Failed to sync messages');
         }
     } catch (e) {
@@ -1942,7 +1984,7 @@ function loadInitialLogs() {
     if (sourceFilter) url += '&source=' + encodeURIComponent(sourceFilter);
 
     fetch(url, {headers: {'X-Requested-With': 'HTMX'}})
-        .then(r => r.json())
+        .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
         .then(data => {
             const stream = document.getElementById('log-stream');
             stream.innerHTML = '';
@@ -1956,6 +1998,7 @@ function loadInitialLogs() {
             if (autoScroll) stream.scrollTop = stream.scrollHeight;
         })
         .catch(err => {
+            reportFetchError('LoadLogs', err.message);
             document.getElementById('log-stream').innerHTML = '<div class="p-4 text-center text-red-400">Failed to load logs</div>';
         });
 }
@@ -2042,14 +2085,17 @@ function hideEntryDetails() {
 function clearLogs() {
     if (!confirm('Clear all log entries from the buffer?')) return;
     fetch('/admin/api/logs/clear', {method: 'POST', headers: {'Content-Type': 'application/json'}})
-        .then(r => r.json())
+        .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
         .then(data => {
             document.getElementById('log-stream').innerHTML = '<div class="p-4 text-center text-gray-600">Logs cleared</div>';
             logEntryCount = 0;
             logEntriesById = {};
             document.getElementById('log-count').textContent = '0 entries';
         })
-        .catch(() => {});
+        .catch(function(err) {
+            reportFetchError('ClearLogs', err ? err.message : 'Unknown error');
+            document.getElementById('log-stream').innerHTML = '<div class="p-4 text-center text-red-400">Failed to clear logs</div>';
+        });
 }
 
 document.addEventListener('DOMContentLoaded', () => { loadInitialLogs(); });
@@ -2332,6 +2378,13 @@ function switchTab(tabName) {
     activeTab.classList.add('text-whatsapp', 'border-whatsapp');
 }
 
+function selectContact(jid, name) {
+    document.getElementById('send-to').value = jid;
+    switchTab('messages');
+    const sendText = document.getElementById('send-text');
+    if (sendText) sendText.focus();
+}
+
 async function sendMessage() {
     const to = document.getElementById('send-to').value;
     const text = document.getElementById('send-text').value;
@@ -2351,6 +2404,7 @@ async function sendMessage() {
         document.getElementById('send-text').value = '';
         htmx.trigger('#tenant-messages', 'load');
     } else {
+        reportFetchError('SendMessage', data.detail || JSON.stringify(data));
         alert('Failed: ' + (data.detail || JSON.stringify(data)));
     }
 }
@@ -2369,6 +2423,7 @@ async function addWebhook() {
         location.reload();
     } else {
         const data = await response.json();
+        reportFetchError('AddWebhook', data.detail || JSON.stringify(data));
         alert('Failed: ' + (data.detail || JSON.stringify(data)));
     }
 }
@@ -2382,6 +2437,8 @@ async function removeWebhook(url) {
     });
     if (response.ok) {
         location.reload();
+    } else {
+        reportFetchError('RemoveWebhook', 'Request failed');
     }
 }
 
@@ -2401,6 +2458,7 @@ async function reconnectTenant() {
         showNotification('Initiating connection... Watch for QR code.', 'info');
     } else {
         const data = await response.json();
+        reportFetchError('ReconnectTenant', data.detail || JSON.stringify(data));
         showNotification('Failed: ' + (data.detail || JSON.stringify(data)), 'error');
         btn.disabled = false;
         btn.textContent = 'Reconnect Session';
@@ -2446,6 +2504,7 @@ async function clearCredentials() {
         location.reload();
     } else {
         const data = await response.json();
+        reportFetchError('ClearCredentials', data.detail || JSON.stringify(data));
         alert('Failed: ' + (data.detail || JSON.stringify(data)));
     }
 }
@@ -2472,6 +2531,7 @@ async function deleteTenant() {
         window.location.href = '/admin/tenants';
     } else {
         const data = await response.json();
+        reportFetchError('DeleteTenant', data.detail || JSON.stringify(data));
         alert('Failed: ' + (data.detail || JSON.stringify(data)));
     }
 }
@@ -2488,6 +2548,7 @@ async function updateAutoMarkRead(enabled) {
     if (response.ok) {
         showNotification('Setting updated' + (data.bridge_restarted ? ' - Bridge restarted to apply changes' : ''), 'success');
     } else {
+        reportFetchError('UpdateAutoMarkRead', data.detail || JSON.stringify(data));
         showNotification('Failed: ' + (data.detail || JSON.stringify(data)), 'error');
         document.getElementById('setting-auto-mark-read').checked = !enabled;
     }
@@ -2500,6 +2561,8 @@ async function loadTenantSettings() {
     if (response.ok) {
         const data = await response.json();
         document.getElementById('setting-auto-mark-read').checked = data.auto_mark_read;
+    } else {
+        reportFetchError('LoadTenantSettings', 'Request failed');
     }
 }
 
@@ -2523,6 +2586,7 @@ async function syncTenantContacts() {
             showNotification('Contacts synced: ' + data.synced + ' synced, ' + data.failed + ' failed', 'success');
             htmx.trigger('#tenant-contacts', 'load');
         } else {
+            reportFetchError('SyncContacts', data.detail || 'Failed to sync contacts');
             showNotification(data.detail || 'Failed to sync contacts', 'error');
         }
     } catch (e) {
@@ -2552,6 +2616,7 @@ async function syncTenantMessages() {
             showNotification('Messages synced: ' + data.stored + ' stored, ' + data.duplicates + ' duplicates' + errorInfo, 'success');
             htmx.trigger('#tenant-messages', 'load');
         } else {
+            reportFetchError('SyncMessages', data.detail || 'Failed to sync messages');
             showNotification(data.detail || 'Failed to sync messages', 'error');
         }
     } catch (e) {
@@ -2680,11 +2745,11 @@ async def get_stats_fragment(session_id: str = Depends(require_admin_session)):
     <div class="flex items-center justify-between">
         <div>
             <p class="text-gray-400 text-sm">Database</p>
-            <p class="text-3xl font-bold mt-1 text-{db_status_color}-500">{db_type}</p>
+            <p class="text-3xl font-bold mt-1 {"text-green-500" if db_connected else "text-red-500"}">{db_type}</p>
             <p class="text-xs text-gray-500 mt-1">{db_status_text}{f" · {pool_info}" if pool_info else ""}</p>
         </div>
-        <div class="w-12 h-12 bg-{db_status_color}-500/20 rounded-lg flex items-center justify-center">
-            <svg class="w-6 h-6 text-{db_status_color}-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg>
+        <div class="w-12 h-12 {"bg-green-500/20" if db_connected else "bg-red-500/20"} rounded-lg flex items-center justify-center">
+            <svg class="w-6 h-6 {"text-green-500" if db_connected else "text-red-500"}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582 4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path></svg>
         </div>
     </div>
 </div>
@@ -3414,6 +3479,7 @@ async function saveChatwootConfig() {{
             status.className = 'text-sm text-green-400';
             htmx.trigger('#chatwoot-tenants', 'load');
         }} else {{
+            reportFetchError('SaveChatwootConfig', data.detail || 'Failed to save');
             status.textContent = data.detail || 'Failed to save';
             status.className = 'text-sm text-red-400';
         }}
@@ -4159,7 +4225,7 @@ async def create_tenant_api(
     session_id: str = Depends(require_admin_session),
 ):
     tenant, api_key = await tenant_manager.create_tenant(name)
-    admin_ws_manager.broadcast(
+    await admin_ws_manager.broadcast(
         "tenant_list_changed",
         {
             "action": "created",
@@ -4175,6 +4241,93 @@ async def create_tenant_api(
             "api_key_hash": tenant.api_key_hash,
             "created_at": tenant.created_at.isoformat(),
         },
+    }
+
+
+# Bulk Operations
+
+
+class BulkOperationRequest(BaseModel):
+    items: list[str] = Field(..., max_length=50)
+
+
+class BulkTenantReconnectRequest(BaseModel):
+    tenant_hashes: list[str] = Field(..., max_length=50)
+
+
+class BulkMessageDeleteRequest(BaseModel):
+    message_ids: list[int] = Field(..., max_length=50)
+
+
+@api_router.post("/tenants/bulk/reconnect")
+async def bulk_reconnect_tenants(
+    data: BulkTenantReconnectRequest,
+    session_id: str = Depends(require_admin_session),
+):
+    """Bulk reconnect multiple tenants (max 50)"""
+    results = []
+
+    for hash in data.tenant_hashes:
+        try:
+            tenant = tenant_manager._tenants.get(hash)
+            if not tenant:
+                results.append({"hash": hash, "status": "not_found"})
+                continue
+
+            if tenant._restarting:
+                results.append(
+                    {
+                        "hash": hash,
+                        "status": "skipped",
+                        "reason": "reconnect already in progress",
+                    }
+                )
+                continue
+
+            if tenant.bridge:
+                await tenant.bridge.stop()
+                tenant.bridge = None
+
+            bridge = await tenant_manager.get_or_create_bridge(tenant)
+            await bridge.login()
+            results.append({"hash": hash, "status": "success"})
+        except Exception as e:
+            results.append({"hash": hash, "status": "error", "error": str(e)})
+
+    return {
+        "processed": len(results),
+        "successful": sum(1 for r in results if r["status"] == "success"),
+        "failed": sum(1 for r in results if r["status"] != "success"),
+        "results": results,
+    }
+
+
+@api_router.delete("/tenants/bulk")
+async def bulk_delete_tenants(
+    data: BulkTenantReconnectRequest,
+    session_id: str = Depends(require_admin_session),
+):
+    """Bulk delete multiple tenants (max 50)"""
+    results = []
+
+    for hash in data.tenant_hashes:
+        try:
+            tenant = tenant_manager._tenants.get(hash)
+            if not tenant:
+                results.append({"hash": hash, "status": "not_found"})
+                continue
+
+            deleted = await tenant_manager.delete_tenant_by_hash(hash)
+            results.append({"hash": hash, "status": "deleted" if deleted else "failed"})
+        except Exception as e:
+            results.append({"hash": hash, "status": "error", "error": str(e)})
+
+    await admin_ws_manager.broadcast("tenant_list_changed", {"action": "bulk_updated"})
+    return {
+        "processed": len(results),
+        "deleted": sum(1 for r in results if r["status"] == "deleted"),
+        "failed": sum(1 for r in results if r["status"] != "deleted"),
+        "results": results,
     }
 
 
@@ -4227,7 +4380,7 @@ async def delete_tenant_api(
     tenant_name = tenant.name
     deleted = await tenant_manager.delete_tenant_by_hash(tenant_hash)
     if deleted:
-        admin_ws_manager.broadcast(
+        await admin_ws_manager.broadcast(
             "tenant_list_changed",
             {
                 "action": "deleted",
@@ -4306,7 +4459,7 @@ async def toggle_tenant_enabled(
         await tenant.bridge.stop()
         tenant.connection_state = "disconnected"
 
-    admin_ws_manager.broadcast(
+    await admin_ws_manager.broadcast(
         "tenant_list_changed",
         {
             "action": "updated",
@@ -4610,93 +4763,6 @@ async def report_frontend_error(
             "details": entry.details,
         },
     )
-
-
-# Bulk Operations
-
-
-class BulkOperationRequest(BaseModel):
-    items: list[str] = Field(..., max_length=50)
-
-
-class BulkTenantReconnectRequest(BaseModel):
-    tenant_hashes: list[str] = Field(..., max_length=50)
-
-
-class BulkMessageDeleteRequest(BaseModel):
-    message_ids: list[int] = Field(..., max_length=50)
-
-
-@api_router.post("/tenants/bulk/reconnect")
-async def bulk_reconnect_tenants(
-    data: BulkTenantReconnectRequest,
-    session_id: str = Depends(require_admin_session),
-):
-    """Bulk reconnect multiple tenants (max 50)"""
-    results = []
-
-    for hash in data.tenant_hashes:
-        try:
-            tenant = tenant_manager._tenants.get(hash)
-            if not tenant:
-                results.append({"hash": hash, "status": "not_found"})
-                continue
-
-            if tenant._restarting:
-                results.append(
-                    {
-                        "hash": hash,
-                        "status": "skipped",
-                        "reason": "reconnect already in progress",
-                    }
-                )
-                continue
-
-            if tenant.bridge:
-                await tenant.bridge.stop()
-                tenant.bridge = None
-
-            bridge = await tenant_manager.get_or_create_bridge(tenant)
-            await bridge.login()
-            results.append({"hash": hash, "status": "success"})
-        except Exception as e:
-            results.append({"hash": hash, "status": "error", "error": str(e)})
-
-    return {
-        "processed": len(results),
-        "successful": sum(1 for r in results if r["status"] == "success"),
-        "failed": sum(1 for r in results if r["status"] != "success"),
-        "results": results,
-    }
-
-
-@api_router.delete("/tenants/bulk")
-async def bulk_delete_tenants(
-    data: BulkTenantReconnectRequest,
-    session_id: str = Depends(require_admin_session),
-):
-    """Bulk delete multiple tenants (max 50)"""
-    results = []
-
-    for hash in data.tenant_hashes:
-        try:
-            tenant = tenant_manager._tenants.get(hash)
-            if not tenant:
-                results.append({"hash": hash, "status": "not_found"})
-                continue
-
-            deleted = await tenant_manager.delete_tenant_by_hash(hash)
-            results.append({"hash": hash, "status": "deleted" if deleted else "failed"})
-        except Exception as e:
-            results.append({"hash": hash, "status": "error", "error": str(e)})
-
-    admin_ws_manager.broadcast("tenant_list_changed", {"action": "bulk_updated"})
-    return {
-        "processed": len(results),
-        "deleted": sum(1 for r in results if r["status"] == "deleted"),
-        "failed": sum(1 for r in results if r["status"] != "deleted"),
-        "results": results,
-    }
 
 
 @api_router.delete("/messages/bulk")

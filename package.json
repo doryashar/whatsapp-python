@@ -1,0 +1,10 @@
+{
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "vitest": "^3.2.4"
+  },
+  "scripts": {
+    "test:bridge": "vitest run --config bridge/vitest.config.ts",
+    "test:bridge:coverage": "vitest run --config bridge/vitest.config.ts --coverage"
+  }
+}

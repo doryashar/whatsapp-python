@@ -62,6 +62,19 @@
         } catch (e) {}
     };
 
+    window.reportFetchError = function(operation, detail) {
+        try {
+            if (typeof window.reportFrontendError === 'function') {
+                window.reportFrontendError({
+                    message: operation + ': ' + detail,
+                    error_type: 'FetchError',
+                    source: window.location.href,
+                    url: window.location.href,
+                });
+            }
+        } catch (e) {}
+    };
+
     window.addEventListener('error', function(event) {
         window.reportFrontendError({
             message: event.message,
@@ -105,6 +118,7 @@ class AdminWebSocket {
             const response = await fetch('/admin/api/session-id');
             if (!response.ok) {
                 console.error('Failed to get session ID');
+                reportFetchError('WebSocketConnect', 'Failed to get session ID');
                 return;
             }
             const data = await response.json();

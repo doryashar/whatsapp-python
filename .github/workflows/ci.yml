@@ -1,0 +1,179 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  python-lint:
+    name: Python Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Ruff check
+        run: ruff check src/ tests/
+
+      - name: Ruff format check
+        run: ruff format --check src/ tests/
+
+  python-unit-tests:
+    name: Python Unit Tests (3.${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["11", "12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.${{ matrix.python-version }}"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-cov coverage httpx
+
+      - name: Run unit tests
+        env:
+          ENVIRONMENT: test
+          ADMIN_PASSWORD: test-admin-password-123
+        run: |
+          pytest tests/ \
+            -m "not playwright and not e2e and not slow" \
+            --cov=src \
+            --cov-report=xml:coverage-python.xml \
+            --cov-report=term-missing \
+            -q \
+            --tb=short
+
+      - name: Upload coverage
+        if: matrix.python-version == "12"
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-python
+          path: coverage-python.xml
+
+  python-postgres-tests:
+    name: PostgreSQL Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-cov coverage httpx testcontainers-postgres
+
+      - name: Run PostgreSQL tests
+        env:
+          ENVIRONMENT: test
+          ADMIN_PASSWORD: test-admin-password-123
+          DOCKER_HOST: unix:///var/run/docker.sock
+        run: |
+          pytest tests/test_database_postgres.py \
+            --cov=src \
+            --cov-report=xml:coverage-pg.xml \
+            --cov-report=term-missing \
+            -q \
+            --tb=short
+
+  node-tests:
+    name: Node.js Bridge Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: |
+          npm install
+          cd bridge && npm install
+
+      - name: Run Vitest
+        run: npx vitest run --config bridge/vitest.config.ts --reporter=verbose
+
+      - name: Run Vitest with coverage
+        run: npx vitest run --config bridge/vitest.config.ts --coverage
+
+  playwright-e2e:
+    name: Playwright E2E (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-playwright nest-asyncio requests
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Run Playwright tests
+        env:
+          ENVIRONMENT: test
+          ADMIN_PASSWORD: test-admin-password-123
+        run: |
+          pytest tests/playwright/ \
+            -m "not live_e2e" \
+            --browser=${{ matrix.browser }} \
+            -q \
+            --tb=short
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.browser }}
+          path: playwright-report/
+
+  coverage-report:
+    name: Coverage Report
+    needs: [python-unit-tests, node-tests]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Python coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-python
+          path: .
+
+      - name: Coverage summary
+        run: |
+          echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo "Python and Node.js tests completed." >> $GITHUB_STEP_SUMMARY

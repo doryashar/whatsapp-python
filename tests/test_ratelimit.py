@@ -187,3 +187,128 @@ def test_unblock_clears_failed_auth():
 
     assert not limiter.is_blocked("10.0.0.5")
     assert limiter.get_failed_auth_attempts("10.0.0.5")["attempts"] == 0
+
+
+class TestIPCleanup:
+    def test_cleanup_removes_stale_ips_from_minute_window(self):
+        import time
+        from collections import deque
+
+        limiter = RateLimiter(
+            requests_per_minute=100,
+            requests_per_hour=1000,
+            block_duration_minutes=60,
+        )
+
+        limiter.check_rate_limit("10.0.0.1")
+        assert "10.0.0.1" in limiter._minute_requests
+
+        old_time = time.time() - 7200
+        limiter._minute_requests["10.0.0.1"] = deque([old_time])
+
+        limiter._cleanup_old_ips(time.time())
+
+        assert len(limiter._minute_requests.get("10.0.0.1", [])) == 0
+
+    def test_cleanup_removes_stale_ips_from_hour_window(self):
+        import time
+        from collections import deque
+
+        limiter = RateLimiter(
+            requests_per_minute=100,
+            requests_per_hour=1000,
+            block_duration_minutes=60,
+        )
+
+        limiter.check_rate_limit("10.0.0.2")
+        assert "10.0.0.2" in limiter._hour_requests
+
+        old_time = time.time() - 7200
+        limiter._hour_requests["10.0.0.2"] = deque([old_time])
+
+        limiter._cleanup_old_ips(time.time())
+
+        assert len(limiter._hour_requests.get("10.0.0.2", [])) == 0
+
+    def test_cleanup_preserves_active_ips(self):
+        import time
+        from collections import deque
+
+        limiter = RateLimiter(
+            requests_per_minute=100,
+            requests_per_hour=1000,
+        )
+
+        recent_time = time.time() - 60
+        limiter._minute_requests["10.0.0.3"] = deque([recent_time])
+        limiter._hour_requests["10.0.0.3"] = deque([recent_time])
+
+        limiter._cleanup_old_ips(time.time())
+
+        assert "10.0.0.3" in limiter._minute_requests
+        assert "10.0.0.3" in limiter._hour_requests
+
+    def test_cleanup_does_not_remove_blocked_ips(self):
+        import time
+        from collections import deque
+
+        limiter = RateLimiter()
+        limiter.block_ip("10.0.0.4", reason="test")
+
+        limiter._minute_requests["10.0.0.4"] = deque([time.time() - 7200])
+        limiter._hour_requests["10.0.0.4"] = deque([time.time() - 7200])
+
+        limiter._cleanup_old_ips(time.time())
+
+        assert limiter.is_blocked("10.0.0.4")
+
+    def test_cleanup_triggered_periodically(self):
+        import time
+
+        limiter = RateLimiter(
+            requests_per_minute=100,
+            requests_per_hour=1000,
+        )
+
+        limiter.check_rate_limit("10.0.0.5")
+        limiter.check_rate_limit("10.0.0.6")
+        limiter.check_rate_limit("10.0.0.7")
+
+        assert limiter._request_count == 3
+
+        original_cleanup = limiter._cleanup_old_ips
+        cleanup_called = []
+
+        def spy_cleanup(now):
+            cleanup_called.append(True)
+            original_cleanup(now)
+
+        limiter._cleanup_old_ips = spy_cleanup
+
+        for _ in range(100):
+            limiter.check_rate_limit("10.0.0.8")
+
+        assert len(cleanup_called) >= 1
+
+    def test_stats_reflect_cleanup(self):
+        import time
+        from collections import deque
+
+        limiter = RateLimiter(
+            requests_per_minute=100,
+            requests_per_hour=1000,
+        )
+
+        limiter.check_rate_limit("10.0.0.9")
+        limiter.check_rate_limit("10.0.0.10")
+
+        stats_before = limiter.get_stats()
+        assert stats_before["unique_ips_minute"] >= 2
+
+        limiter._minute_requests["10.0.0.9"] = deque([time.time() - 7200])
+        limiter._minute_requests["10.0.0.10"] = deque([time.time() - 7200])
+
+        limiter._cleanup_old_ips(time.time())
+
+        stats_after = limiter.get_stats()
+        assert stats_after["unique_ips_minute"] == 0

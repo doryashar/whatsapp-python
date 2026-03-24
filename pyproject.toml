@@ -18,10 +18,46 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "httpx>=0.26.0",
     "pytest-cov>=4.1.0",
+    "coverage>=7.0.0",
+    "testcontainers-postgres>=0.0.1rc1",
 ]
 playwright = [
     "pytest-playwright>=0.4.0",
     "playwright>=1.40.0",
+    "nest-asyncio>=1.6.0",
+    "requests>=2.31.0",
+    "psycopg2-binary>=2.9.0",
+]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+omit = [
+    "src/__init__.py",
+    "src/admin/__init__.py",
+    "src/api/__init__.py",
+    "src/bridge/__init__.py",
+    "src/chatwoot/__init__.py",
+    "src/middleware/__init__.py",
+    "src/models/__init__.py",
+    "src/store/__init__.py",
+    "src/tenant/__init__.py",
+    "src/telemetry/__init__.py",
+    "src/utils/__init__.py",
+    "src/webhooks/__init__.py",
+]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "@abstractmethod",
+    "pass",
 ]
 
 [build-system]
@@ -41,4 +77,5 @@ markers = [
     "accessibility: accessibility-related tests",
     "responsive: responsive design tests",
     "websocket: WebSocket-related tests",
+    "postgres: tests requiring PostgreSQL via testcontainers",
 ]

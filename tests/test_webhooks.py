@@ -145,20 +145,29 @@ class TestWebhookSender:
 
 
 @pytest.fixture
-async def setup_tenant():
+async def webhook_tenant(db, monkeypatch):
     from src.tenant import tenant_manager
+
+    original_db = tenant_manager._db
+    original_tenants = tenant_manager._tenants.copy()
+
+    tenant_manager.set_database(db)
+    tenant_manager._tenants.clear()
 
     tenant, api_key = await tenant_manager.create_tenant("test_tenant")
     yield {"tenant": tenant, "api_key": api_key}
     await tenant_manager.delete_tenant(api_key)
 
+    tenant_manager._db = original_db
+    tenant_manager._tenants = original_tenants
+
 
 @pytest.mark.asyncio
-async def test_webhook_routes(setup_tenant):
+async def test_webhook_routes(webhook_tenant):
     from src.main import app
     from src.tenant import tenant_manager
 
-    api_key = setup_tenant["api_key"]
+    api_key = webhook_tenant["api_key"]
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -186,10 +195,10 @@ async def test_webhook_routes(setup_tenant):
 
 
 @pytest.mark.asyncio
-async def test_webhook_add_invalid_url(setup_tenant):
+async def test_webhook_add_invalid_url(webhook_tenant):
     from src.main import app
 
-    api_key = setup_tenant["api_key"]
+    api_key = webhook_tenant["api_key"]
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -203,10 +212,10 @@ async def test_webhook_add_invalid_url(setup_tenant):
 
 
 @pytest.mark.asyncio
-async def test_webhook_remove_not_found(setup_tenant):
+async def test_webhook_remove_not_found(webhook_tenant):
     from src.main import app
 
-    api_key = setup_tenant["api_key"]
+    api_key = webhook_tenant["api_key"]
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"

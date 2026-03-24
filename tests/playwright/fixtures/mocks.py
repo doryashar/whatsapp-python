@@ -94,13 +94,13 @@ class WebSocketMock:
         self.messages: list[dict] = []
         self._connected = False
 
-    async def send_json(self, data: dict):
+    def send_json(self, data: dict):
         self.messages.append(data)
 
-    async def connect(self):
+    def connect(self):
         self._connected = True
 
-    async def close(self):
+    def close(self):
         self._connected = False
 
     def get_tenant_state_event(self, tenant_hash: str, state: str) -> dict:

@@ -3,19 +3,7 @@ from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock, patch, MagicMock
 import asyncio
 
-
-ADMIN_PASSWORD = "test-admin-password-123"
-
-
-@pytest.fixture(autouse=True)
-def setup_admin_password(monkeypatch):
-    from src import config
-
-    monkeypatch.setattr(config.settings, "admin_password", ADMIN_PASSWORD)
-    monkeypatch.setattr(config.settings, "debug", True)
-    yield
-    monkeypatch.setattr(config.settings, "admin_password", None)
-    monkeypatch.setattr(config.settings, "debug", False)
+from tests.conftest import ADMIN_PASSWORD
 
 
 @pytest.fixture
@@ -30,26 +18,8 @@ def mock_db():
     db.get_admin_session = AsyncMock(
         return_value={"id": "test-session-id", "expires_at": "2099-01-01"}
     )
-    db.save_tenant = AsyncMock()
-    db.delete_tenant = AsyncMock()
+    db.update_admin_session_expiry = AsyncMock()
     return db
-
-
-@pytest.fixture
-async def setup_tenant_manager(mock_db, monkeypatch):
-    from src.tenant import tenant_manager
-    from src.store.database import Database
-
-    original_db = tenant_manager._db
-    original_tenants = tenant_manager._tenants.copy()
-
-    tenant_manager._db = mock_db
-    tenant_manager._tenants.clear()
-
-    yield tenant_manager
-
-    tenant_manager._db = original_db
-    tenant_manager._tenants = original_tenants
 
 
 @pytest.mark.asyncio

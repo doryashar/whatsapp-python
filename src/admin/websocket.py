@@ -23,7 +23,7 @@ class AdminConnectionManager:
             self._connections.append(websocket)
             self._connection_sessions[websocket] = session_id
             self._connection_times[websocket] = datetime.now(UTC)
-        logger.info(
+        logger.debug(
             f"Admin WebSocket connected: session={session_id[:16]}..., total={len(self._connections)}"
         )
 
@@ -42,7 +42,7 @@ class AdminConnectionManager:
             connections_count = len(self._connections)
 
         if not connections_count:
-            logger.info(f"No WebSocket connections to broadcast '{event_type}'")
+            logger.debug(f"No WebSocket connections to broadcast '{event_type}'")
             return
 
         message = json.dumps(
@@ -67,7 +67,7 @@ class AdminConnectionManager:
         for conn in disconnected:
             await self.disconnect(conn)
 
-        logger.info(
+        logger.debug(
             f"Broadcast event '{event_type}' to {len(connections_copy) - len(disconnected)}/{connections_count} connections"
         )
 

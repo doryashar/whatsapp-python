@@ -28,14 +28,14 @@ class TestChatNameDisplayFix:
 
     def test_tenant_detail_shows_contacts_panel(self, page: Page):
         page.goto(f"{BASE_URL}/admin/tenants")
-        page.wait_for_timeout(2000)
+        page.wait_for_load_state("networkidle")
 
         tenant_rows = page.locator("[hx-get*='tenant-panel'], .tenant-row")
         if tenant_rows.count() == 0:
             pytest.skip("No tenants available")
 
         tenant_rows.first.click()
-        page.wait_for_timeout(3000)
+        page.wait_for_load_state("networkidle")
 
         page_content = page.content()
         has_contacts = "Contacts" in page_content or "contacts" in page_content
@@ -43,14 +43,14 @@ class TestChatNameDisplayFix:
 
     def test_contacts_display_phone_not_sender_name(self, page: Page):
         page.goto(f"{BASE_URL}/admin/tenants")
-        page.wait_for_timeout(2000)
+        page.wait_for_load_state("networkidle")
 
         tenant_links = page.locator("[hx-get*='tenant-panel'], .tenant-row a")
         if tenant_links.count() == 0:
             pytest.skip("No tenants available")
 
         tenant_links.first.click()
-        page.wait_for_timeout(3000)
+        page.wait_for_load_state("networkidle")
 
         chat_select = page.locator("#chat-select, select[name*='chat']")
         if chat_select.count() > 0:
@@ -59,7 +59,7 @@ class TestChatNameDisplayFix:
 
     def test_messages_list_renders_without_errors(self, page: Page):
         page.goto(f"{BASE_URL}/admin/messages")
-        page.wait_for_timeout(2000)
+        page.wait_for_load_state("networkidle")
 
         page_content = page.content()
         assert "500" not in page_content or "Internal Server Error" not in page_content
@@ -72,7 +72,7 @@ class TestChatNameDisplayFix:
         )
 
         page.goto(f"{BASE_URL}/admin/dashboard")
-        page.wait_for_timeout(3000)
+        page.wait_for_load_state("networkidle")
 
         js_errors = [
             e for e in errors if "favicon" not in e.lower() and "WebSocket" not in e
@@ -155,7 +155,6 @@ class TestLogsPageLive:
         page.wait_for_selector("#log-stream", timeout=10000)
 
         page.fill("#log-search", "bridge")
-        page.wait_for_timeout(1000)
         assert page.locator("#log-search").input_value() == "bridge"
 
     def test_level_filter_can_select_error(self, page: Page):
@@ -163,7 +162,6 @@ class TestLogsPageLive:
         page.wait_for_selector("#log-stream", timeout=10000)
 
         page.select_option("#log-level-filter", "ERROR")
-        page.wait_for_timeout(1000)
         assert page.locator("#log-level-filter").input_value() == "ERROR"
 
     def test_status_bar_visible(self, page: Page):
@@ -186,13 +184,12 @@ class TestLogsPageLive:
 
         page.on("dialog", lambda dialog: dialog.dismiss())
         page.get_by_text("Clear").click()
-        page.wait_for_timeout(500)
-        assert True
+        expect(page.locator("#log-stream").first).to_be_visible()
 
     def test_log_entries_appear_in_stream(self, page: Page):
         page.goto(f"{BASE_URL}/admin/logs")
         page.wait_for_selector("#log-stream", timeout=10000)
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(1000)
 
         stream = page.locator("#log-stream").inner_text()
         assert (
@@ -208,37 +205,32 @@ class TestDashboardLive:
 
     def test_dashboard_loads(self, page: Page):
         page.goto(f"{BASE_URL}/admin/dashboard")
-        page.wait_for_timeout(2000)
         expect(page.locator("h1")).to_contain_text("Dashboard")
 
     def test_dashboard_sidebar_has_logs_link(self, page: Page):
         page.goto(f"{BASE_URL}/admin/dashboard")
-        page.wait_for_timeout(1000)
         logs_link = page.locator('aside a[href="/admin/logs"]')
         expect(logs_link).to_be_visible()
 
     def test_tenants_page_loads(self, page: Page):
         page.goto(f"{BASE_URL}/admin/tenants")
-        page.wait_for_timeout(2000)
         expect(page.locator("h1").first).to_contain_text("Tenant")
 
     def test_messages_page_loads(self, page: Page):
         page.goto(f"{BASE_URL}/admin/messages")
-        page.wait_for_timeout(2000)
         expect(page.locator("h1").first).to_contain_text("Message")
 
     def test_navigation_between_pages(self, page: Page):
         page.goto(f"{BASE_URL}/admin/dashboard")
-        page.wait_for_timeout(1000)
 
         page.click('aside a[href="/admin/logs"]')
         page.wait_for_selector("#log-stream", timeout=10000)
         assert "/admin/logs" in page.url
 
         page.click('aside a[href="/admin/dashboard"]')
-        page.wait_for_timeout(2000)
+        page.wait_for_url("**/admin/dashboard**")
         assert "/admin/dashboard" in page.url
 
         page.click('aside a[href="/admin/messages"]')
-        page.wait_for_timeout(2000)
+        page.wait_for_url("**/admin/messages**")
         assert "/admin/messages" in page.url

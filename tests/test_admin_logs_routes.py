@@ -6,57 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncio
 
 from src.admin.log_buffer import LogEntry
-
-ADMIN_PASSWORD = "test-admin-password-123"
-
-
-@pytest.fixture(autouse=True)
-def setup_admin_password(monkeypatch):
-    from src import config
-
-    monkeypatch.setattr(config.settings, "admin_password", ADMIN_PASSWORD)
-    monkeypatch.setattr(config.settings, "debug", True)
-    yield
-    monkeypatch.setattr(config.settings, "admin_password", None)
-    monkeypatch.setattr(config.settings, "debug", False)
-
-
-@pytest.fixture
-def mock_db():
-    db = MagicMock()
-    db.list_messages = AsyncMock(return_value=([], 0))
-    db.get_recent_chats = AsyncMock(return_value=[])
-    db.get_webhook_stats = AsyncMock(
-        return_value={"total": 0, "success_count": 0, "fail_count": 0}
-    )
-    db.create_admin_session = AsyncMock(return_value="test-session-id")
-    db.get_admin_session = AsyncMock(
-        return_value={
-            "id": "test-session-id",
-            "expires_at": "2099-01-01",
-            "user_agent": "test",
-            "ip_address": "127.0.0.1",
-        }
-    )
-    db.save_tenant = AsyncMock()
-    db.delete_tenant = AsyncMock()
-    return db
-
-
-@pytest.fixture
-async def setup_tenant_manager(mock_db, monkeypatch):
-    from src.tenant import tenant_manager
-
-    original_db = tenant_manager._db
-    original_tenants = tenant_manager._tenants.copy()
-
-    tenant_manager._db = mock_db
-    tenant_manager._tenants.clear()
-
-    yield tenant_manager
-
-    tenant_manager._db = original_db
-    tenant_manager._tenants = original_tenants
+from tests.conftest import ADMIN_PASSWORD
 
 
 def _seed_buffer(buf, count=20):
@@ -110,10 +60,8 @@ class TestLogsPage:
             assert response.status_code in (302, 303, 401)
 
     @pytest.mark.asyncio
-    async def test_logs_page_invalid_session(self, setup_tenant_manager, mock_db):
+    async def test_logs_page_invalid_session(self, setup_tenant_manager):
         from src.main import app
-
-        original_get = mock_db.get_admin_session
 
         async def _get_session(sid):
             if sid == "invalid-session":
@@ -125,7 +73,7 @@ class TestLogsPage:
                 "ip_address": "127.0.0.1",
             }
 
-        mock_db.get_admin_session = AsyncMock(side_effect=_get_session)
+        setup_tenant_manager._db.get_admin_session = _get_session
 
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"

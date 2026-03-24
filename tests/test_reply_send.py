@@ -2,53 +2,7 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock, MagicMock, patch
 from pydantic import ValidationError
-
-
-ADMIN_PASSWORD = "test-admin-password-123"
-
-
-@pytest.fixture(autouse=True)
-def setup_admin_password(monkeypatch):
-    from src import config
-
-    monkeypatch.setattr(config.settings, "admin_password", ADMIN_PASSWORD)
-    monkeypatch.setattr(config.settings, "debug", True)
-    yield
-    monkeypatch.setattr(config.settings, "admin_password", None)
-    monkeypatch.setattr(config.settings, "debug", False)
-
-
-@pytest.fixture
-def mock_db():
-    db = MagicMock()
-    db.list_messages = AsyncMock(return_value=([], 0))
-    db.get_recent_chats = AsyncMock(return_value=[])
-    db.get_recent_chat_tabs = AsyncMock(return_value=[])
-    db.get_webhook_stats = AsyncMock(
-        return_value={"total": 0, "success_count": 0, "fail_count": 0}
-    )
-    db.create_admin_session = AsyncMock(return_value="test-session-id")
-    db.get_admin_session = AsyncMock(
-        return_value={"id": "test-session-id", "expires_at": "2099-01-01"}
-    )
-    db.save_tenant = AsyncMock()
-    db.load_tenants = AsyncMock(return_value=[])
-    db.delete_tenant = AsyncMock()
-    db.get_contact_names_for_chats = AsyncMock(return_value={})
-    return db
-
-
-@pytest.fixture
-async def setup_tenant_manager(mock_db, monkeypatch):
-    from src.tenant import tenant_manager
-
-    original_db = tenant_manager._db
-    original_tenants = tenant_manager._tenants.copy()
-    tenant_manager._db = mock_db
-    tenant_manager._tenants.clear()
-    yield tenant_manager
-    tenant_manager._db = original_db
-    tenant_manager._tenants = original_tenants
+from tests.conftest import ADMIN_PASSWORD
 
 
 def _make_mock_bridge(result=None, error=None):
